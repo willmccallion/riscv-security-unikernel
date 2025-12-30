@@ -1,0 +1,13 @@
+[package]
+name = "security-dashboard"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.26"
+egui = "0.26"
+egui_plot = "0.26"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+rand = "0.8"
+crossbeam-channel = "0.5" # For communicating between Async Net and GUI

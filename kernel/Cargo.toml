@@ -1,0 +1,14 @@
+[package]
+name = "security-unikernel"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"       # Optimize for size
+lto = true            # Link Time Optimization
+codegen-units = 1     # Maximize optimization context
+panic = "abort"       # Remove unwinding symbols
+strip = true          # Strip symbols from binary
+debug = false
