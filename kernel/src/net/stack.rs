@@ -1,101 +1,167 @@
+//! Network protocol stack for packet processing.
+//!
+//! Handles Ethernet, IPv4, ARP, ICMP, and TCP protocols. Processes
+//! incoming packets, generates responses where appropriate, and
+//! extracts payload data for security inspection.
+
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::drivers::net_device::NetDevice;
+use crate::net::constants::MAX_ICMP_REPLY_LEN;
+use crate::net::constants::SYN_COOKIE_MAGIC;
+use crate::net::constants::{
+    ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp,
+};
 use crate::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 
-// Accept mutable reference to allow in-place modification
+/// Processes an incoming network packet.
+///
+/// Handles various protocol types:
+/// - ARP: Generates ARP replies for address resolution
+/// - ICMP: Responds to ping requests
+/// - TCP: Handles SYN packets with SYN cookies
+/// - Other IPv4: Extracts payload for security inspection
+///
+/// The packet buffer may be modified in-place for generating responses.
+///
+/// # Arguments
+///
+/// * `packet` - Mutable reference to the packet buffer
+///
+/// # Returns
+///
+/// Some immutable slice to payload data if available, None if the
+/// packet was consumed (e.g., ARP reply sent) or invalid.
 pub fn process_packet(packet: &mut [u8]) -> Option<&[u8]> {
-    if packet.len() < 14 {
+    if packet.len() < ethernet::MIN_FRAME_SIZE {
         return None;
     }
-    let eth_type = (packet[12] as u16) << 8 | packet[13] as u16;
-    match eth_type {
-        0x0806 => {
+    if packet.len() < ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE {
+        return None;
+    }
+    let eth_type =
+        (packet[ethernet::TYPE_OFFSET] as u16) << 8 | packet[ethernet::TYPE_OFFSET + 1] as u16;
+    match EthernetType::from_u16(eth_type) {
+        Some(EthernetType::Arp) => {
             handle_arp(packet);
-            None // Packet consumed/replied
+            None
         }
-        0x0800 => handle_ipv4(packet),
+        Some(EthernetType::Ipv4) => handle_ipv4(packet),
         _ => None,
     }
 }
 
-// Modifies the RX buffer in-place to create the TX packet
+/// Handles ARP (Address Resolution Protocol) packets.
+///
+/// Responds to ARP requests for the kernel's IP address by generating
+/// an ARP reply. The reply is constructed in-place by modifying the
+/// original packet buffer and then sending it.
+///
+/// # Arguments
+///
+/// * `packet` - ARP packet buffer to process and modify
 fn handle_arp(packet: &mut [u8]) {
-    if packet.len() < 42 {
+    if packet.len() < arp::MIN_PACKET_SIZE {
         return;
     }
-    // Check if request (1) and target IP matches
-    if packet[20] != 0 || packet[21] != 1 {
+    let hw_type = packet[arp::HW_TYPE_OFFSET];
+    let opcode = packet[arp::OPCODE_OFFSET];
+    if hw_type != 0 || ArpOpcode::from_u16(opcode as u16) != Some(ArpOpcode::Request) {
         return;
     }
-    if &packet[38..42] != IP_ADDR {
+    if &packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
         return;
     }
 
-    // Swap ethernet MACs
-    // Dst MAC = old src MAC
     let old_src_mac = [
-        packet[6], packet[7], packet[8], packet[9], packet[10], packet[11],
+        packet[ethernet::SRC_MAC_OFFSET],
+        packet[ethernet::SRC_MAC_OFFSET + 1],
+        packet[ethernet::SRC_MAC_OFFSET + 2],
+        packet[ethernet::SRC_MAC_OFFSET + 3],
+        packet[ethernet::SRC_MAC_OFFSET + 4],
+        packet[ethernet::SRC_MAC_OFFSET + 5],
     ];
-    packet[0..6].copy_from_slice(&old_src_mac);
-    // Src MAC = our MAC
-    packet[6..12].copy_from_slice(&MAC_ADDR);
+    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&old_src_mac);
+    packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
+        .copy_from_slice(&MAC_ADDR);
 
-    // Set ARP opcode to reply (2)
-    packet[21] = 2;
+    packet[arp::OPCODE_OFFSET] = ArpOpcode::Reply as u8;
 
-    // Swap ARP payload
-    let old_sender_ip = [packet[28], packet[29], packet[30], packet[31]];
+    let old_sender_ip = [
+        packet[arp::SENDER_IP_OFFSET],
+        packet[arp::SENDER_IP_OFFSET + 1],
+        packet[arp::SENDER_IP_OFFSET + 2],
+        packet[arp::SENDER_IP_OFFSET + 3],
+    ];
 
-    // Target MAC = old sender MAC
-    packet[32..38].copy_from_slice(&old_src_mac);
-    // Target IP = old sender IP
-    packet[38..42].copy_from_slice(&old_sender_ip);
+    packet[arp::TARGET_MAC_OFFSET..arp::TARGET_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
+        .copy_from_slice(&old_src_mac);
+    packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+        .copy_from_slice(&old_sender_ip);
 
-    // Sender MAC = our MAC
-    packet[22..28].copy_from_slice(&MAC_ADDR);
-    // Sender IP = our IP
-    packet[28..32].copy_from_slice(&IP_ADDR);
+    packet[arp::SENDER_MAC_OFFSET..arp::SENDER_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
+        .copy_from_slice(&MAC_ADDR);
+    packet[arp::SENDER_IP_OFFSET..arp::SENDER_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+        .copy_from_slice(&IP_ADDR);
 
-    // Send modified buffer
-    NetDevice::send(&packet[0..42]);
+    NetDevice::send(&packet[0..arp::MIN_PACKET_SIZE]);
 }
 
+/// Handles IPv4 packets.
+///
+/// Processes ICMP echo requests (ping) and TCP SYN packets, generating
+/// appropriate responses. For other protocols, extracts and returns
+/// the payload for security inspection.
+///
+/// # Arguments
+///
+/// * `packet` - IPv4 packet buffer to process
+///
+/// # Returns
+///
+/// Some payload slice if available, None if packet was consumed
 fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
-    if packet.len() < 34 {
+    if packet.len() < ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE {
         return None;
     }
-    let ihl = (packet[14] & 0x0F) * 4;
-    let protocol = packet[23];
+    let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
+    let protocol = packet[ipv4::PROTOCOL_OFFSET];
 
-    // Check destination IP
-    if &packet[30..34] != IP_ADDR {
+    if &packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
         return None;
     }
 
-    // ICMP echo (Ping)
-    if protocol == 1 {
-        let offset = 14 + ihl as usize;
-        if offset < packet.len() && packet[offset] == 8 {
-            // Swap ethernet MACs
+    if IpProtocol::from_u8(protocol) == Some(IpProtocol::Icmp) {
+        let offset = ipv4::HEADER_OFFSET + ihl as usize;
+        if offset < packet.len() && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
+        {
             let old_src_mac = [
-                packet[6], packet[7], packet[8], packet[9], packet[10], packet[11],
+                packet[ethernet::SRC_MAC_OFFSET],
+                packet[ethernet::SRC_MAC_OFFSET + 1],
+                packet[ethernet::SRC_MAC_OFFSET + 2],
+                packet[ethernet::SRC_MAC_OFFSET + 3],
+                packet[ethernet::SRC_MAC_OFFSET + 4],
+                packet[ethernet::SRC_MAC_OFFSET + 5],
             ];
-            packet[0..6].copy_from_slice(&old_src_mac);
-            packet[6..12].copy_from_slice(&MAC_ADDR);
+            packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&old_src_mac);
+            packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
+                .copy_from_slice(&MAC_ADDR);
 
-            // Swap IP addresses
-            let old_src_ip = [packet[26], packet[27], packet[28], packet[29]];
-            packet[26..30].copy_from_slice(&IP_ADDR); // Src = Us
-            packet[30..34].copy_from_slice(&old_src_ip); // Dst = Them
+            let old_src_ip = [
+                packet[ipv4::SRC_IP_OFFSET],
+                packet[ipv4::SRC_IP_OFFSET + 1],
+                packet[ipv4::SRC_IP_OFFSET + 2],
+                packet[ipv4::SRC_IP_OFFSET + 3],
+            ];
+            packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+                .copy_from_slice(&IP_ADDR);
+            packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+                .copy_from_slice(&old_src_ip);
 
-            // Modify ICMP header
-            packet[offset] = 0; // Type 0 (Reply)
-            // Reset checksum field to 0 before recalc
+            packet[offset] = IcmpType::EchoReply as u8;
             packet[offset + 2] = 0;
             packet[offset + 3] = 0;
 
-            // Calculate checksum
-            let len = packet.len().min(128); // Cap length for safety
+            let len = packet.len().min(MAX_ICMP_REPLY_LEN);
             let csum = checksum(&packet[offset..len]);
             packet[offset + 2] = (csum >> 8) as u8;
             packet[offset + 3] = (csum & 0xFF) as u8;
@@ -105,88 +171,122 @@ fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
         }
     }
 
-    // TCP processing (SYN cookies)
-    if protocol == 6 {
-        let offset = 14 + ihl as usize;
-        if offset + 20 <= packet.len() {
-            let src_ip = [packet[26], packet[27], packet[28], packet[29]];
+    if IpProtocol::from_u8(protocol) == Some(IpProtocol::Tcp) {
+        let offset = ipv4::HEADER_OFFSET + ihl as usize;
+        if offset + tcp::MIN_HEADER_SIZE <= packet.len() {
+            let src_ip = [
+                packet[ipv4::SRC_IP_OFFSET],
+                packet[ipv4::SRC_IP_OFFSET + 1],
+                packet[ipv4::SRC_IP_OFFSET + 2],
+                packet[ipv4::SRC_IP_OFFSET + 3],
+            ];
             handle_tcp(packet, offset, &src_ip);
         }
-        return None; // Don't forward TCP to userspace logic yet
+        return None;
     }
 
-    let payload_offset = 14 + ihl as usize;
+    let payload_offset = ipv4::HEADER_OFFSET + ihl as usize;
     if payload_offset < packet.len() {
-        // Return immutable slice for inspection
         Some(&packet[payload_offset..])
     } else {
         None
     }
 }
 
+/// Handles TCP packets with SYN flood protection.
+///
+/// Implements SYN cookies to protect against SYN flood attacks.
+/// When a SYN packet is received, generates a SYN-ACK response
+/// without maintaining connection state.
+///
+/// # Arguments
+///
+/// * `packet` - TCP packet buffer
+/// * `offset` - Byte offset to the TCP header
+/// * `src_ip` - Source IP address for cookie generation
 fn handle_tcp(packet: &mut [u8], offset: usize, src_ip: &[u8]) {
-    // Unsafe cast to read header
     let tcp = unsafe { &*(packet.as_ptr().add(offset) as *const TcpHeader) };
     let flags = u16::from_be(tcp.data_offset_flags) & 0x003F;
 
-    // SYN flood protection (SYN cookies)
     if (flags & TCP_SYN) != 0 {
         let seq = u32::from_be(tcp.seq_num);
-        let cookie = (src_ip[3] as u32) + (u16::from_be(tcp.src_port) as u32) + 0xCAFEBABE;
+        let cookie = (src_ip[3] as u32) + (u16::from_be(tcp.src_port) as u32) + SYN_COOKIE_MAGIC;
 
-        // Send SYN-ACK
-        send_tcp_reply_inplace(
-            packet,
-            offset,
-            cookie,  // Our Seq
-            seq + 1, // Ack
-            TCP_SYN | TCP_ACK,
-        );
+        send_tcp_reply_inplace(packet, offset, cookie, seq + 1, TCP_SYN | TCP_ACK);
     }
 }
 
+/// Constructs and sends a TCP reply packet in-place.
+///
+/// Modifies the original packet buffer to create a TCP response by
+/// swapping MAC and IP addresses, constructing a new TCP header,
+/// and sending the result. Used for SYN-ACK responses.
+///
+/// # Arguments
+///
+/// * `packet` - Packet buffer to modify
+/// * `tcp_offset` - Byte offset to the TCP header
+/// * `seq` - Sequence number for the reply
+/// * `ack` - Acknowledgment number for the reply
+/// * `flags` - TCP flags to set in the reply
 fn send_tcp_reply_inplace(packet: &mut [u8], tcp_offset: usize, seq: u32, ack: u32, flags: u16) {
-    // Swap ethernet MACs
     let old_src_mac = [
-        packet[6], packet[7], packet[8], packet[9], packet[10], packet[11],
+        packet[ethernet::SRC_MAC_OFFSET],
+        packet[ethernet::SRC_MAC_OFFSET + 1],
+        packet[ethernet::SRC_MAC_OFFSET + 2],
+        packet[ethernet::SRC_MAC_OFFSET + 3],
+        packet[ethernet::SRC_MAC_OFFSET + 4],
+        packet[ethernet::SRC_MAC_OFFSET + 5],
     ];
-    packet[0..6].copy_from_slice(&old_src_mac);
-    packet[6..12].copy_from_slice(&MAC_ADDR);
+    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&old_src_mac);
+    packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
+        .copy_from_slice(&MAC_ADDR);
 
-    // Swap IP addresses
-    let old_src_ip = [packet[26], packet[27], packet[28], packet[29]];
-    packet[26..30].copy_from_slice(&IP_ADDR);
-    packet[30..34].copy_from_slice(&old_src_ip);
+    let old_src_ip = [
+        packet[ipv4::SRC_IP_OFFSET],
+        packet[ipv4::SRC_IP_OFFSET + 1],
+        packet[ipv4::SRC_IP_OFFSET + 2],
+        packet[ipv4::SRC_IP_OFFSET + 3],
+    ];
+    packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR);
+    packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+        .copy_from_slice(&old_src_ip);
 
-    // Construct new TCP header
-    // We need to read ports before overwriting
     let orig_dst_port;
     let orig_src_port;
     {
         let orig_tcp = unsafe { &*(packet.as_ptr().add(tcp_offset) as *const TcpHeader) };
-        orig_dst_port = orig_tcp.dst_port; // Already BE
-        orig_src_port = orig_tcp.src_port; // Already BE
+        orig_dst_port = orig_tcp.dst_port;
+        orig_src_port = orig_tcp.src_port;
     }
 
     let reply_tcp = TcpHeader::new(
-        u16::from_be(orig_dst_port), // Swap ports: src = old dst
-        u16::from_be(orig_src_port), // dst = old src
+        u16::from_be(orig_dst_port),
+        u16::from_be(orig_src_port),
         seq,
         ack,
         flags,
     );
 
-    // Overwrite TCP header
     unsafe {
         let ptr = packet.as_mut_ptr().add(tcp_offset) as *mut TcpHeader;
         *ptr = reply_tcp;
     }
 
-    // Send (Ethernet(14) + IP(20) + TCP(20) = 54 bytes)
-    // Assuming standard header sizes for simplicity in this optimization
-    NetDevice::send(&packet[0..tcp_offset + 20]);
+    NetDevice::send(&packet[0..tcp_offset + tcp::MIN_HEADER_SIZE]);
 }
 
+/// Calculates the Internet checksum for protocol headers.
+///
+/// Implements the standard one's complement checksum algorithm.
+///
+/// # Arguments
+///
+/// * `data` - Data buffer to checksum
+///
+/// # Returns
+///
+/// 16-bit checksum value
 fn checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;

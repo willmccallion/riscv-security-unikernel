@@ -1,27 +1,45 @@
+//! Network flow tracking.
+//!
+//! Maintains a table of active network flows (connections) with statistics
+//! including packet counts, byte counts, and timing information. Used for
+//! connection tracking and flow-based security analysis.
+
+/// Maximum number of flows that can be tracked simultaneously.
 const MAX_FLOWS: usize = 74;
 
+/// Entry in the flow table representing a single network flow.
+///
+/// A flow is identified by the 5-tuple: source IP, destination IP,
+/// source port, destination port, and protocol. The entry tracks
+/// statistics and timing for the flow.
 #[derive(Copy, Clone)]
 #[repr(align(8))]
 pub struct FlowEntry {
-    // Group 64-bit fields first to ensure alignment and minimize padding
+    /// Total number of packets in this flow.
     pub packet_count: u64,
+    /// Total number of bytes in this flow.
     pub byte_count: u64,
-    pub last_seen: usize, // u64 on riscv64
+    /// Last time this flow was seen (cycle count).
+    pub last_seen: usize,
 
-    // Group 32-bit fields
+    /// Source IP address in network byte order.
     pub src_ip: u32,
+    /// Destination IP address in network byte order.
     pub dst_ip: u32,
 
-    // Group 16-bit fields
+    /// Source port in host byte order.
     pub src_port: u16,
+    /// Destination port in host byte order.
     pub dst_port: u16,
 
-    // Group 8-bit fields
+    /// IP protocol number (6=TCP, 17=UDP, etc.).
     pub protocol: u8,
+    /// Whether this entry is currently active.
     pub is_active: bool,
 }
 
 impl FlowEntry {
+    /// Creates an empty flow entry with all fields zeroed.
     pub const fn empty() -> Self {
         Self {
             packet_count: 0,
@@ -37,12 +55,19 @@ impl FlowEntry {
     }
 }
 
+/// Flow table for tracking active network connections.
+///
+/// Maintains a fixed-size array of flow entries. When the table is full,
+/// the oldest flow is evicted to make room for new flows.
 pub struct FlowTable {
+    /// Array of flow entries.
     entries: [FlowEntry; MAX_FLOWS],
+    /// Number of currently active flows.
     pub active_count: usize,
 }
 
 impl FlowTable {
+    /// Creates a new empty flow table.
     pub const fn new() -> Self {
         Self {
             entries: [FlowEntry::empty(); MAX_FLOWS],
@@ -50,7 +75,24 @@ impl FlowTable {
         }
     }
 
-    // Returns true if a new flow was created
+    /// Updates the flow table with a new packet.
+    ///
+    /// If a matching flow exists, updates its statistics. Otherwise,
+    /// creates a new flow entry or reuses an expired/old entry.
+    ///
+    /// # Arguments
+    ///
+    /// * `src_ip` - Source IP address as 4 bytes
+    /// * `dst_ip` - Destination IP address as 4 bytes
+    /// * `src_port` - Source port number
+    /// * `dst_port` - Destination port number
+    /// * `proto` - IP protocol number
+    /// * `len` - Packet length in bytes
+    /// * `now` - Current cycle count
+    ///
+    /// # Returns
+    ///
+    /// True if a new flow was created, false if an existing flow was updated
     pub fn update(
         &mut self,
         src_ip: &[u8],
@@ -94,7 +136,7 @@ impl FlowTable {
             self.entries[idx].packet_count += 1;
             self.entries[idx].byte_count += len as u64;
             self.entries[idx].last_seen = now;
-            false // Existing flow
+            false
         } else {
             let idx = if let Some(e_idx) = empty_idx {
                 self.active_count += 1;
@@ -114,10 +156,19 @@ impl FlowTable {
                 protocol: proto,
                 is_active: true,
             };
-            true // New flow created
+            true
         }
     }
 
+    /// Removes expired flows from the table.
+    ///
+    /// Marks flows as inactive if they haven't been seen within the
+    /// specified timeout period. Updates the active count accordingly.
+    ///
+    /// # Arguments
+    ///
+    /// * `now` - Current cycle count
+    /// * `timeout` - Timeout in cycles (flows older than this are pruned)
     pub fn prune(&mut self, now: usize, timeout: usize) {
         let mut removed = 0;
         for i in 0..MAX_FLOWS {

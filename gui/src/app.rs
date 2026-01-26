@@ -1,3 +1,10 @@
+//! Main GUI application implementation.
+//!
+//! This module provides the egui-based user interface for monitoring
+//! and controlling the security kernel. It includes real-time statistics
+//! visualization, event logging, packet inspection, and configuration
+//! interfaces for firewall rules, DPI signatures, and eBPF programs.
+
 use crate::types::*;
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
@@ -7,33 +14,58 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Available tabs in the main application window.
 #[derive(PartialEq)]
 enum Tab {
+    /// Main dashboard with statistics and event log.
     Dashboard,
+    /// Software-defined networking and firewall configuration.
     SDN,
+    /// eBPF program editor and compiler.
     Ebpf,
 }
 
+/// Main application state and UI implementation.
 pub struct AegisApp {
+    /// Shared network statistics from the kernel.
     stats: Arc<NetStats>,
+    /// Receiver for security alerts and log entries.
     log_rx: std::sync::mpsc::Receiver<LogEntry>,
+    /// Sender for commands to the background network task.
     cmd_tx: UnboundedSender<GuiCommand>,
 
+    /// Circular buffer of recent log entries for display.
     logs: VecDeque<LogEntry>,
+    /// Historical data points for passed traffic rate graph.
     history_pass: VecDeque<[f64; 2]>,
+    /// Historical data points for dropped traffic rate graph.
     history_drop: VecDeque<[f64; 2]>,
+    /// Application start time for relative timestamps.
     start_time: Instant,
 
+    /// Currently selected tab in the UI.
     selected_tab: Tab,
+    /// Input field for firewall port blocking.
     sdn_port: String,
+    /// Input field for DPI signature patterns.
     sdn_sig: String,
+    /// Input field for eBPF program source code.
     ebpf_code: String,
 
+    /// Whether the event log is paused (not auto-scrolling).
     log_paused: bool,
+    /// Currently selected log entry for detailed inspection.
     selected_log: Option<LogEntry>,
 }
 
 impl AegisApp {
+    /// Creates a new application instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `stats` - Shared statistics structure
+    /// * `log_rx` - Receiver for log entries
+    /// * `cmd_tx` - Sender for GUI commands
     pub fn new(
         stats: Arc<NetStats>,
         log_rx: std::sync::mpsc::Receiver<LogEntry>,
@@ -56,10 +88,23 @@ impl AegisApp {
         }
     }
 
+    /// Sends a command to the background network task.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - Command to send
     fn send(&self, cmd: GuiCommand) {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    /// Renders the main dashboard tab.
+    ///
+    /// Displays network statistics cards, traffic generation controls,
+    /// real-time traffic rate graphs, and the security event log.
+    ///
+    /// # Arguments
+    ///
+    /// * `ui` - egui UI context
     fn ui_dashboard(&mut self, ui: &mut egui::Ui) {
         let pass_pps = self.stats.passed.load(Ordering::Relaxed);
         let ddos_pps = self.stats.ddos.load(Ordering::Relaxed);
@@ -264,6 +309,18 @@ impl AegisApp {
         }
     }
 
+    /// Renders a single statistics card widget.
+    ///
+    /// Displays a title, current rate value, and total count in a
+    /// styled card with colored text for visual distinction.
+    ///
+    /// # Arguments
+    ///
+    /// * `ui` - egui UI context
+    /// * `title` - Card title text
+    /// * `rate` - Current rate value (packets per second or count)
+    /// * `total` - Cumulative total count
+    /// * `color` - Text color for the rate value
     fn stat_card(
         &self,
         ui: &mut egui::Ui,
@@ -314,6 +371,15 @@ impl AegisApp {
             });
     }
 
+    /// Renders the SDN and firewall configuration tab.
+    ///
+    /// Provides interfaces for:
+    /// - Blocking specific destination ports
+    /// - Adding DPI signature patterns for deep packet inspection
+    ///
+    /// # Arguments
+    ///
+    /// * `ui` - egui UI context
     fn ui_sdn(&mut self, ui: &mut egui::Ui) {
         ui.heading("Firewall & SDN Rules");
         ui.add_space(10.0);
@@ -369,6 +435,14 @@ impl AegisApp {
         });
     }
 
+    /// Renders the eBPF program editor tab.
+    ///
+    /// Allows users to write and compile custom packet filtering programs
+    /// that are executed in the kernel's virtual machine for each packet.
+    ///
+    /// # Arguments
+    ///
+    /// * `ui` - egui UI context
     fn ui_ebpf(&mut self, ui: &mut egui::Ui) {
         ui.heading("eBPF Packet Filter");
         ui.label("Inject custom assembly into the packet processing pipeline.");
@@ -418,6 +492,15 @@ impl AegisApp {
 }
 
 impl eframe::App for AegisApp {
+    /// Main UI update loop called every frame.
+    ///
+    /// Processes incoming log entries, updates statistics, maintains
+    /// historical data for graphs, and renders the appropriate tab UI.
+    ///
+    /// # Arguments
+    ///
+    /// * `ctx` - egui context for rendering
+    /// * `_frame` - Application frame (unused)
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.log_paused {
             while let Ok(mut msg) = self.log_rx.try_recv() {
@@ -495,6 +578,18 @@ impl eframe::App for AegisApp {
     }
 }
 
+/// Formats a numeric value with metric prefixes (k, M).
+///
+/// Converts large numbers to a more readable format with appropriate
+/// suffixes for thousands and millions.
+///
+/// # Arguments
+///
+/// * `val` - Value to format
+///
+/// # Returns
+///
+/// Formatted string with metric suffix if applicable.
 fn format_metric(val: u64) -> String {
     if val >= 1_000_000 {
         format!("{:.1}M", val as f64 / 1_000_000.0)
@@ -505,6 +600,19 @@ fn format_metric(val: u64) -> String {
     }
 }
 
+/// Compiles a simple eBPF-like program to bytecode.
+///
+/// Supports a limited instruction set for packet filtering:
+/// - "DROP ALL" - Drops all packets
+/// - "BLOCK <protocol> DST <port>" - Blocks packets to a destination port
+///
+/// # Arguments
+///
+/// * `code` - Source code string to compile
+///
+/// # Returns
+///
+/// Some bytecode vector if compilation succeeds, None otherwise.
 fn compile_ebpf(code: &str) -> Option<Vec<u8>> {
     if code.trim() == "DROP ALL" {
         let mut buf = Vec::new();

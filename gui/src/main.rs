@@ -1,5 +1,14 @@
+//! Security Dashboard - Control plane GUI for the security unikernel.
+//!
+//! This application provides a real-time monitoring and control interface
+//! for the security kernel. It displays network statistics, security alerts,
+//! and allows dynamic configuration of firewall rules, DPI signatures,
+//! and eBPF packet filters.
+
 mod app;
+/// Background network task for kernel communication and traffic generation.
 mod traffic;
+/// Type definitions for statistics, log entries, and GUI commands.
 mod types;
 
 use crate::app::AegisApp;
@@ -8,6 +17,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc::unbounded_channel;
 
+/// Application entry point.
+///
+/// Initializes the GUI framework, creates shared statistics structures,
+/// and spawns the background network task that communicates with the kernel.
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {
     let (log_tx, mut log_rx) = unbounded_channel::<LogEntry>();

@@ -1,3 +1,9 @@
+//! Background network task for traffic generation and kernel communication.
+//!
+//! This module handles UDP communication with the security kernel, including
+//! receiving telemetry data and security alerts, sending management commands,
+//! and generating test traffic patterns for security testing.
+
 use crate::types::*;
 use eframe::egui;
 use rand::Rng;
@@ -11,15 +17,25 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+/// Main background task that runs continuously.
+///
+/// This function:
+/// - Listens for UDP telemetry and alerts from the kernel
+/// - Processes GUI commands and forwards them to the kernel
+/// - Generates test traffic based on the current mode
+///
+/// # Arguments
+///
+/// * `stats` - Shared statistics structure updated with kernel telemetry
+/// * `log_tx` - Channel sender for forwarding security alerts to the GUI
+/// * `cmd_rx` - Channel receiver for commands from the GUI
 pub async fn start_background_task(
     stats: Arc<NetStats>,
     log_tx: UnboundedSender<LogEntry>,
     mut cmd_rx: UnboundedReceiver<GuiCommand>,
 ) {
-    // Management socket
     let socket = UdpSocket::bind(LISTEN_ADDR).await.unwrap();
 
-    // Create a pool of sockets to simulate attacks from different Source Ports
     let mut socket_pool = Vec::new();
     for _ in 0..50 {
         let sock = UdpSocket::bind("0.0.0.0:0").await.unwrap();
@@ -46,7 +62,6 @@ pub async fn start_background_task(
                 let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 stats.last_seen.store(now_secs, Ordering::Relaxed);
 
-                // Now expecting 8 u64s (64 bytes)
                 if len >= 64 && data[0] != 0x02 {
                     for i in 0..8 {
                         let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
@@ -93,7 +108,6 @@ pub async fn start_background_task(
                 match cmd {
                     GuiCommand::SetMode(m) => mode = m,
                     GuiCommand::SendBytes(bytes) => {
-                        // Use the first socket for management commands
                         let _ = socket_pool[0].send_to(&bytes, MGMT_ADDR).await;
                     }
                     GuiCommand::BanIp(ip_str) => {
@@ -121,7 +135,6 @@ pub async fn start_background_task(
                         let count = rng.gen_range(80..=120);
                         for _ in 0..count {
                             let payload = build_spoofed_packet(&mut rng, None, b"GET / HTTP/1.1");
-                            // Randomize source port by choosing a random socket
                             let sock = socket_pool.choose(&mut rng).unwrap();
                             let _ = sock.send_to(&payload, TARGET_ADDR).await;
                         }
@@ -139,7 +152,6 @@ pub async fn start_background_task(
                             };
                             let target = SocketAddr::new(target_ip, port);
 
-                            // Attack from different source ports
                             let sock = socket_pool.choose(&mut rng).unwrap();
                             let _ = sock.send_to(&payload, target).await;
                         }
@@ -165,10 +177,9 @@ pub async fn start_background_task(
                             let _ = sock.send_to(&payload, TARGET_ADDR).await;
                         }
 
-                        // Inject Heuristic Anomalies (NOP Sleds)
                         if rng.gen_bool(0.05) {
-                            let mut payload = vec![0x90; 16]; // NOP Sled
-                            payload.extend_from_slice(b"\xcc\xcc\xcc\xcc"); // Shellcode
+                            let mut payload = vec![0x90; 16];
+                            payload.extend_from_slice(b"\xcc\xcc\xcc\xcc");
                             let payload = build_spoofed_packet(&mut rng, None, &payload);
                             let sock = socket_pool.choose(&mut rng).unwrap();
                             let _ = sock.send_to(&payload, TARGET_ADDR).await;
@@ -199,6 +210,21 @@ pub async fn start_background_task(
     }
 }
 
+/// Constructs a spoofed UDP packet with custom source IP and payload.
+///
+/// The packet format includes a magic header (0xAE617300) followed by
+/// the source IP address and the payload data. This format is recognized
+/// by the kernel for testing IP spoofing detection.
+///
+/// # Arguments
+///
+/// * `rng` - Random number generator for generating random source IPs
+/// * `fixed_ip` - Optional fixed source IP, otherwise randomly generated
+/// * `payload` - Packet payload data
+///
+/// # Returns
+///
+/// A byte vector containing the complete spoofed packet.
 fn build_spoofed_packet(rng: &mut StdRng, fixed_ip: Option<[u8; 4]>, payload: &[u8]) -> Vec<u8> {
     let mut packet = Vec::with_capacity(8 + payload.len());
     packet.extend_from_slice(&[0xAE, 0x61, 0x73, 0x00]);
@@ -215,6 +241,19 @@ fn build_spoofed_packet(rng: &mut StdRng, fixed_ip: Option<[u8; 4]>, payload: &[
     packet
 }
 
+/// Parses a security alert packet received from the kernel.
+///
+/// Alert packets contain a reason code, source IP address, and optional
+/// payload data. This function extracts this information and creates a
+/// LogEntry with appropriate formatting and color coding.
+///
+/// # Arguments
+///
+/// * `data` - Raw UDP payload containing the alert data
+///
+/// # Returns
+///
+/// A LogEntry with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
     let reason = data[1];
     let ip = format!("{}.{}.{}.{}", data[2], data[3], data[4], data[5]);
@@ -227,7 +266,6 @@ fn parse_alert(data: &[u8]) -> LogEntry {
 
     let dst_port = match reason {
         1 | 4 | 6 => {
-            // 6 is Flow
             if payload.len() >= 38 {
                 u16::from_be_bytes([payload[36], payload[37]])
             } else {
@@ -235,7 +273,6 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             }
         }
         2 | 3 | 5 => {
-            // 5 is Heuristic
             if payload.len() >= 4 {
                 u16::from_be_bytes([payload[2], payload[3]])
             } else {
@@ -268,7 +305,7 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             } else {
                 format!("[HEURISTIC] Anomaly Detected from {}", ip)
             },
-            egui::Color32::from_rgb(255, 0, 255), // Magenta
+            egui::Color32::from_rgb(255, 0, 255),
         ),
         6 => (
             format!("[FLOW] New Connection from {}", ip),
