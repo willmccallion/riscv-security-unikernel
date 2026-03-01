@@ -62,6 +62,8 @@ pub struct AegisApp {
     log_mode: LogMode,
     /// Whether the event log is paused (not auto-scrolling).
     log_paused: bool,
+    /// Whether a new log entry arrived this frame (used to control scroll).
+    log_new_entry: bool,
     /// Currently selected log entry for detailed inspection.
     selected_log: Option<LogEntry>,
 }
@@ -83,7 +85,7 @@ impl AegisApp {
             stats,
             log_rx,
             cmd_tx,
-            logs: VecDeque::with_capacity(100),
+            logs: VecDeque::with_capacity(1000),
             history_pass: VecDeque::new(),
             history_drop: VecDeque::new(),
             start_time: Instant::now(),
@@ -101,6 +103,7 @@ impl AegisApp {
             ebpf_programs: Vec::new(),
             log_mode: LogMode::Alerts,
             log_paused: false,
+            log_new_entry: false,
             selected_log: None,
         }
     }
@@ -240,21 +243,100 @@ impl AegisApp {
             });
         });
 
+        let snap = !self.log_paused && self.log_new_entry;
+        self.log_new_entry = false;
         egui::ScrollArea::vertical()
-            .stick_to_bottom(!self.log_paused)
+            .stick_to_bottom(snap)
             .min_scrolled_height(150.0)
             .show(ui, |ui| {
                 for entry in self.logs.iter().rev() {
                     if self.log_mode == LogMode::Alerts && entry.msg.starts_with("[PASS]") {
                         continue;
                     }
-                    let text = format!("[T+{:.1}s] {}", entry.timestamp, entry.msg);
-                    if ui
-                        .selectable_label(false, egui::RichText::new(text).color(entry.color))
-                        .clicked()
-                    {
+
+                    // Parse the tag and description from the message e.g. "[FIREWALL] Blocked..."
+                    let (tag, detail) = if let Some(end) = entry.msg.find(']') {
+                        (&entry.msg[1..end], entry.msg[end + 2..].trim())
+                    } else {
+                        ("INFO", entry.msg.as_str())
+                    };
+
+                    let is_selected = self.selected_log.as_ref()
+                        .map(|s| s.timestamp == entry.timestamp && s.msg == entry.msg)
+                        .unwrap_or(false);
+
+                    let bg = if is_selected {
+                        egui::Color32::from_gray(40)
+                    } else {
+                        egui::Color32::from_gray(20)
+                    };
+
+                    let clicked = egui::Frame::none()
+                        .fill(bg)
+                        .rounding(4.0)
+                        .inner_margin(egui::Margin { left: 0.0, right: 8.0, top: 4.0, bottom: 4.0 })
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(35)))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Colored left accent bar
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(4.0, 24.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(rect, 2.0, entry.color);
+                                ui.add_space(6.0);
+
+                                // Tag badge
+                                egui::Frame::none()
+                                    .fill(entry.color.gamma_multiply(0.2))
+                                    .rounding(3.0)
+                                    .inner_margin(egui::Margin::symmetric(5.0, 1.0))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(tag)
+                                                .color(entry.color)
+                                                .strong()
+                                                .size(10.0),
+                                        );
+                                    });
+
+                                ui.add_space(6.0);
+
+                                // Detail text
+                                ui.label(
+                                    egui::RichText::new(detail)
+                                        .color(egui::Color32::from_gray(210))
+                                        .size(12.0),
+                                );
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    // Timestamp
+                                    ui.label(
+                                        egui::RichText::new(format!("T+{:.1}s", entry.timestamp))
+                                            .color(egui::Color32::from_gray(100))
+                                            .size(11.0),
+                                    );
+                                    // Port if nonzero
+                                    if entry.dst_port > 0 {
+                                        ui.label(
+                                            egui::RichText::new(format!(":{}", entry.dst_port))
+                                                .color(egui::Color32::from_gray(140))
+                                                .size(11.0)
+                                                .monospace(),
+                                        );
+                                    }
+                                });
+                            });
+                        })
+                        .response
+                        .interact(egui::Sense::click())
+                        .clicked();
+
+                    if clicked {
                         self.selected_log = Some(entry.clone());
                     }
+
+                    ui.add_space(2.0);
                 }
             });
 
@@ -414,18 +496,18 @@ impl AegisApp {
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.sdn_port);
-                    if ui.button("BLOCK PORT").clicked() {
-                        if let Ok(port) = self.sdn_port.trim().parse::<u16>() {
-                            // Kernel mgmt packet: 8 bytes padding + msg_type (0x01) + 2 byte port
-                            let mut packet = vec![0u8; 8];
-                            packet.push(0x01);
-                            packet.extend_from_slice(&port.to_be_bytes());
-                            self.send(GuiCommand::SendBytes(packet));
-                            if !self.blocked_ports.contains(&port) {
-                                self.blocked_ports.push(port);
-                            }
-                            self.sdn_port.clear();
+                    if ui.button("BLOCK PORT").clicked()
+                        && let Ok(port) = self.sdn_port.trim().parse::<u16>()
+                    {
+                        // Kernel mgmt packet: 8 bytes padding + msg_type (0x01) + 2 byte port
+                        let mut packet = vec![0u8; 8];
+                        packet.push(0x01);
+                        packet.extend_from_slice(&port.to_be_bytes());
+                        self.send(GuiCommand::SendBytes(packet));
+                        if !self.blocked_ports.contains(&port) {
+                            self.blocked_ports.push(port);
                         }
+                        self.sdn_port.clear();
                     }
                 });
                 ui.add_space(8.0);
@@ -572,11 +654,12 @@ impl eframe::App for AegisApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.log_paused {
             while let Ok(mut msg) = self.log_rx.try_recv() {
-                if self.logs.len() >= 100 {
+                msg.timestamp = self.start_time.elapsed().as_secs_f64();
+                if self.logs.len() >= 1000 {
                     self.logs.pop_back();
                 }
-                msg.timestamp = self.start_time.elapsed().as_secs_f64();
                 self.logs.push_front(msg);
+                self.log_new_entry = true;
             }
         }
 
