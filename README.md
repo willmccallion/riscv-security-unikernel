@@ -2,10 +2,22 @@
 
 A bare-metal **network security appliance** written in Rust, running in Ring 0 on RISC-V without a host OS. The entire system — stateful firewall, DDoS mitigation, deep packet inspection, and a programmable eBPF VM — is engineered to fit within a strict **64 KB RAM** constraint.
 
-```
-[ GUI Control Plane (egui) ]  ←──UDP telemetry──→  [ RISC-V Kernel ]
-         ↕ SDN / eBPF push                              64 KB RAM
-    Traffic Generator                              VirtIO zero-copy DMA
+```mermaid
+graph LR
+    subgraph GUI["GUI Control Plane (egui)"]
+        TG[Traffic Generator]
+        CP[Dashboard / SDN / eBPF Studio]
+    end
+
+    subgraph Kernel["RISC-V Kernel · 64 KB RAM"]
+        RX[VirtIO zero-copy DMA]
+        TLM[Telemetry · UDP :8888]
+        MGT[Management · UDP :1337]
+    end
+
+    TLM -->|stats & alerts| CP
+    CP -->|SDN rules / eBPF bytecode| MGT
+    TG -->|spoofed packets| RX
 ```
 
 ---
