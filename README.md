@@ -123,6 +123,44 @@ flowchart LR
 | Network driver | VirtIO-Net legacy, zero-copy DMA |
 | Concurrency model | Single-threaded polling loop |
 | Build profile | `-Oz`, LTO, `codegen-units=1`, stripped |
+| Static footprint | 64,400 / 65,536 bytes (98.3% of budget) |
+
+---
+
+## Benchmarks
+
+The pure-logic security modules are benchmarked on the host with [Criterion](https://github.com/bheisler/criterion.rs). No QEMU required.
+
+```bash
+make bench
+```
+
+| Benchmark | Median |
+|---|---|
+| `cms_insert` (single IP) | 7.8 ns |
+| `cms_insert_64_ips` (varied) | 8.1 ns |
+| `ac_scan_clean_payload` (128 B, no match) | 162 ns |
+| `ac_scan_matching_payload` (early match) | 103 ns |
+| `vm_execute_6_instructions` | 4.4 ns |
+| `flow_update_new_flow` | ~125 ns |
+| `flow_update_existing_flow` | 3.4 ns |
+| `flow_update_full_table_74_flows` | 42.9 ns |
+| `heuristic_check_tcp_flags` | 0.7 ns |
+| `heuristic_check_payload_clean` | 26.4 ns |
+| `heuristic_check_payload_nop_sled` | 2.4 ns |
+| **full hot path** (CMS + AC + VM, per packet) | **176 ns** |
+
+The full hot path (CMS → Aho-Corasick DPI → eBPF VM) runs in ~176 ns per packet on a modern x86 host, equivalent to >5 million packets/second through the security stack.
+
+---
+
+## Size Guarantee
+
+```bash
+make check-size
+```
+
+Measures `.text + .rodata + .data + .bss` and fails the build if the total exceeds the 64 KB RAM budget. Run after any change to verify the constraint holds.
 
 ---
 

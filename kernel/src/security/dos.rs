@@ -1,10 +1,11 @@
-//! DDoS (Distributed Denial of Service) mitigation mechanisms.
-//!
-//! Implements multiple techniques for detecting and mitigating DDoS attacks:
-//! - Count-Min Sketch for heavy hitter detection
-//! - Penalty box for IP address banning
-//! - Token bucket rate limiting
+// DDoS (Distributed Denial of Service) mitigation mechanisms.
+//
+// Implements multiple techniques for detecting and mitigating DDoS attacks:
+// - Count-Min Sketch for heavy hitter detection
+// - Penalty box for IP address banning
+// - Token bucket rate limiting
 
+#[cfg(target_arch = "riscv64")]
 use core::arch::asm;
 
 /// Width of the Count-Min Sketch hash table.
@@ -29,6 +30,12 @@ struct BanEntry {
 pub struct PenaltyBox {
     /// Array of ban entries, limited to 16 for memory efficiency.
     entries: [BanEntry; 16],
+}
+
+impl Default for PenaltyBox {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PenaltyBox {
@@ -100,6 +107,12 @@ impl PenaltyBox {
 pub struct CountMinSketch {
     /// Two-dimensional array: depth rows, width columns.
     matrix: [[u16; CMS_WIDTH]; CMS_DEPTH],
+}
+
+impl Default for CountMinSketch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CountMinSketch {
@@ -220,9 +233,12 @@ impl TokenBucket {
 ///
 /// Current CPU cycle count
 fn get_time() -> usize {
+    #[cfg(target_arch = "riscv64")]
     unsafe {
         let c: usize;
         asm!("csrr {}, mcycle", out(reg) c);
         c
     }
+    #[cfg(not(target_arch = "riscv64"))]
+    0
 }

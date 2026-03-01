@@ -1,7 +1,7 @@
-//! Heuristic detection constants.
-//!
-//! Defines constants used for heuristic-based anomaly detection
-//! including TCP flag patterns and payload signatures.
+// Heuristic detection constants.
+//
+// Defines constants used for heuristic-based anomaly detection
+// including TCP flag patterns and payload signatures.
 
 /// TCP flag combinations for port scan detection.
 pub mod tcp_flags {

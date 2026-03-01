@@ -1,8 +1,8 @@
-//! Deep Packet Inspection (DPI) engine.
-//!
-//! Implements pattern matching for detecting malware signatures and
-//! attack patterns in packet payloads. Uses the Aho-Corasick algorithm
-//! for efficient multi-pattern matching and supports dynamic rule addition.
+// Deep Packet Inspection (DPI) engine.
+//
+// Implements pattern matching for detecting malware signatures and
+// attack patterns in packet payloads. Uses the Aho-Corasick algorithm
+// for efficient multi-pattern matching and supports dynamic rule addition.
 
 /// Maximum number of nodes in the Aho-Corasick automaton.
 const MAX_NODES: usize = 128;
@@ -47,6 +47,12 @@ pub struct AhoCorasick {
     count: usize,
     /// Queue buffer for BFS traversal during construction.
     queue: [u16; MAX_NODES],
+}
+
+impl Default for AhoCorasick {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AhoCorasick {
@@ -215,6 +221,12 @@ pub struct DynamicRules {
     pub lengths: [usize; 8],
     /// Number of active patterns.
     pub count: usize,
+}
+
+impl Default for DynamicRules {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DynamicRules {

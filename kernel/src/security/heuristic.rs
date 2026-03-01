@@ -1,8 +1,8 @@
-//! Heuristic-based security analysis.
-//!
-//! Detects suspicious patterns that don't match known signatures but
-//! indicate potential attacks based on protocol anomalies and payload
-//! characteristics.
+// Heuristic-based security analysis.
+//
+// Detects suspicious patterns that don't match known signatures but
+// indicate potential attacks based on protocol anomalies and payload
+// characteristics.
 
 /// Heuristic analysis engine for anomaly detection.
 ///
@@ -25,7 +25,7 @@ impl HeuristicEngine {
     ///
     /// Some reason string if suspicious flags detected, None otherwise
     pub fn check_tcp_flags(flags: u8) -> Option<&'static str> {
-        use crate::security::heuristic_constants::tcp_flags;
+        use super::heuristic_constants::tcp_flags;
         if (flags & tcp_flags::XMAS_SCAN) == tcp_flags::XMAS_SCAN {
             return Some("Heuristic: Xmas Scan Detected");
         }
@@ -50,7 +50,7 @@ impl HeuristicEngine {
     ///
     /// Some reason string if suspicious pattern detected, None otherwise
     pub fn check_payload(payload: &[u8]) -> Option<&'static str> {
-        use crate::security::heuristic_constants::payload;
+        use super::heuristic_constants::payload;
         let mut consecutive_nops = 0;
         for &byte in payload {
             if byte == payload::NOP_OPCODE {

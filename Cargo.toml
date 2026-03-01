@@ -1,3 +1,3 @@
 [workspace]
-members = ["kernel", "gui"]
+members = ["kernel", "gui", "benches"]
 resolver = "2"

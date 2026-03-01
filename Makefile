@@ -3,7 +3,9 @@ TAP_DEV := tap0
 HOST_IP := 192.168.100.1
 KERNEL_BIN := target/riscv64gc-unknown-none-elf/release/security-unikernel
 
-.PHONY: all kernel gui run setup_net clean
+RAM_LIMIT := 65536
+
+.PHONY: all kernel gui run setup_net bench check-size clean
 
 all: kernel gui
 
@@ -38,6 +40,27 @@ run: kernel setup_net
 		-kernel $(KERNEL_BIN) \
 		-netdev tap,id=n0,ifname=$(TAP_DEV),script=no,downscript=no \
 		-device virtio-net-device,netdev=n0
+
+# Run criterion benchmarks (host-native, no QEMU required)
+bench:
+	@echo "[*] Running benchmarks..."
+	@cargo bench -p benches
+
+# Verify the kernel static footprint stays within the 64 KB RAM budget.
+# Measures .text + .rodata + .data + .bss and adds a 4 KB stack guard.
+check-size: kernel
+	@size $(KERNEL_BIN) | awk -v limit=$(RAM_LIMIT) \
+	  'NR==2 { \
+	    total = $$1 + $$2 + $$3 + 4096; \
+	    pct = (total / limit) * 100; \
+	    printf "[*] Kernel footprint: %d / %d bytes (%.1f%%)\n", total, limit, pct; \
+	    if (total > limit) { \
+	      printf "FAIL: kernel exceeds %d-byte RAM budget by %d bytes\n", limit, total - limit; \
+	      exit 1 \
+	    } else { \
+	      print "PASS: within budget" \
+	    } \
+	  }'
 
 clean:
 	@cd kernel && cargo clean
