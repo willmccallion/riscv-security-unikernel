@@ -20,7 +20,7 @@ enum Tab {
     /// Main dashboard with statistics and event log.
     Dashboard,
     /// Software-defined networking and firewall configuration.
-    SDN,
+    Sdn,
     /// eBPF program editor and compiler.
     Ebpf,
 }
@@ -564,7 +564,7 @@ impl eframe::App for AegisApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "DASHBOARD");
-                ui.selectable_value(&mut self.selected_tab, Tab::SDN, "SDN / FIREWALL");
+                ui.selectable_value(&mut self.selected_tab, Tab::Sdn, "SDN / FIREWALL");
                 ui.selectable_value(&mut self.selected_tab, Tab::Ebpf, "eBPF STUDIO");
             });
             ui.add_space(4.0);
@@ -572,7 +572,7 @@ impl eframe::App for AegisApp {
 
         egui::CentralPanel::default().show(ctx, |ui| match self.selected_tab {
             Tab::Dashboard => self.ui_dashboard(ui),
-            Tab::SDN => self.ui_sdn(ui),
+            Tab::Sdn => self.ui_sdn(ui),
             Tab::Ebpf => self.ui_ebpf(ui),
         });
     }

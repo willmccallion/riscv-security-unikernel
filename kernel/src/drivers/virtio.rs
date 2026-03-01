@@ -144,13 +144,12 @@ impl VirtioNet {
         let mut addr = VIRTIO_START;
         while addr <= VIRTIO_END {
             unsafe {
-                if read_volatile((addr) as *const u32) == VIRTIO_MAGIC {
-                    if read_volatile((addr + 8) as *const u32) == DEVICE_ID_NET {
-                        if read_volatile((addr + 4) as *const u32) == DEVICE_VERSION_1 {
-                            ACTIVE_BASE = addr;
-                            break;
-                        }
-                    }
+                if read_volatile((addr) as *const u32) == VIRTIO_MAGIC
+                    && read_volatile((addr + 8) as *const u32) == DEVICE_ID_NET
+                    && read_volatile((addr + 4) as *const u32) == DEVICE_VERSION_1
+                {
+                    ACTIVE_BASE = addr;
+                    break;
                 }
             }
             addr += 0x1000;

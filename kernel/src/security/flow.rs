@@ -93,6 +93,7 @@ impl FlowTable {
     /// # Returns
     ///
     /// True if a new flow was created, false if an existing flow was updated
+    #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
         src_ip: &[u8],

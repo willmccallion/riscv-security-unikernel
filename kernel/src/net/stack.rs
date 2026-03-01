@@ -68,7 +68,7 @@ fn handle_arp(packet: &mut [u8]) {
     if hw_type != 0 || ArpOpcode::from_u16(opcode as u16) != Some(ArpOpcode::Request) {
         return;
     }
-    if &packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
+    if packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
         return;
     }
 
@@ -126,7 +126,7 @@ fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
     let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
     let protocol = packet[ipv4::PROTOCOL_OFFSET];
 
-    if &packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
+    if packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
         return None;
     }
 

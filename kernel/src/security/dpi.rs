@@ -237,9 +237,7 @@ impl DynamicRules {
     /// * `pattern` - Byte pattern to add
     pub fn add(&mut self, pattern: &[u8]) {
         if self.count < 8 && pattern.len() <= 32 {
-            for i in 0..pattern.len() {
-                self.patterns[self.count][i] = pattern[i];
-            }
+            self.patterns[self.count][..pattern.len()].copy_from_slice(pattern);
             self.lengths[self.count] = pattern.len();
             self.count += 1;
         }

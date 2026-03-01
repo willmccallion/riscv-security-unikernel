@@ -245,10 +245,9 @@ pub extern "C" fn kmain() -> ! {
                         protocol,
                         packet.len(),
                         now,
-                    ) {
-                        if (now & FLOW_LOG_SAMPLE_MASK) == 0 {
-                            send_alert(&src_ip, AlertReason::Flow.as_u8(), packet);
-                        }
+                    ) && (now & FLOW_LOG_SAMPLE_MASK) == 0
+                    {
+                        send_alert(&src_ip, AlertReason::Flow.as_u8(), packet);
                     }
 
                     if packet.len() >= SPOOF_DETECTION_MIN_LEN

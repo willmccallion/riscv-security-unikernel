@@ -1,112 +1,134 @@
 # RISC-V Security Unikernel
 
-This project is a high-performance **Network Security Unikernel** written in Rust. It runs as a bare-metal application in Ring 0 on RISC-V architecture, functioning as a programmable edge security appliance similar to Cloudflare's data plane, but running directly on hardware without a host operating system.
+A bare-metal **network security appliance** written in Rust, running in Ring 0 on RISC-V without a host OS. The entire system — stateful firewall, DDoS mitigation, deep packet inspection, and a programmable eBPF VM — is engineered to fit within a strict **64 KB RAM** constraint.
 
-It combines **Stateful Firewalling**, **DDoS mitigation**, **Deep Packet Inspection (DPI)**, and **eBPF programmability** into a single, specialized kernel image designed for sub-millisecond latency.
-
-## Engineering Challenge: The 64KB Constraint
-
-A primary goal of this project was to engineer a fully functional network stack and security suite within a strict **64KB RAM** limit. This constraint required aggressive optimization of memory usage and data structures:
-
-*   **Zero-Allocation Runtime:** The kernel operates almost entirely without heap allocation during the hot path. All critical data structures are statically allocated or stack-allocated to ensure deterministic memory usage.
-*   **Tuned Buffers:** The VirtIO DMA ring buffers were manually tuned to 1536 bytes (exact Ethernet MTU + headers) to prevent memory fragmentation and overflow.
-*   **Probabilistic Data Structures:** Instead of storing full connection tables for DDoS tracking, the kernel uses a **Count-Min Sketch** to track flow frequency with O(1) space complexity.
-*   **Static Flow Table:** To achieve stateful inspection without dynamic allocation, the kernel utilizes a fixed-size, packed flow table that fits exactly into the remaining memory, utilizing nearly 100% of available RAM.
-*   **Compact DPI:** The Aho-Corasick automaton uses a reduced node set to fit complex signature matching within the remaining memory pages.
-
-## System Architecture
-
-The system operates as a **Unikernel**, meaning the operating system and the application are compiled into a single binary. It interacts directly with the hardware via MMIO.
-
-```text
-[ Traffic Generator (Rust GUI) ]
-           |  (UDP Telemetry)
-           v
-      [ TAP Interface ]
-           |
-           v
-[ VirtIO Driver (Zero-Copy DMA) ]
-           |
-           v
- [ SECURITY UNIKERNEL (Ring 0) ]
-    |-- 1. Count-Min Sketch (Probabilistic DDoS Detection)
-    |-- 2. Flow Tracker (Stateful Connection Tracking)
-    |-- 3. Heuristic Engine (Behavioral Analysis)
-    |-- 4. Token Bucket (Traffic Shaping)
-    |-- 5. eBPF VM (Dynamic Packet Filtering)
-    |-- 6. DPI Engine (Aho-Corasick Payload Scanning)
+```
+[ GUI Control Plane (egui) ]  ←──UDP telemetry──→  [ RISC-V Kernel ]
+         ↕ SDN / eBPF push                              64 KB RAM
+    Traffic Generator                              VirtIO zero-copy DMA
 ```
 
-### Packet Processing Pipeline
+---
 
-The kernel utilizes a custom zero-copy driver to process packets directly from the VirtIO RX ring buffer. The processing pipeline consists of six stages:
+## The 64 KB Engineering Challenge
 
-1.  **Traffic Analysis (Count-Min Sketch):** Tracks the frequency of source IP addresses using hashing functions. This allows the kernel to identify "heavy hitters" (DDoS sources) without maintaining a state table for every IP.
-2.  **Stateful Flow Tracking:** A static table tracks active connections (5-tuple), allowing the kernel to monitor flow volume and detect new connections versus established traffic.
-3.  **Heuristic Analysis:** The engine scans for behavioral anomalies, such as TCP Xmas scans (invalid flag combinations) or NOP sleds (shellcode patterns) in the payload.
-4.  **Rate Limiting & Mitigation:**
-    *   **Token Bucket:** A global rate limiter controls total throughput to prevent resource exhaustion.
-    *   **Penalty Box:** IP addresses exceeding the packet-per-second threshold are temporarily banned.
-5.  **eBPF Packet Filtering:** A custom virtual machine executes bytecode injected at runtime. This allows for dynamic, programmable packet filtering without recompiling or rebooting the kernel.
-6.  **Deep Packet Inspection (DPI):** An Aho-Corasick automaton scans packet payloads for known malicious signatures (e.g., SQL injection patterns, script tags) in a single pass.
+Fitting a production-grade security stack into 64 KB requires every byte to be justified:
+
+| Structure | Size | Technique |
+|---|---|---|
+| Count-Min Sketch (DDoS) | 1,024 B | 4 × 128 × u16 — probabilistic heavy-hitter detection |
+| Flow table (74 entries) | ~3.5 KB | Packed 5-tuple structs, LRU eviction |
+| Aho-Corasick DFA | ~1.5 KB | 128-node trie for multi-pattern payload scan |
+| VirtIO DMA buffers | 3 KB | Tuned to exact Ethernet MTU (1536 B each) |
+| eBPF program slot | 448 B | 64 instructions × 7 bytes |
+| Penalty box | 256 B | 16-entry FIFO ban table |
+| **Hot path allocations** | **0 B** | Zero heap use; all structures statically allocated |
+
+---
+
+## Packet Processing Pipeline
+
+```mermaid
+flowchart TD
+    RX["VirtIO RX Ring<br/>(zero-copy DMA)"]
+    CMS["① Count-Min Sketch<br/>Probabilistic heavy-hitter detection<br/>4 hash functions · O(1) space"]
+    PB["② Penalty Box<br/>16-entry IP ban table<br/>FIFO eviction · 10B cycle timeout"]
+    TB["③ Token Bucket<br/>Global rate cap: 10 k pps<br/>50-token capacity"]
+    FT["④ Flow Tracker<br/>5-tuple stateful table · 74 entries<br/>Tracks packets, bytes, last-seen"]
+    EBPF["⑤ eBPF VM<br/>16 registers · 64-instr limit<br/>Runtime-injected bytecode"]
+    DPI["⑥ Deep Packet Inspection<br/>Aho-Corasick automaton<br/>SQL injection · XSS · NOP sleds · Xmas scan"]
+    PASS["PASS → TX"]
+    DROP["DROP + Alert (UDP 1337)"]
+
+    RX --> CMS
+    CMS -->|heavy hitter| PB
+    CMS -->|clear| TB
+    PB -->|banned| DROP
+    PB -->|clear| TB
+    TB -->|rate exceeded| DROP
+    TB -->|clear| FT
+    FT --> EBPF
+    EBPF -->|ret 0| DROP
+    EBPF -->|ret 1| DPI
+    DPI -->|match| DROP
+    DPI -->|clean| PASS
+```
+
+---
+
+## Security Mechanisms
+
+### Count-Min Sketch — DDoS Detection
+Tracks packets-per-source-IP using four independent hash functions over a 4×128 counter matrix. The minimum of all four counters gives a probabilistic frequency estimate — no per-IP state needed. Heavy hitters (>100 pps) are evicted to the Penalty Box. Resets every ~1B cycles to drain stale flows.
+
+### Aho-Corasick DPI Engine
+Single-pass payload scanner with failure links — detects all patterns simultaneously in O(n) time regardless of how many signatures are loaded. Built-in patterns: `DROP TABLE`, `<script>`, `eval(`, `UNION SELECT`. Additional signatures injected at runtime via UDP management commands without rebooting.
+
+### eBPF Virtual Machine
+A custom 16-register bytecode VM. Supports load, move, compare, bitwise, and conditional jump opcodes. Programs are uploaded at runtime through the GUI's eBPF Studio. A 1,000-cycle hard limit prevents runaway filters from stalling the packet loop.
+
+### Heuristic Engine
+Detects TCP Xmas scans (FIN|URG|PSH), null scans (no flags), and NOP sleds (four consecutive `0x90` bytes) — catches port-scanning tools and shellcode-carrying payloads that signature matching would miss.
+
+---
 
 ## Control Plane (GUI)
 
-The project includes a companion desktop application written in Rust (`eframe`/`egui`). This application acts as the management plane, communicating with the kernel via a custom binary UDP protocol.
+A companion desktop application (`egui`/`eframe`) communicates with the kernel over a custom binary UDP protocol on port 1337.
 
-*   **Dashboard:** Visualizes real-time throughput, active flows, drop rates, and specific alert logs.
-*   **Traffic Generator:** Simulates normal HTTP traffic, malware injection, and volumetric DDoS attacks to validate kernel defenses.
-*   **SDN Controller:** Pushes new firewall rules (port blocking) and DPI signatures to the kernel at runtime.
-*   **eBPF Studio:** Compiles and uploads custom assembly instructions to the kernel's VM.
+```mermaid
+flowchart LR
+    subgraph GUI["GUI (egui / tokio)"]
+        D[Dashboard<br/>live stats + event log]
+        S[SDN Controller<br/>firewall rules · DPI patterns]
+        E[eBPF Studio<br/>assemble · upload · run]
+        T[Traffic Generator<br/>Normal · DDoS · Live mix]
+    end
+
+    subgraph Kernel["Kernel (RISC-V / 64 KB)"]
+        TLM["Telemetry broadcast<br/>UDP :8888 · 64-byte frames"]
+        MGT["Management listener<br/>UDP :1337"]
+    end
+
+    D <-->|stats| TLM
+    S & E -->|rules / bytecode| MGT
+    T -->|spoofed packets| Kernel
+```
+
+**Telemetry frame (64 bytes):** passed/DDoS-drop/firewall-block/malware-detect/eBPF-reject/heuristic-reject/RAM-used/active-flows — all as big-endian u64.
+
+**Traffic modes:** Normal (80–120 pps), DDoS (1,200 pps from 50 bot IPs), Live (mixed HTTP + periodic injection bursts).
+
+---
 
 ## Technical Specifications
 
-*   **Target Architecture:** RISC-V 64-bit (`riscv64gc-unknown-none-elf`)
-*   **Memory Limit:** 64KB (Defined in linker script `memory.x`)
-*   **Language:** Rust (`no_std`, `no_main`)
-*   **Network Driver:** VirtIO Net (Legacy) with DMA
-*   **Concurrency:** Single-threaded event loop with non-blocking I/O
+| Property | Value |
+|---|---|
+| Target ISA | RV64GC (`riscv64gc-unknown-none-elf`) |
+| RAM budget | 64 KB |
+| Language | Rust `no_std` / `no_main` |
+| Network driver | VirtIO-Net legacy, zero-copy DMA |
+| Concurrency model | Single-threaded polling loop |
+| Build profile | `-Oz`, LTO, `codegen-units=1`, stripped |
 
-## Prerequisites
+---
 
-*   **Rust Nightly Toolchain:** Required for inline assembly and bare-metal features.
-*   **QEMU:** `qemu-system-riscv64` for emulation.
-*   **Make:** For build automation.
-*   **IPRoute2:** For TAP interface configuration (requires `sudo`).
+## Running
 
-## Usage
-
-### 1. Network Setup & Kernel Launch
-The Makefile handles the creation of the `tap0` network interface and launches QEMU.
+**Requirements:** Rust nightly · `qemu-system-riscv64` · `iproute2` · `make`
 
 ```bash
+# Build kernel + configure TAP interface + launch QEMU
 make run
-```
-*Note: This command requires `sudo` privileges to configure the TAP interface. To exit QEMU, press `Ctrl+A`, then `X`.*
 
-### 2. Launch Control Plane
-Open a separate terminal window to run the GUI.
-
-```bash
+# Launch GUI (separate terminal)
 make gui
 ```
 
-### 3. Operation
-Once both components are running:
-1.  Use the **Traffic Generator** in the GUI to start sending packets to the kernel.
-2.  Observe the **Dashboard** for real-time statistics, including active flow counts.
-3.  Navigate to the **SDN** or **eBPF** tabs to inject rules and observe immediate effects on traffic processing.
+1. In the GUI, open the **Traffic Generator** tab and click **Start Normal** or **Start DDoS**
+2. Watch the **Dashboard** for live throughput, drop reasons, and flow counts
+3. Use the **SDN** tab to inject firewall rules or DPI signatures at runtime
+4. Use the **eBPF Studio** to write and upload custom bytecode filters
 
-## Project Structure
-
-*   **kernel/**
-    *   `src/core/`: Memory allocator and panic handlers.
-    *   `src/drivers/`: VirtIO network and UART drivers.
-    *   `src/net/`: Network stack implementation (Ethernet, ARP, IPv4, TCP/UDP).
-    *   `src/security/`: Implementation of CMS, Flow Tracker, Heuristics, DPI, and the VM.
-    *   `memory.x`: Linker script defining the 64KB memory layout.
-*   **gui/**
-    *   `src/main.rs`: Entry point and initialization.
-    *   `src/app.rs`: UI logic and rendering.
-    *   `src/traffic.rs`: Async traffic generation and telemetry handling.
-*   **Makefile**: Build and deployment automation.
+Press `Ctrl+A X` to exit QEMU.
