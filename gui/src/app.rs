@@ -51,7 +51,15 @@ pub struct AegisApp {
     sdn_sig: String,
     /// Input field for eBPF program source code.
     ebpf_code: String,
+    /// List of currently blocked ports.
+    blocked_ports: Vec<u16>,
+    /// List of active DPI signatures.
+    dpi_signatures: Vec<String>,
+    /// List of uploaded eBPF programs.
+    ebpf_programs: Vec<String>,
 
+    /// Current log display mode.
+    log_mode: LogMode,
     /// Whether the event log is paused (not auto-scrolling).
     log_paused: bool,
     /// Currently selected log entry for detailed inspection.
@@ -83,6 +91,15 @@ impl AegisApp {
             sdn_port: String::new(),
             sdn_sig: String::new(),
             ebpf_code: "BLOCK TCP DST 80".to_string(),
+            blocked_ports: vec![23],
+            dpi_signatures: vec![
+                "DROP TABLE".to_string(),
+                "<script>".to_string(),
+                "eval(".to_string(),
+                "UNION SELECT".to_string(),
+            ],
+            ebpf_programs: Vec::new(),
+            log_mode: LogMode::Alerts,
             log_paused: false,
             selected_log: None,
         }
@@ -208,6 +225,9 @@ impl AegisApp {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("LIVE EVENT LOG").strong());
+            ui.add_space(10.0);
+            ui.selectable_value(&mut self.log_mode, LogMode::Alerts, "ALERTS ONLY");
+            ui.selectable_value(&mut self.log_mode, LogMode::All, "ALL PACKETS");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.log_paused {
                     if ui.button("RESUME").clicked() {
@@ -225,6 +245,9 @@ impl AegisApp {
             .min_scrolled_height(150.0)
             .show(ui, |ui| {
                 for entry in self.logs.iter().rev() {
+                    if self.log_mode == LogMode::Alerts && entry.msg.starts_with("[PASS]") {
+                        continue;
+                    }
                     let text = format!("[T+{:.1}s] {}", entry.timestamp, entry.msg);
                     if ui
                         .selectable_label(false, egui::RichText::new(text).color(entry.color))
@@ -384,53 +407,72 @@ impl AegisApp {
         ui.heading("Firewall & SDN Rules");
         ui.add_space(10.0);
 
-        ui.group(|ui| {
-            ui.label("Firewall Rule (Block Port)");
-            ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.sdn_port);
-                if let Ok(port) = self.sdn_port.parse::<u16>()
-                    && ui.button("BLOCK PORT").clicked()
-                {
-                    let mut packet = vec![0x01];
-                    packet.extend_from_slice(&port.to_be_bytes());
-                    self.send(GuiCommand::SendBytes(packet));
-
-                    let entry = LogEntry {
-                        timestamp: self.start_time.elapsed().as_secs_f64(),
-                        src_ip: "Localhost".to_string(),
-                        msg: format!("SDN: Blocked Port {}", port),
-                        payload: vec![],
-                        dst_port: 0,
-                        color: egui::Color32::YELLOW,
-                    };
-                    self.logs.push_front(entry);
-                }
+        ui.columns(2, |cols| {
+            // Left column: Firewall
+            cols[0].group(|ui| {
+                ui.label(egui::RichText::new("Firewall — Blocked Ports").strong());
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.sdn_port);
+                    if ui.button("BLOCK PORT").clicked() {
+                        if let Ok(port) = self.sdn_port.trim().parse::<u16>() {
+                            // Kernel mgmt packet: 8 bytes padding + msg_type (0x01) + 2 byte port
+                            let mut packet = vec![0u8; 8];
+                            packet.push(0x01);
+                            packet.extend_from_slice(&port.to_be_bytes());
+                            self.send(GuiCommand::SendBytes(packet));
+                            if !self.blocked_ports.contains(&port) {
+                                self.blocked_ports.push(port);
+                            }
+                            self.sdn_port.clear();
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(5.0);
+                egui::ScrollArea::vertical().id_source("fw_list").max_height(200.0).show(ui, |ui| {
+                    for &port in &self.blocked_ports {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(egui::Color32::RED, "BLOCK");
+                            ui.label(format!("TCP/UDP dst:{}", port));
+                        });
+                    }
+                });
             });
-        });
 
-        ui.add_space(10.0);
-
-        ui.group(|ui| {
-            ui.label("DPI Signature (Deep Packet Inspection)");
-            ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.sdn_sig);
-                if ui.button("UPLOAD SIGNATURE").clicked() {
-                    let mut packet = vec![0x02];
-                    let bytes = self.sdn_sig.as_bytes();
-                    packet.push(bytes.len() as u8);
-                    packet.extend_from_slice(bytes);
-                    self.send(GuiCommand::SendBytes(packet));
-
-                    let entry = LogEntry {
-                        timestamp: self.start_time.elapsed().as_secs_f64(),
-                        src_ip: "Localhost".to_string(),
-                        msg: format!("SDN: Added Sig '{}'", self.sdn_sig),
-                        payload: vec![],
-                        dst_port: 0,
-                        color: egui::Color32::YELLOW,
-                    };
-                    self.logs.push_front(entry);
-                }
+            // Right column: DPI signatures
+            cols[1].group(|ui| {
+                ui.label(egui::RichText::new("DPI — Signature Rules").strong());
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.sdn_sig);
+                    if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
+                        // Kernel mgmt packet: 8 bytes padding + msg_type (0x02) + len byte + pattern
+                        let mut packet = vec![0u8; 8];
+                        packet.push(0x02);
+                        let bytes = self.sdn_sig.as_bytes();
+                        packet.push(bytes.len() as u8);
+                        packet.extend_from_slice(bytes);
+                        self.send(GuiCommand::SendBytes(packet));
+                        let sig = self.sdn_sig.clone();
+                        if !self.dpi_signatures.contains(&sig) {
+                            self.dpi_signatures.push(sig);
+                        }
+                        self.sdn_sig.clear();
+                    }
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(5.0);
+                egui::ScrollArea::vertical().id_source("dpi_list").max_height(200.0).show(ui, |ui| {
+                    for sig in &self.dpi_signatures {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
+                            ui.monospace(format!("\"{}\"", sig));
+                        });
+                    }
+                });
             });
         });
     }
@@ -448,46 +490,72 @@ impl AegisApp {
         ui.label("Inject custom assembly into the packet processing pipeline.");
         ui.add_space(10.0);
 
-        ui.horizontal(|ui| {
-            if ui.button("Preset: Block TCP Port 80").clicked() {
-                self.ebpf_code = "BLOCK TCP DST 80".to_string();
-            }
-            if ui.button("Preset: Block All Traffic").clicked() {
-                self.ebpf_code = "DROP ALL".to_string();
-            }
+        ui.columns(2, |cols| {
+            // Left: editor
+            cols[0].group(|ui| {
+                ui.label(egui::RichText::new("Program Editor").strong());
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Preset: Block TCP Port 80").clicked() {
+                        self.ebpf_code = "BLOCK TCP DST 80".to_string();
+                    }
+                    if ui.button("Preset: Block All").clicked() {
+                        self.ebpf_code = "DROP ALL".to_string();
+                    }
+                });
+                ui.add_space(5.0);
+                ui.add(egui::TextEdit::multiline(&mut self.ebpf_code).code_editor().desired_rows(6));
+                ui.add_space(5.0);
+                if ui.button("COMPILE & UPLOAD").clicked() {
+                    if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
+                        // Kernel mgmt packet: 8 bytes padding + msg_type (0x03) + count byte + instructions
+                        let mut packet = vec![0u8; 8];
+                        packet.push(0x03);
+                        packet.push((bytecode.len() / 7) as u8);
+                        packet.extend_from_slice(&bytecode);
+                        self.send(GuiCommand::SendBytes(packet));
+                        let prog = self.ebpf_code.trim().to_string();
+                        self.ebpf_programs.push(prog);
+                    } else {
+                        let entry = LogEntry {
+                            timestamp: self.start_time.elapsed().as_secs_f64(),
+                            src_ip: "Localhost".to_string(),
+                            msg: "eBPF: Compilation Failed".to_string(),
+                            payload: vec![],
+                            dst_port: 0,
+                            color: egui::Color32::RED,
+                        };
+                        self.logs.push_front(entry);
+                    }
+                }
+            });
+
+            // Right: active programs list
+            cols[1].group(|ui| {
+                ui.label(egui::RichText::new("Active Programs").strong());
+                ui.add_space(5.0);
+                ui.separator();
+                ui.add_space(5.0);
+                if self.ebpf_programs.is_empty() {
+                    ui.label(egui::RichText::new("No programs loaded").color(egui::Color32::GRAY));
+                } else {
+                    egui::ScrollArea::vertical().id_source("ebpf_list").max_height(200.0).show(ui, |ui| {
+                        for (i, prog) in self.ebpf_programs.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::LIGHT_BLUE, format!("[{}]", i + 1));
+                                ui.monospace(prog);
+                            });
+                        }
+                    });
+                }
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(5.0);
+                ui.label(egui::RichText::new("Syntax Reference").color(egui::Color32::GRAY).size(11.0));
+                ui.monospace("BLOCK TCP DST <port>");
+                ui.monospace("DROP ALL");
+            });
         });
-        ui.add_space(5.0);
-
-        ui.text_edit_multiline(&mut self.ebpf_code);
-
-        if ui.button("COMPILE & UPLOAD").clicked() {
-            if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
-                let mut packet = vec![0x03];
-                packet.push((bytecode.len() / 7) as u8);
-                packet.extend_from_slice(&bytecode);
-                self.send(GuiCommand::SendBytes(packet));
-
-                let entry = LogEntry {
-                    timestamp: self.start_time.elapsed().as_secs_f64(),
-                    src_ip: "Localhost".to_string(),
-                    msg: "eBPF: Program Uploaded".to_string(),
-                    payload: vec![],
-                    dst_port: 0,
-                    color: egui::Color32::LIGHT_BLUE,
-                };
-                self.logs.push_front(entry);
-            } else {
-                let entry = LogEntry {
-                    timestamp: self.start_time.elapsed().as_secs_f64(),
-                    src_ip: "Localhost".to_string(),
-                    msg: "eBPF: Compilation Failed".to_string(),
-                    payload: vec![],
-                    dst_port: 0,
-                    color: egui::Color32::RED,
-                };
-                self.logs.push_front(entry);
-            }
-        }
     }
 }
 

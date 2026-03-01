@@ -382,11 +382,14 @@ pub extern "C" fn kmain() -> ! {
                         if engine.fw.is_blocked(dst_port) {
                             stats[2] += 1;
                             send_alert(&src_ip, AlertReason::Firewall.as_u8(), payload);
+                            NetDevice::recycle_rx_buffer();
+                            continue;
                         } else if engine.ac.scan(payload) || engine.dyn_rules.check(payload) {
                             stats[3] += 1;
                             send_alert(&src_ip, AlertReason::Malware.as_u8(), payload);
                         } else {
                             stats[0] += 1;
+                            send_alert(&src_ip, AlertReason::Pass.as_u8(), payload);
                         }
                     }
                 }

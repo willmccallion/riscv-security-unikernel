@@ -80,6 +80,15 @@ pub enum TrafficMode {
     Live,
 }
 
+/// Log display mode.
+#[derive(Clone, Copy, PartialEq)]
+pub enum LogMode {
+    /// Show only intercepted/blocked packets.
+    Alerts,
+    /// Show all packets including allowed ones.
+    All,
+}
+
 /// Commands that can be sent from the GUI to the background network task.
 pub enum GuiCommand {
     /// Change the traffic generation mode.

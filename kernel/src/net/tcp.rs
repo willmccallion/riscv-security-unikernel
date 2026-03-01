@@ -80,9 +80,6 @@ impl TcpHeader {
     /// Some tuple of (src_port, dst_port) in host byte order if the header
     /// is valid, None otherwise
     pub fn extract_ports(data: &[u8]) -> Option<(u16, u16)> {
-        if data.len() < tcp_consts::MIN_HEADER_SIZE {
-            return None;
-        }
         if data.len() < tcp_consts::DST_PORT_OFFSET + tcp_consts::PORT_SIZE {
             return None;
         }
@@ -90,6 +87,6 @@ impl TcpHeader {
             | (data[tcp_consts::SRC_PORT_OFFSET + 1] as u16);
         let dst_port = ((data[tcp_consts::DST_PORT_OFFSET] as u16) << 8)
             | (data[tcp_consts::DST_PORT_OFFSET + 1] as u16);
-        Some((u16::from_be(src_port), u16::from_be(dst_port)))
+        Some((src_port, dst_port))
     }
 }

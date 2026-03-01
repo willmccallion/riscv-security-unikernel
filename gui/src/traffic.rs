@@ -35,6 +35,7 @@ pub async fn start_background_task(
     mut cmd_rx: UnboundedReceiver<GuiCommand>,
 ) {
     let socket = UdpSocket::bind(LISTEN_ADDR).await.unwrap();
+    let alert_socket = UdpSocket::bind("0.0.0.0:1337").await.unwrap();
 
     let mut socket_pool = Vec::new();
     for _ in 0..50 {
@@ -42,7 +43,8 @@ pub async fn start_background_task(
         socket_pool.push(sock);
     }
 
-    let mut buf = [0u8; 1024];
+    let mut buf = vec![0u8; 1024];
+    let mut alert_buf = vec![0u8; 1024];
     let mut mode = TrafficMode::Idle;
     let start_time = Instant::now();
 
@@ -100,6 +102,13 @@ pub async fn start_background_task(
                         }
                     }
                 } else if data[0] == 0x02 {
+                    let msg = parse_alert(data);
+                    let _ = log_tx.send(msg);
+                }
+            }
+            Ok((len, _)) = alert_socket.recv_from(&mut alert_buf) => {
+                let data = &alert_buf[..len];
+                if data[0] == 0x02 {
                     let msg = parse_alert(data);
                     let _ = log_tx.send(msg);
                 }
@@ -310,6 +319,10 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         6 => (
             format!("[FLOW] New Connection from {}", ip),
             egui::Color32::LIGHT_BLUE,
+        ),
+        7 => (
+            format!("[PASS] Allowed from {}", ip),
+            egui::Color32::from_gray(140),
         ),
         _ => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };

@@ -12,7 +12,7 @@ all: kernel gui
 # kernel (RISC-V)
 kernel:
 	@echo "[*] Building Kernel (RISC-V)..."
-	@cd kernel && cargo build --release
+	@cd kernel && cargo build --release --target riscv64gc-unknown-none-elf
 
 # GUI (Host)
 gui:
@@ -39,7 +39,8 @@ run: kernel setup_net
 		-nographic \
 		-kernel $(KERNEL_BIN) \
 		-netdev tap,id=n0,ifname=$(TAP_DEV),script=no,downscript=no \
-		-device virtio-net-device,netdev=n0
+		-device virtio-net-device,netdev=n0 \
+		-echr 0x02
 
 # Run criterion benchmarks (host-native, no QEMU required)
 bench:

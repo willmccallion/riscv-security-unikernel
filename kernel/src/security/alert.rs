@@ -22,6 +22,8 @@ pub enum AlertReason {
     Heuristic = 5,
     /// New network flow created.
     Flow = 6,
+    /// Packet passed all security checks.
+    Pass = 7,
 }
 
 impl AlertReason {
