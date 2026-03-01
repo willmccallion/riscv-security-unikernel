@@ -84,6 +84,14 @@ Detects TCP Xmas scans (FIN|URG|PSH), null scans (no flags), and NOP sleds (four
 
 ---
 
+## Dashboard
+
+![Security Appliance Dashboard](assets/gui.png)
+
+The dashboard during a live simulation — **8.2k PPS** throughput, a DDoS wave (red) being absorbed while legitimate traffic (green) continues uninterrupted, and real-time malware signature alerts in the event log.
+
+---
+
 ## Control Plane (GUI)
 
 A companion desktop application (`egui`/`eframe`) communicates with the kernel over a custom binary UDP protocol on port 1337.
@@ -181,4 +189,4 @@ make gui
 3. Use the **SDN** tab to inject firewall rules or DPI signatures at runtime
 4. Use the **eBPF Studio** to write and upload custom bytecode filters
 
-Press `Ctrl+A X` to exit QEMU.
+Press `Ctrl+B X` to exit QEMU.
