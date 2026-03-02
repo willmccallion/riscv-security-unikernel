@@ -1,3 +1,6 @@
 [workspace]
 members = ["kernel", "gui", "benches"]
 resolver = "2"
+
+[workspace.package]
+license = "MIT OR Apache-2.0"
