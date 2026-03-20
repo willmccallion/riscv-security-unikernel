@@ -162,7 +162,7 @@ impl CountMinSketch {
     ///
     /// Called periodically to clear the sketch for a new measurement window.
     pub fn reset(&mut self) {
-        for row in self.matrix.iter_mut() {
+        for row in &mut self.matrix {
             for val in row.iter_mut() {
                 *val = 0;
             }
@@ -233,6 +233,7 @@ impl TokenBucket {
 ///
 /// Current CPU cycle count
 fn get_time() -> usize {
+    // SAFETY: csrr reads the mcycle CSR, a hardware counter register always available in M-mode on RISC-V.
     #[cfg(target_arch = "riscv64")]
     unsafe {
         let c: usize;

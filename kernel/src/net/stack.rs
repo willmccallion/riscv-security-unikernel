@@ -205,7 +205,9 @@ fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
 /// * `offset` - Byte offset to the TCP header
 /// * `src_ip` - Source IP address for cookie generation
 fn handle_tcp(packet: &mut [u8], offset: usize, src_ip: &[u8]) {
-    let tcp = unsafe { &*(packet.as_ptr().add(offset) as *const TcpHeader) };
+    // SAFETY: The caller has verified packet.len() >= offset + size_of::<TcpHeader>(),
+    // and the packet slice is valid for reads.
+    let tcp = unsafe { &*(packet.as_ptr().add(offset).cast::<TcpHeader>()) };
     let flags = u16::from_be(tcp.data_offset_flags) & 0x003F;
 
     if (flags & TCP_SYN) != 0 {
@@ -255,7 +257,9 @@ fn send_tcp_reply_inplace(packet: &mut [u8], tcp_offset: usize, seq: u32, ack: u
     let orig_dst_port;
     let orig_src_port;
     {
-        let orig_tcp = unsafe { &*(packet.as_ptr().add(tcp_offset) as *const TcpHeader) };
+        // SAFETY: The caller has verified packet.len() >= tcp_offset + size_of::<TcpHeader>(),
+        // and the packet slice is valid for reads.
+        let orig_tcp = unsafe { &*(packet.as_ptr().add(tcp_offset).cast::<TcpHeader>()) };
         orig_dst_port = orig_tcp.dst_port;
         orig_src_port = orig_tcp.src_port;
     }
@@ -268,8 +272,10 @@ fn send_tcp_reply_inplace(packet: &mut [u8], tcp_offset: usize, seq: u32, ack: u
         flags,
     );
 
+    // SAFETY: packet.len() >= tcp_offset + size_of::<TcpHeader>() was verified by the caller,
+    // and the packet slice is valid for writes.
     unsafe {
-        let ptr = packet.as_mut_ptr().add(tcp_offset) as *mut TcpHeader;
+        let ptr = packet.as_mut_ptr().add(tcp_offset).cast::<TcpHeader>();
         *ptr = reply_tcp;
     }
 

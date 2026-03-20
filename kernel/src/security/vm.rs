@@ -136,6 +136,9 @@ impl VM {
         const MAX_CYCLES: usize = 1000;
 
         while self.pc < program.len() && cycles < MAX_CYCLES {
+            // SAFETY: The while condition `self.pc < program.len()` guarantees
+            // the index is in-bounds. get_unchecked avoids a redundant bounds
+            // check on every instruction fetch in the hot execution loop.
             let inst = unsafe { *program.get_unchecked(self.pc) };
             self.pc += 1;
             cycles += 1;
@@ -186,15 +189,11 @@ impl VM {
                 0x0A => {
                     self.pc = inst.imm as usize;
                 }
-                0x0B => {
-                    if self.flag {
-                        self.pc = inst.imm as usize;
-                    }
+                0x0B if self.flag => {
+                    self.pc = inst.imm as usize;
                 }
-                0x0C => {
-                    if !self.flag {
-                        self.pc = inst.imm as usize;
-                    }
+                0x0C if !self.flag => {
+                    self.pc = inst.imm as usize;
                 }
                 0x0D => {
                     return inst.imm as u64;

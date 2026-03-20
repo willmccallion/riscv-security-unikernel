@@ -25,7 +25,7 @@ impl Uart {
     ///
     /// The driver is initialized to use the standard QEMU/RISC-V
     /// UART base address.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             base: UART_BASE as *mut u8,
         }
@@ -37,6 +37,8 @@ impl Uart {
     ///
     /// * `byte` - Byte to transmit
     pub fn write_byte(&self, byte: u8) {
+        // SAFETY: UART_BASE is a valid MMIO address for this hardware platform;
+        // the THR offset is the standard transmit holding register offset.
         unsafe {
             self.base.offset(THR).write_volatile(byte);
         }

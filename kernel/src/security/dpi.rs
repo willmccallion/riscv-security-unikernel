@@ -110,7 +110,7 @@ impl AhoCorasick {
     /// This must be called after all patterns are inserted and before
     /// using `scan()`. Constructs failure links using BFS traversal to
     /// enable efficient pattern matching with overlaps.
-    pub fn build(&mut self) {
+    pub const fn build(&mut self) {
         let mut head = 0;
         let mut tail = 0;
 

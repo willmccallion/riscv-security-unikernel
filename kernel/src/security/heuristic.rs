@@ -24,7 +24,7 @@ impl HeuristicEngine {
     /// # Returns
     ///
     /// Some reason string if suspicious flags detected, None otherwise
-    pub fn check_tcp_flags(flags: u8) -> Option<&'static str> {
+    pub const fn check_tcp_flags(flags: u8) -> Option<&'static str> {
         use super::heuristic_constants::tcp_flags;
         if (flags & tcp_flags::XMAS_SCAN) == tcp_flags::XMAS_SCAN {
             return Some("Heuristic: Xmas Scan Detected");

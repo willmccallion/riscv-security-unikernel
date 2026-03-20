@@ -1,7 +1,9 @@
-[lints]
-workspace = true
-
 [lints.rust]
+# ── Inherited from workspace ───────────────────────────────────────────────────
+unused_must_use = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+# ── Kernel-specific ────────────────────────────────────────────────────────────
 # All public items must carry doc comments.
 missing_docs = "warn"
 # Types without Debug are harder to inspect; derive it unless repr/packed prevents it.
@@ -64,6 +66,14 @@ option_if_let_else = "allow"
 # Paths like security::firewall::FirewallState repeat the parent module name
 # by design — this is standard Rust module organisation.
 module_name_repetitions = "allow"
+
+# "VirtIO" and "DDoS" are proper nouns, not Rust identifiers; this lint fires
+# too broadly across the entire codebase.
+doc_markdown = "allow"
+
+# VM::execute is a hot-path instruction dispatch loop where forcing inlining
+# is intentional.
+inline_always = "allow"
 
 [package]
 name = "security-unikernel"

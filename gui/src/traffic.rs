@@ -4,7 +4,7 @@
 //! receiving telemetry data and security alerts, sending management commands,
 //! and generating test traffic patterns for security testing.
 
-use crate::types::*;
+use crate::types::{GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TARGET_ADDR, TrafficMode};
 use eframe::egui;
 use rand::Rng;
 use rand::SeedableRng;
@@ -128,7 +128,7 @@ pub async fn start_background_task(
                             let entry = LogEntry {
                                 timestamp: 0.0,
                                 src_ip: "Localhost".to_string(),
-                                msg: format!("MANUAL BAN: {}", ip_str),
+                                msg: format!("MANUAL BAN: {ip_str}"),
                                 payload: vec![],
                                 dst_port: 0,
                                 color: egui::Color32::from_rgb(255, 0, 255),
@@ -138,7 +138,7 @@ pub async fn start_background_task(
                     }
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(1)) => {
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
                 match mode {
                     TrafficMode::Normal => {
                         let count = rng.gen_range(80..=120);
@@ -212,7 +212,7 @@ pub async fn start_background_task(
                             }
                         }
                     }
-                    _ => {}
+                    TrafficMode::Idle => {}
                 }
             }
         }
@@ -274,54 +274,42 @@ fn parse_alert(data: &[u8]) -> LogEntry {
     };
 
     let dst_port = match reason {
-        1 | 4 | 6 => {
-            if payload.len() >= 38 {
-                u16::from_be_bytes([payload[36], payload[37]])
-            } else {
-                0
-            }
-        }
-        2 | 3 | 5 => {
-            if payload.len() >= 4 {
-                u16::from_be_bytes([payload[2], payload[3]])
-            } else {
-                0
-            }
-        }
+        1 | 4 | 6 if payload.len() >= 38 => u16::from_be_bytes([payload[36], payload[37]]),
+        2 | 3 | 5 if payload.len() >= 4 => u16::from_be_bytes([payload[2], payload[3]]),
         _ => 0,
     };
 
     let (msg, color) = match reason {
         1 => (
-            format!("[DDoS] High Volume from {}", ip),
+            format!("[DDoS] High Volume from {ip}"),
             egui::Color32::YELLOW,
         ),
         2 => (
-            format!("[FIREWALL] Blocked Port access from {}", ip),
+            format!("[FIREWALL] Blocked Port access from {ip}"),
             egui::Color32::RED,
         ),
         3 => (
-            format!("[MALWARE] Signature Match from {}", ip),
+            format!("[MALWARE] Signature Match from {ip}"),
             egui::Color32::RED,
         ),
         4 => (
-            format!("[eBPF] Custom Filter Drop from {}", ip),
+            format!("[eBPF] Custom Filter Drop from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
         5 => (
             if !payload.is_empty() && payload[0] == 0x90 {
-                format!("[HEURISTIC] Shellcode Detected from {}", ip)
+                format!("[HEURISTIC] Shellcode Detected from {ip}")
             } else {
-                format!("[HEURISTIC] Anomaly Detected from {}", ip)
+                format!("[HEURISTIC] Anomaly Detected from {ip}")
             },
             egui::Color32::from_rgb(255, 0, 255),
         ),
         6 => (
-            format!("[FLOW] New Connection from {}", ip),
+            format!("[FLOW] New Connection from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
         7 => (
-            format!("[PASS] Allowed from {}", ip),
+            format!("[PASS] Allowed from {ip}"),
             egui::Color32::from_gray(140),
         ),
         _ => ("Unknown Alert".to_string(), egui::Color32::GRAY),

@@ -14,7 +14,7 @@
 /// * `info` - Panic information including message and location
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     use crate::kprintln;
     kprintln!("\n\x1b[31m[KERNEL PANIC]\x1b[0m {:?}", info);
     loop {}

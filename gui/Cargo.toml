@@ -1,7 +1,11 @@
-[lints]
-workspace = true
+[lints.rust]
+# ── Inherited from workspace ───────────────────────────────────────────────────
+unused_must_use = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]
+# ── Inherited from workspace ───────────────────────────────────────────────────
+undocumented_unsafe_blocks = "warn"
 # Pedantic baseline — keeps the control plane code clean and idiomatic.
 pedantic = { level = "warn", priority = -1 }
 
@@ -13,6 +17,18 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 # Tokio async blocks have legitimate complex cognition; don't split them artificially.
 cognitive_complexity = "allow"
+# Dashboard and background task functions are long by nature of UI/async code.
+too_many_lines = "allow"
+# "DDoS" is a proper noun; doc_markdown fires on it across all doc comments.
+doc_markdown = "allow"
+# u64→f64 casts for display metrics (packet rates, memory) are intentional.
+cast_precision_loss = "allow"
+# Channel endpoint pairs (log_tx_sync/log_rx_sync) are legitimately similar names.
+similar_names = "allow"
+# stat_card is logically associated with AegisApp even though it doesn't read self.
+unused_self = "allow"
+# Hex dump formatting via map+collect is readable; fold+write! is not worth it here.
+format_collect = "allow"
 
 [package]
 name = "security-dashboard"

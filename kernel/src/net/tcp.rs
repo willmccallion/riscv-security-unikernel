@@ -49,7 +49,7 @@ impl TcpHeader {
     /// * `seq` - Sequence number in host byte order
     /// * `ack` - Acknowledgment number in host byte order
     /// * `flags` - TCP flags in host byte order
-    pub fn new(src: u16, dst: u16, seq: u32, ack: u32, flags: u16) -> Self {
+    pub const fn new(src: u16, dst: u16, seq: u32, ack: u32, flags: u16) -> Self {
         let offset_flags = (5 << 12) | flags;
         Self {
             src_port: src.to_be(),

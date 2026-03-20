@@ -36,7 +36,7 @@ impl AlertReason {
     /// # Returns
     ///
     /// The u8 value corresponding to this alert reason
-    pub fn as_u8(self) -> u8 {
+    pub const fn as_u8(self) -> u8 {
         self as u8
     }
 }

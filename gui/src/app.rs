@@ -5,7 +5,7 @@
 //! visualization, event logging, packet inspection, and configuration
 //! interfaces for firewall rules, DPI signatures, and eBPF programs.
 
-use crate::types::*;
+use crate::types::{GuiCommand, LogEntry, LogMode, NetStats, TrafficMode};
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
 use std::collections::VecDeque;
@@ -206,10 +206,10 @@ impl AegisApp {
 
         ui.add_space(15.0);
 
-        let line_pass = Line::new(PlotPoints::from_iter(self.history_pass.iter().cloned()))
+        let line_pass = Line::new(self.history_pass.iter().copied().collect::<PlotPoints>())
             .color(egui::Color32::GREEN)
             .name("Passed (PPS)");
-        let line_drop = Line::new(PlotPoints::from_iter(self.history_drop.iter().cloned()))
+        let line_drop = Line::new(self.history_drop.iter().copied().collect::<PlotPoints>())
             .color(egui::Color32::RED)
             .name("Dropped (PPS)");
 
@@ -262,8 +262,7 @@ impl AegisApp {
                     };
 
                     let is_selected = self.selected_log.as_ref()
-                        .map(|s| s.timestamp == entry.timestamp && s.msg == entry.msg)
-                        .unwrap_or(false);
+                        .is_some_and(|s| s.timestamp.to_bits() == entry.timestamp.to_bits() && s.msg == entry.msg);
 
                     let bg = if is_selected {
                         egui::Color32::from_gray(40)
@@ -392,7 +391,7 @@ impl AegisApp {
 
                             for (i, chunk) in log.payload.chunks(16).enumerate() {
                                 let hex: String =
-                                    chunk.iter().map(|b| format!("{:02X} ", b)).collect();
+                                    chunk.iter().map(|b| format!("{b:02X} ")).collect();
                                 let ascii: String = chunk
                                     .iter()
                                     .map(|&b| {
@@ -449,7 +448,7 @@ impl AegisApp {
                     ui.add_space(5.0);
 
                     let rate_text = if title == "ACTIVE FLOWS" {
-                        format!("{}", rate)
+                        format!("{rate}")
                     } else {
                         format!("{} PPS", format_metric(rate))
                     };
@@ -517,7 +516,7 @@ impl AegisApp {
                     for &port in &self.blocked_ports {
                         ui.horizontal(|ui| {
                             ui.colored_label(egui::Color32::RED, "BLOCK");
-                            ui.label(format!("TCP/UDP dst:{}", port));
+                            ui.label(format!("TCP/UDP dst:{port}"));
                         });
                     }
                 });
@@ -534,7 +533,7 @@ impl AegisApp {
                         let mut packet = vec![0u8; 8];
                         packet.push(0x02);
                         let bytes = self.sdn_sig.as_bytes();
-                        packet.push(bytes.len() as u8);
+                        packet.push(u8::try_from(bytes.len()).unwrap_or(u8::MAX));
                         packet.extend_from_slice(bytes);
                         self.send(GuiCommand::SendBytes(packet));
                         let sig = self.sdn_sig.clone();
@@ -551,7 +550,7 @@ impl AegisApp {
                     for sig in &self.dpi_signatures {
                         ui.horizontal(|ui| {
                             ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
-                            ui.monospace(format!("\"{}\"", sig));
+                            ui.monospace(format!("\"{sig}\""));
                         });
                     }
                 });
@@ -593,7 +592,7 @@ impl AegisApp {
                         // Kernel mgmt packet: 8 bytes padding + msg_type (0x03) + count byte + instructions
                         let mut packet = vec![0u8; 8];
                         packet.push(0x03);
-                        packet.push((bytecode.len() / 7) as u8);
+                        packet.push(u8::try_from(bytecode.len() / 7).unwrap_or(u8::MAX));
                         packet.extend_from_slice(&bytecode);
                         self.send(GuiCommand::SendBytes(packet));
                         let prog = self.ebpf_code.trim().to_string();

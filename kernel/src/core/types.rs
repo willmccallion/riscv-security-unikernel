@@ -52,6 +52,9 @@ impl<T> Singleton<T> {
     /// Mutable reference to the singleton data
     #[allow(clippy::mut_from_ref)]
     pub fn get(&self) -> &mut T {
+        // SAFETY: This kernel operates in a single-threaded polling loop with no
+        // interrupts accessing shared state, so aliasing mutable references to
+        // this cell cannot occur.
         unsafe { &mut *self.data.get() }
     }
 }

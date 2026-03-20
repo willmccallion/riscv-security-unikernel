@@ -26,7 +26,7 @@ pub struct Slab {
     #[allow(dead_code)]
     pub len: usize,
     /// Pointer to the next slab in the free list.
-    pub next: *mut Slab,
+    pub next: *mut Self,
 }
 
 /// Slab allocator managing a fixed pool of memory slabs.
@@ -60,10 +60,10 @@ impl SlabAllocator {
     /// This must be called once before the allocator is used.
     pub fn init(&mut self) {
         for i in 0..NUM_SLABS - 1 {
-            self.pool[i].next = &mut self.pool[i + 1];
+            self.pool[i].next = &raw mut self.pool[i + 1];
         }
         self.pool[NUM_SLABS - 1].next = null_mut();
-        self.free_head = &mut self.pool[0];
+        self.free_head = &raw mut self.pool[0];
     }
 }
 

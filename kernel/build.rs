@@ -1,3 +1,8 @@
+//! Build script for the security-unikernel kernel crate.
+// Build scripts signal failure by panicking; unwrap/expect are the correct
+// tool here since there is no meaningful recovery path in a build script.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::env;
 use std::fs;
 use std::path::PathBuf;

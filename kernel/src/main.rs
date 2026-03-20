@@ -139,6 +139,8 @@ static ENGINE: Singleton<SecurityEngine> = Singleton::new(SecurityEngine::empty(
 /// code and assumes a valid stack has been set up.
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
+    // SAFETY: ALLOCATOR is a mutable static only accessed here during single-threaded kernel
+    // init, before the packet loop begins.
     unsafe { (*::core::ptr::addr_of_mut!(ALLOCATOR)).init() };
     NetDevice::init();
 
@@ -180,6 +182,8 @@ pub extern "C" fn kmain() -> ! {
         let now = get_cycles();
         if now.wrapping_sub(last_report) > TELEMETRY_INTERVAL_CYCLES {
             let sp: usize;
+            // SAFETY: Reading the stack pointer register via inline asm is safe;
+            // sp is always a valid register on RISC-V.
             unsafe { asm!("mv {}, sp", out(reg) sp) };
             let ebss_addr = ::core::ptr::addr_of!(_ebss) as usize;
             let free_ram = sp.saturating_sub(ebss_addr);
@@ -414,6 +418,7 @@ pub extern "C" fn kmain() -> ! {
 ///
 /// Current cycle count as a usize
 fn get_cycles() -> usize {
+    // SAFETY: csrr reads the mcycle CSR, a hardware counter register available in M-mode on RISC-V.
     unsafe {
         let c: usize;
         asm!("csrr {}, mcycle", out(reg) c);
@@ -540,7 +545,7 @@ fn send_udp_report(stats: &[u64; 8]) {
     /// 8 u64 values in big-endian format.
     const STATS_OFFSET: usize = UDP_HEADER_OFFSET + udp::HEADER_SIZE;
     let mut offset = STATS_OFFSET;
-    for &val in stats.iter() {
+    for &val in stats {
         packet[offset..offset + 8].copy_from_slice(&val.to_be_bytes());
         offset += 8;
     }

@@ -20,7 +20,7 @@ impl IpProtocol {
     /// Converts a u8 protocol number to the enum variant.
     ///
     /// Returns None if the protocol number is not recognized.
-    pub fn from_u8(value: u8) -> Option<Self> {
+    pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::Icmp),
             6 => Some(Self::Tcp),
@@ -44,7 +44,7 @@ impl EthernetType {
     /// Converts a u16 Ethernet type to the enum variant.
     ///
     /// Returns None if the type is not recognized.
-    pub fn from_u16(value: u16) -> Option<Self> {
+    pub const fn from_u16(value: u16) -> Option<Self> {
         match value {
             0x0806 => Some(Self::Arp),
             0x0800 => Some(Self::Ipv4),
@@ -65,7 +65,7 @@ pub enum ArpOpcode {
 
 impl ArpOpcode {
     /// Converts a u16 opcode to the enum variant.
-    pub fn from_u16(value: u16) -> Option<Self> {
+    pub const fn from_u16(value: u16) -> Option<Self> {
         match value {
             1 => Some(Self::Request),
             2 => Some(Self::Reply),
@@ -86,7 +86,7 @@ pub enum IcmpType {
 
 impl IcmpType {
     /// Converts a u8 ICMP type to the enum variant.
-    pub fn from_u8(value: u8) -> Option<Self> {
+    pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::EchoReply),
             8 => Some(Self::EchoRequest),
@@ -178,7 +178,7 @@ pub const BROADCAST_MAC: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 ///
 /// This constant is combined with source IP and port to create
 /// stateless SYN cookies for SYN flood protection.
-pub const SYN_COOKIE_MAGIC: u32 = 0xCAFEBABE;
+pub const SYN_COOKIE_MAGIC: u32 = 0xCAFE_BABE;
 
 /// Maximum safe packet length for ICMP echo reply processing.
 ///

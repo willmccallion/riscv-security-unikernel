@@ -30,7 +30,7 @@ impl ManagementMessageType {
     /// # Returns
     ///
     /// Some ManagementMessageType variant if recognized, None otherwise
-    pub fn from_u8(value: u8) -> Option<Self> {
+    pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(Self::BlockPort),
             0x02 => Some(Self::AddDpiPattern),

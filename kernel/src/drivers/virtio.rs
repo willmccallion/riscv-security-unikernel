@@ -16,7 +16,7 @@ const VIRTIO_START: usize = 0x1000_1000;
 const VIRTIO_END: usize = 0x1000_8000;
 
 /// VirtIO magic number identifier.
-const VIRTIO_MAGIC: u32 = 0x74726976;
+const VIRTIO_MAGIC: u32 = 0x7472_6976;
 
 /// Device ID for network devices.
 const DEVICE_ID_NET: u32 = 1;
@@ -113,9 +113,11 @@ struct Queue {
 }
 
 /// Receive queue for incoming packets.
+// SAFETY: Queue consists entirely of integer types and pointers; zeroing all bytes produces a valid initial state.
 static mut RX_QUEUE: Queue = unsafe { core::mem::zeroed() };
 
 /// Transmit queue for outgoing packets.
+// SAFETY: Queue consists entirely of integer types and pointers; zeroing all bytes produces a valid initial state.
 static mut TX_QUEUE: Queue = unsafe { core::mem::zeroed() };
 
 /// Current index in the receive used ring.
@@ -143,6 +145,9 @@ impl VirtioNet {
         kprint!("[VirtIO] Probing... ");
         let mut addr = VIRTIO_START;
         while addr <= VIRTIO_END {
+            // SAFETY: Addresses in the VIRTIO_START..=VIRTIO_END range are valid MMIO addresses
+            // on this hardware platform. ACTIVE_BASE is a mutable static only written here
+            // during single-threaded init.
             unsafe {
                 if read_volatile((addr) as *const u32) == VIRTIO_MAGIC
                     && read_volatile((addr + 8) as *const u32) == DEVICE_ID_NET
@@ -155,9 +160,9 @@ impl VirtioNet {
             addr += 0x1000;
         }
 
-        if unsafe { ACTIVE_BASE } == 0 {
-            panic!("No Legacy Net Device Found");
-        }
+        // SAFETY: ACTIVE_BASE is a mutable static only written during single-threaded init before this check.
+        assert!(unsafe { ACTIVE_BASE } != 0, "No Legacy Net Device Found");
+        // SAFETY: ACTIVE_BASE was verified non-zero by the assert above; reading it here is safe in this single-threaded context.
         kprintln!("Found at {:#x}", unsafe { ACTIVE_BASE });
 
         Self::reg_write(STATUS, 0);
@@ -165,6 +170,9 @@ impl VirtioNet {
         Self::reg_write(0x020, 0);
         Self::reg_write(STATUS, 0x01 | 0x02 | 0x08);
 
+        // SAFETY: RX_QUEUE is a mutable static only accessed from this single-threaded kernel.
+        // The descriptor addresses point into the queue's own buffer array, which is valid
+        // for the lifetime of the static.
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
             for i in 0..QUEUE_SIZE {
@@ -183,6 +191,8 @@ impl VirtioNet {
         Self::reg_write(QUEUE_ALIGN, 4096);
         Self::reg_write(QUEUE_PFN, (addr_of_mut!(RX_QUEUE) as u32) >> 12);
 
+        // SAFETY: ACTIVE_BASE is valid (asserted above). reg_write uses write_volatile to MMIO
+        // addresses derived from it. All offsets are from the VirtIO 1.0 legacy spec.
         Self::reg_write(QUEUE_SEL, 1);
         Self::reg_write(QUEUE_NUM, QUEUE_SIZE as u32);
         Self::reg_write(QUEUE_ALIGN, 4096);
@@ -199,6 +209,8 @@ impl VirtioNet {
     /// * `offset` - Register offset from device base address
     /// * `val` - Value to write
     fn reg_write(offset: usize, val: u32) {
+        // SAFETY: ACTIVE_BASE is a valid VirtIO MMIO base address (verified in init).
+        // The offset is a known register offset from the VirtIO spec.
         unsafe { write_volatile((ACTIVE_BASE + offset) as *mut u32, val) }
     }
 
@@ -213,6 +225,9 @@ impl VirtioNet {
     /// Some mutable slice to packet data if a packet is available,
     /// None otherwise.
     pub fn try_receive() -> Option<&'static mut [u8]> {
+        // SAFETY: RX_QUEUE is a mutable static only accessed from this single-threaded polling
+        // loop. Volatile reads ensure we see device-written values. The ring index is masked
+        // to QUEUE_SIZE.
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
             let used_idx = read_volatile(addr_of_mut!((*rx).used.idx));
@@ -231,7 +246,7 @@ impl VirtioNet {
                 LAST_RX_ID = id as u16;
 
                 if len > NET_HDR_SIZE {
-                    let buf_ptr = addr_of_mut!((*rx).buffers[id]) as *mut u8;
+                    let buf_ptr = addr_of_mut!((*rx).buffers[id]).cast::<u8>();
                     let data_ptr = buf_ptr.add(NET_HDR_SIZE);
                     let data_len = len - NET_HDR_SIZE;
                     return Some(core::slice::from_raw_parts_mut(data_ptr, data_len));
@@ -246,6 +261,8 @@ impl VirtioNet {
     /// This must be called after processing a packet received from
     /// `try_receive()` to return the buffer to the device for reuse.
     pub fn recycle_rx_buffer() {
+        // SAFETY: RX_QUEUE is a mutable static only accessed from this single-threaded kernel.
+        // The ring index is masked to QUEUE_SIZE.
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
             let idx = (*rx).avail.idx;
@@ -264,11 +281,14 @@ impl VirtioNet {
     ///
     /// * `packet` - Complete Ethernet frame to transmit
     pub fn send(packet: &[u8]) {
+        // SAFETY: TX_QUEUE is a mutable static only accessed from this single-threaded kernel.
+        // Volatile writes and fences ensure the device sees the descriptor before the available
+        // index is updated.
         unsafe {
             let tx = addr_of_mut!(TX_QUEUE);
             let idx = (*tx).avail.idx as usize % QUEUE_SIZE;
 
-            let buf_ptr = addr_of_mut!((*tx).buffers[idx]) as *mut u8;
+            let buf_ptr = addr_of_mut!((*tx).buffers[idx]).cast::<u8>();
 
             core::ptr::write_bytes(buf_ptr, 0, NET_HDR_SIZE);
 
@@ -294,6 +314,8 @@ impl VirtioNet {
     /// descriptors. Should be called after sending packets or
     /// periodically to ensure timely transmission.
     pub fn flush() {
+        // SAFETY: ACTIVE_BASE is a valid VirtIO MMIO base address.
+        // QUEUE_NOTIFY is a standard VirtIO register offset.
         unsafe {
             write_volatile((ACTIVE_BASE + QUEUE_NOTIFY) as *mut u32, 0);
             write_volatile((ACTIVE_BASE + QUEUE_NOTIFY) as *mut u32, 1);
