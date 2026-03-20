@@ -1,3 +1,19 @@
+[lints]
+workspace = true
+
+[lints.clippy]
+# Pedantic baseline — keeps the control plane code clean and idiomatic.
+pedantic = { level = "warn", priority = -1 }
+
+# egui widget methods are naturally named after the module they live in.
+module_name_repetitions = "allow"
+# Most GUI callbacks and eframe trait methods don't benefit from must_use.
+must_use_candidate = "allow"
+# eframe/egui return types make this noisy without adding safety value.
+missing_errors_doc = "allow"
+# Tokio async blocks have legitimate complex cognition; don't split them artificially.
+cognitive_complexity = "allow"
+
 [package]
 name = "security-dashboard"
 version = "1.0.0"

@@ -4,3 +4,13 @@ resolver = "2"
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+# Dropped #[must_use] values (Results, Options) silently ignore errors.
+unused_must_use = "warn"
+# Enforce modern Rust idioms: explicit lifetimes, unreachable_pub, etc.
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+# Every unsafe block must carry a `// SAFETY:` comment — applies to all crates.
+undocumented_unsafe_blocks = "warn"
