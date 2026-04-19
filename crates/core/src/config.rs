@@ -86,14 +86,3 @@ pub const FLOW_LOG_SAMPLE_MASK: usize = 0x0F;
 /// Only send alerts every N packets to prevent alert flooding.
 pub const DDOS_ALERT_SAMPLE_RATE: u64 = 50;
 
-/// Magic header for IP spoofing detection in test packets.
-///
-/// Packets with this 4-byte header followed by a source IP are
-/// recognized as test packets with spoofed source addresses.
-pub const SPOOF_DETECTION_MAGIC: [u8; 4] = [0xAE, 0x61, 0x73, 0x00];
-
-/// Offset to spoofed source IP in test packets.
-pub const SPOOF_DETECTION_IP_OFFSET: usize = 46;
-
-/// Minimum packet length required for spoofing detection.
-pub const SPOOF_DETECTION_MIN_LEN: usize = 50;

@@ -30,9 +30,8 @@ use ::core::arch::{asm, global_asm};
 use sec_core::config::{
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, FLOW_TIMEOUT_CYCLES,
     HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION_CYCLES, KERNEL_VERSION, MAC_ADDR,
-    MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS, SPOOF_DETECTION_IP_OFFSET,
-    SPOOF_DETECTION_MAGIC, SPOOF_DETECTION_MIN_LEN, TELEMETRY_INTERVAL_CYCLES, TELEMETRY_PORT,
-    TOKEN_BUCKET_CAPACITY, TOTAL_MEMORY_SIZE,
+    MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS, TELEMETRY_INTERVAL_CYCLES,
+    TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY, TOTAL_MEMORY_SIZE,
 };
 use sec_core::security::{
     alert::{AlertReason, alert_packet},
@@ -257,15 +256,6 @@ pub extern "C" fn kmain() -> ! {
                     ) && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0
                     {
                         send_alert(&src_ip, AlertReason::Flow.as_u8(), packet);
-                    }
-
-                    if packet.len() >= SPOOF_DETECTION_MIN_LEN
-                        && packet[42..46] == SPOOF_DETECTION_MAGIC
-                    {
-                        src_ip.copy_from_slice(
-                            &packet[SPOOF_DETECTION_IP_OFFSET
-                                ..SPOOF_DETECTION_IP_OFFSET + ipv4::IP_ADDR_SIZE],
-                        );
                     }
 
                     if engine.pbox.is_banned(&src_ip, now) {
