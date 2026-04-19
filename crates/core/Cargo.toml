@@ -25,3 +25,10 @@ missing_debug_implementations = "warn"
 undocumented_unsafe_blocks = "deny"
 
 [dependencies]
+
+[dev-dependencies]
+# Property-based testing for the stateful primitives (PenaltyBox,
+# CountMinSketch, FlowTable, AhoCorasick). Dev-only — never linked into
+# the kernel. `default-features = false` strips the std fork machinery
+# and the regex shrinker; we don't need them for byte-slice strategies.
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
