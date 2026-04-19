@@ -26,7 +26,7 @@ use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
 use sec_core::security::flow::FlowTable;
 use sec_core::security::heuristic::HeuristicEngine;
 use sec_core::security::mgmt_auth::{MgmtAuth, seal};
-use sec_core::security::vm::{Instruction, VM};
+use sec_core::security::vm::{Instruction, VM, VmError, validate as validate_vm};
 
 /// Captures every frame the stack hands to its sink so tests can
 /// inspect what was actually sent.
@@ -419,6 +419,18 @@ fn vm_rejects_out_of_range_register_index() {
         result.is_ok(),
         "VM panicked on instruction with reg_a >= 16"
     );
+}
+
+/// `validate` must reject any program whose opcode byte is not one of
+/// the variants the VM explicitly handles. Without this check unknown
+/// opcodes hit the `_ => {}` arm in `execute` and become silent
+/// no-ops, which lets an attacker probe the upload path without
+/// rejection and means a future opcode added at an unused value
+/// would silently change behaviour for older programs.
+#[test]
+fn vm_rejects_unknown_opcode() {
+    let prog = [Instruction::new(0xFF, 0, 0, 0)];
+    assert_eq!(validate_vm(&prog), Err(VmError::InvalidOpcode));
 }
 
 /// A jump instruction with a target far beyond the end of the program

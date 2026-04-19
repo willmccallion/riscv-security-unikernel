@@ -40,6 +40,32 @@ pub enum Opcode {
     Nop = 0x00,
 }
 
+impl Opcode {
+    /// Returns the opcode for a raw byte, or `None` if the byte is
+    /// not a recognised instruction. Used by [`validate`] to reject
+    /// programs containing unknown opcodes at upload time so behaviour
+    /// is locked to the variants the VM explicitly handles.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0x00 => Some(Self::Nop),
+            0x01 => Some(Self::Ldb),
+            0x02 => Some(Self::Ldh),
+            0x03 => Some(Self::Ldw),
+            0x04 => Some(Self::Ldi),
+            0x05 => Some(Self::Mov),
+            0x06 => Some(Self::Eq),
+            0x07 => Some(Self::Gt),
+            0x08 => Some(Self::And),
+            0x09 => Some(Self::Or),
+            0x0A => Some(Self::Jmp),
+            0x0B => Some(Self::Jt),
+            0x0C => Some(Self::Jf),
+            0x0D => Some(Self::Ret),
+            _ => None,
+        }
+    }
+}
+
 /// Reasons a BPF program may be rejected at upload time.
 ///
 /// Returned by [`validate`] when a program contains instructions that would
@@ -54,6 +80,14 @@ pub enum VmError {
     InvalidRegister,
     /// A jump opcode targets an instruction index `>= program.len()`.
     InvalidJumpTarget,
+    /// The instruction's opcode byte is not one of the variants the VM
+    /// recognises. Without this check, unknown opcodes hit the
+    /// catch-all `_ => {}` arm in `execute` and become silent no-ops,
+    /// which (a) gives an attacker a fuzz-the-opcodes oracle without
+    /// rejection and (b) means a future opcode added at one of the
+    /// currently-unused values would silently change the behaviour of
+    /// programs uploaded before the addition.
+    InvalidOpcode,
 }
 
 /// Validates a program before it can be installed.
@@ -67,6 +101,9 @@ pub enum VmError {
 pub fn validate(program: &[Instruction]) -> Result<(), VmError> {
     let len = program.len() as u32;
     for inst in program {
+        if Opcode::from_u8(inst.op).is_none() {
+            return Err(VmError::InvalidOpcode);
+        }
         if inst.reg_a >= 16 || inst.reg_b >= 16 {
             return Err(VmError::InvalidRegister);
         }
