@@ -336,6 +336,50 @@ fn process_packet_handles_syn_with_extended_ip_options() {
     assert_eq!(reply_dst, src_port);
 }
 
+/// A packet with `IHL < 5` lets the sender push the "TCP header"
+/// inside the IP header, which would let downstream port-based
+/// firewall rules match against header bytes instead of the real
+/// destination port. `process_packet` must drop these.
+#[test]
+fn process_packet_rejects_ipv4_with_ihl_less_than_5() {
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, 0, &[]);
+    frame[ipv4::VERSION_IHL_OFFSET] = 0x40; // version=4, ihl=0
+    let mut sink = CaptureSink::default();
+    let secret = test_syn_secret();
+    let result = process_packet(&mut frame, &mut sink, &secret);
+    assert!(sink.sent.is_empty(), "IHL=0 must not generate any reply");
+    assert!(result.is_none(), "IHL=0 must not return a payload");
+}
+
+/// Same shape as the IHL check, applied to the TCP data offset:
+/// a `data_offset < 5` would put the "TCP payload" inside the TCP
+/// header, evading DPI / firewall inspection on the real bytes.
+#[test]
+fn process_packet_rejects_tcp_with_data_offset_less_than_5() {
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_ACK, 1, b"payload");
+    let tcp_off = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
+    // Data offset = 0, flags preserved.
+    frame[tcp_off + 12] = 0x00;
+    let mut sink = CaptureSink::default();
+    let secret = test_syn_secret();
+    let result = process_packet(&mut frame, &mut sink, &secret);
+    assert!(result.is_none(), "data_offset=0 must not yield a payload");
+}
+
+/// A packet with IP version != 4 (e.g. someone sending IPv6 bytes
+/// through the IPv4 EtherType, or just garbage) must be dropped
+/// rather than silently parsed as IPv4.
+#[test]
+fn process_packet_rejects_ipv4_with_wrong_version() {
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, 0, &[]);
+    frame[ipv4::VERSION_IHL_OFFSET] = 0x65; // version=6, ihl=5
+    let mut sink = CaptureSink::default();
+    let secret = test_syn_secret();
+    let result = process_packet(&mut frame, &mut sink, &secret);
+    assert!(sink.sent.is_empty(), "version!=4 must not generate any reply");
+    assert!(result.is_none(), "version!=4 must not return a payload");
+}
+
 /// The eBPF VM has 16 registers but encodes register indices as `u8`,
 /// so an attacker-supplied program can request register 20. The VM
 /// must reject or clamp instead of panicking, since a panic in the

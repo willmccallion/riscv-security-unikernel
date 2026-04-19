@@ -181,7 +181,21 @@ fn handle_ipv4<'a, S: PacketSink>(
     if packet.len() < ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE {
         return None;
     }
-    let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
+    // Reject anything that isn't a well-formed IPv4 header. Accepting
+    // version != 4 or IHL < 5 lets a sender position the "TCP header"
+    // inside the IP header itself, so downstream port/firewall checks
+    // run on the wrong bytes -- a packet to a banned port can sneak
+    // past by claiming IHL=0 and having the firewall match against
+    // header bytes that happen to look like a different port.
+    let version_ihl = packet[ipv4::VERSION_IHL_OFFSET];
+    if (version_ihl >> 4) != 4 {
+        return None;
+    }
+    let ihl_words = version_ihl & ipv4::IHL_MASK;
+    if ihl_words < 5 {
+        return None;
+    }
+    let ihl = ihl_words * 4;
     let protocol = packet[ipv4::PROTOCOL_OFFSET];
 
     if packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
@@ -249,6 +263,13 @@ fn handle_ipv4<'a, S: PacketSink>(
             ((packet[offset + 12] as u16) << 8) | (packet[offset + 13] as u16);
         let flags = dof_flags_be & 0x003F;
         let tcp_header_len = (((dof_flags_be >> 12) & 0x0F) as usize) * 4;
+        // Same shape as the IHL check above: a data-offset under 5
+        // (= 20 bytes) lets the "payload" returned to DPI / firewall
+        // start inside the TCP header, which makes port-based rules
+        // trivially evadable.
+        if tcp_header_len < tcp::MIN_HEADER_SIZE {
+            return None;
+        }
 
         if (flags & TCP_SYN) != 0 {
             let src_ip = [
