@@ -10,6 +10,7 @@ use crate::types::{
 use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::ManagementMessageType;
+use sec_core::security::mgmt_auth::seal;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -17,9 +18,41 @@ use rand::seq::SliceRandom;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+/// Loads the mgmt MAC key from `KERNEL_MGMT_KEY` (32 hex chars) or
+/// falls back to the dev key the kernel uses when built without one.
+/// The kernel rejects mgmt packets signed with the wrong key, so this
+/// must match what the kernel was built with.
+fn load_mgmt_key() -> [u8; 16] {
+    if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
+        if hex.len() == 32 {
+            let mut out = [0u8; 16];
+            for (i, b) in out.iter_mut().enumerate() {
+                let hi = u8::from_str_radix(&hex[i * 2..i * 2 + 1], 16).unwrap_or(0);
+                let lo = u8::from_str_radix(&hex[i * 2 + 1..i * 2 + 2], 16).unwrap_or(0);
+                *b = (hi << 4) | lo;
+            }
+            return out;
+        }
+        eprintln!("KERNEL_MGMT_KEY must be 32 hex chars; falling back to dev key");
+    }
+    *b"DEV-KEY-DEV-KEY!"
+}
+
+/// Strictly-monotonic counter for outgoing mgmt packets.
+///
+/// Uses Unix-nanos so we always exceed whatever the kernel saw last,
+/// even across operator restarts. The kernel resets `last_counter` to
+/// 0 on boot, so the GUI never has to coordinate with kernel state.
+fn next_counter() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1)
+}
 
 /// Main background task that runs continuously.
 ///
@@ -51,6 +84,7 @@ pub async fn start_background_task(
     let mut alert_buf = vec![0u8; 1024];
     let mut mode = TrafficMode::Idle;
     let start_time = Instant::now();
+    let mgmt_key = load_mgmt_key();
 
     let target_ip: std::net::IpAddr = "192.168.100.2".parse().unwrap();
 
@@ -125,9 +159,13 @@ pub async fn start_background_task(
                     }
                     GuiCommand::BanIp(ip_str) => {
                         if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
-                            let mut packet = vec![ManagementMessageType::BanIp as u8];
-                            packet.extend_from_slice(&ip.octets());
-                            let _ = socket_pool[0].send_to(&packet, MGMT_ADDR).await;
+                            let mut body = [0u8; 5];
+                            body[0] = ManagementMessageType::BanIp as u8;
+                            body[1..].copy_from_slice(&ip.octets());
+                            let mut packet = [0u8; 8 + 5 + 8];
+                            let n = seal(&mgmt_key, next_counter(), &body, &mut packet)
+                                .expect("packet buffer fits sealed body");
+                            let _ = socket_pool[0].send_to(&packet[..n], MGMT_ADDR).await;
 
                             let entry = LogEntry {
                                 timestamp: 0.0,

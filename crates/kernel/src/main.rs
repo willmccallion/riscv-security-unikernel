@@ -35,10 +35,12 @@ use sec_core::config::{
 };
 use sec_core::security::{
     alert::{AlertReason, alert_packet},
-    dos, dpi, firewall, flow, heuristic, mgmt, vm,
+    dos, dpi, firewall, flow, heuristic, mgmt, mgmt_auth, vm,
 };
 use sec_core::time::TimeSource;
 use sec_core::types::Singleton;
+
+include!(concat!(env!("OUT_DIR"), "/mgmt_key.rs"));
 
 // Linker symbol marking the end of the BSS (uninitialized data) section.
 //
@@ -129,6 +131,11 @@ impl SecurityEngine {
 
 /// Global security engine instance.
 static ENGINE: Singleton<SecurityEngine> = Singleton::new(SecurityEngine::empty());
+
+/// Verifier for authenticated management commands. Stateful: tracks the
+/// highest counter accepted so far, so replays are rejected.
+static MGMT_AUTH: Singleton<mgmt_auth::MgmtAuth> =
+    Singleton::new(mgmt_auth::MgmtAuth::new(MGMT_KEY));
 
 /// Kernel main entry point.
 ///
@@ -322,73 +329,30 @@ pub extern "C" fn kmain() -> ! {
                         continue;
                     }
 
-                    use mgmt::{ManagementMessageType, mgmt_packet};
                     if payload.len() >= 4 {
-                        if dst_port == MANAGEMENT_PORT
-                            && payload.len() >= mgmt_packet::MIN_PAYLOAD_LEN
-                        {
-                            let msg_type = payload[mgmt_packet::MSG_TYPE_OFFSET];
-                            match ManagementMessageType::from_u8(msg_type) {
-                                Some(ManagementMessageType::BlockPort) => {
-                                    use mgmt::mgmt_packet::block_port;
-                                    if payload.len() >= block_port::MIN_PAYLOAD_LEN {
-                                        let p = (payload[block_port::PORT_OFFSET] as u16) << 8
-                                            | payload[block_port::PORT_OFFSET + 1] as u16;
-                                        engine.fw.block_port(p);
-                                    }
+                        // Mgmt-plane traffic must be authenticated before any
+                        // dispatch happens. Otherwise any UDP packet to port
+                        // 1337 with a valid type byte rewrites global policy
+                        // (CRIT-3). We strip the 8-byte UDP header, then ask
+                        // MgmtAuth to verify the counter+MAC and hand back
+                        // the inner command body.
+                        if dst_port == MANAGEMENT_PORT {
+                            const UDP_HEADER_LEN: usize = 8;
+                            let dispatched = if payload.len() > UDP_HEADER_LEN {
+                                let envelope = &payload[UDP_HEADER_LEN..];
+                                if let Some(body) = MGMT_AUTH.get().verify(envelope) {
+                                    dispatch_mgmt(body, engine, now);
+                                    true
+                                } else {
+                                    send_alert(&src_ip, AlertReason::MgmtAuthFail.as_u8(), payload);
+                                    false
                                 }
-                                Some(ManagementMessageType::AddDpiPattern) => {
-                                    use mgmt::mgmt_packet::add_dpi;
-                                    if payload.len() >= add_dpi::MIN_PAYLOAD_LEN {
-                                        let len = payload[add_dpi::LEN_OFFSET] as usize;
-                                        if payload.len() >= add_dpi::PATTERN_OFFSET + len
-                                            && len <= add_dpi::MAX_PATTERN_LEN
-                                        {
-                                            let pattern = &payload[add_dpi::PATTERN_OFFSET
-                                                ..add_dpi::PATTERN_OFFSET + len];
-                                            engine.dyn_rules.add(pattern);
-                                        }
-                                    }
-                                }
-                                Some(ManagementMessageType::UploadBpfProgram) => {
-                                    use mgmt::mgmt_packet::upload_bpf;
-                                    if payload.len() >= upload_bpf::MIN_PAYLOAD_LEN {
-                                        let count = payload[upload_bpf::COUNT_OFFSET] as usize;
-                                        if payload.len()
-                                            >= upload_bpf::INSTR_OFFSET
-                                                + (count * upload_bpf::INSTR_SIZE)
-                                            && count <= upload_bpf::MAX_INSTR_COUNT
-                                        {
-                                            let mut cursor = upload_bpf::INSTR_OFFSET;
-                                            for i in 0..count {
-                                                let op = payload[cursor];
-                                                let ra = payload[cursor + 1];
-                                                let rb = payload[cursor + 2];
-                                                let imm = (payload[cursor + 3] as u32) << 24
-                                                    | (payload[cursor + 4] as u32) << 16
-                                                    | (payload[cursor + 5] as u32) << 8
-                                                    | (payload[cursor + 6] as u32);
-                                                engine.bpf_prog[i] =
-                                                    vm::Instruction::new(op, ra, rb, imm);
-                                                cursor += upload_bpf::INSTR_SIZE;
-                                            }
-                                            engine.bpf_len = count;
-                                        }
-                                    }
-                                }
-                                Some(ManagementMessageType::BanIp) => {
-                                    use mgmt::mgmt_packet::ban_ip;
-                                    if payload.len() >= ban_ip::MIN_PAYLOAD_LEN {
-                                        let ip_to_ban = &payload[ban_ip::IP_OFFSET
-                                            ..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE];
-                                        engine.pbox.ban(
-                                            ip_to_ban,
-                                            IP_BAN_DURATION_CYCLES as u64,
-                                            now,
-                                        );
-                                    }
-                                }
-                                None => {}
+                            } else {
+                                false
+                            };
+                            if dispatched {
+                                NetDevice::recycle_rx_buffer();
+                                continue;
                             }
                         }
 
@@ -410,6 +374,74 @@ pub extern "C" fn kmain() -> ! {
         if work_done {
             NetDevice::flush();
         }
+    }
+}
+
+/// Dispatches an authenticated mgmt body.
+///
+/// `body` is the slice returned by `MgmtAuth::verify` — the auth
+/// envelope (counter + MAC) has already been stripped, so offsets here
+/// are body-relative. Untyped or under-length bodies are silently
+/// ignored: the auth layer guarantees the sender knows the key, so
+/// quiet-on-malformed is acceptable as long as the verifier itself is
+/// strict.
+fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64) {
+    use mgmt::mgmt_packet;
+    use sec_core::net::constants::ipv4;
+    if body.len() < mgmt_packet::MIN_PAYLOAD_LEN {
+        return;
+    }
+    let msg_type = body[mgmt_packet::MSG_TYPE_OFFSET];
+    match mgmt::ManagementMessageType::from_u8(msg_type) {
+        Some(mgmt::ManagementMessageType::BlockPort) => {
+            use mgmt::mgmt_packet::block_port;
+            if body.len() >= block_port::MIN_PAYLOAD_LEN {
+                let p = (body[block_port::PORT_OFFSET] as u16) << 8
+                    | body[block_port::PORT_OFFSET + 1] as u16;
+                engine.fw.block_port(p);
+            }
+        }
+        Some(mgmt::ManagementMessageType::AddDpiPattern) => {
+            use mgmt::mgmt_packet::add_dpi;
+            if body.len() >= add_dpi::MIN_PAYLOAD_LEN {
+                let len = body[add_dpi::LEN_OFFSET] as usize;
+                if body.len() >= add_dpi::PATTERN_OFFSET + len && len <= add_dpi::MAX_PATTERN_LEN {
+                    let pattern = &body[add_dpi::PATTERN_OFFSET..add_dpi::PATTERN_OFFSET + len];
+                    engine.dyn_rules.add(pattern);
+                }
+            }
+        }
+        Some(mgmt::ManagementMessageType::UploadBpfProgram) => {
+            use mgmt::mgmt_packet::upload_bpf;
+            if body.len() >= upload_bpf::MIN_PAYLOAD_LEN {
+                let count = body[upload_bpf::COUNT_OFFSET] as usize;
+                if body.len() >= upload_bpf::INSTR_OFFSET + (count * upload_bpf::INSTR_SIZE)
+                    && count <= upload_bpf::MAX_INSTR_COUNT
+                {
+                    let mut cursor = upload_bpf::INSTR_OFFSET;
+                    for i in 0..count {
+                        let op = body[cursor];
+                        let ra = body[cursor + 1];
+                        let rb = body[cursor + 2];
+                        let imm = (body[cursor + 3] as u32) << 24
+                            | (body[cursor + 4] as u32) << 16
+                            | (body[cursor + 5] as u32) << 8
+                            | (body[cursor + 6] as u32);
+                        engine.bpf_prog[i] = vm::Instruction::new(op, ra, rb, imm);
+                        cursor += upload_bpf::INSTR_SIZE;
+                    }
+                    engine.bpf_len = count;
+                }
+            }
+        }
+        Some(mgmt::ManagementMessageType::BanIp) => {
+            use mgmt::mgmt_packet::ban_ip;
+            if body.len() >= ban_ip::MIN_PAYLOAD_LEN {
+                let ip_to_ban = &body[ban_ip::IP_OFFSET..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE];
+                engine.pbox.ban(ip_to_ban, IP_BAN_DURATION_CYCLES as u64, now);
+            }
+        }
+        None => {}
     }
 }
 

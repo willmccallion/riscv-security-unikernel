@@ -2,6 +2,13 @@
 //!
 //! Defines the protocol for runtime configuration of the security kernel
 //! via UDP management commands.
+//!
+//! Offsets in this module are relative to the **body** of an
+//! authenticated mgmt packet — i.e. the bytes that
+//! [`crate::security::mgmt_auth::MgmtAuth::verify`] returns after
+//! stripping the 8-byte counter prefix and the 8-byte MAC suffix.
+//! Callers (kernel, daemon, GUI) wrap and unwrap that envelope; the
+//! code in here only describes the inner command layout.
 
 /// Management message type identifiers.
 #[repr(u8)]
@@ -42,40 +49,43 @@ impl ManagementMessageType {
 }
 
 /// Management message format constants.
+///
+/// All offsets are body-relative — the caller has already validated
+/// the auth envelope and stripped the counter + MAC.
 pub mod mgmt_packet {
-    /// Minimum payload length for any management message.
-    pub const MIN_PAYLOAD_LEN: usize = 9;
-    /// Offset to message type field.
-    pub const MSG_TYPE_OFFSET: usize = 8;
+    /// Minimum body length: 1 byte for the message type.
+    pub const MIN_PAYLOAD_LEN: usize = 1;
+    /// Offset to message type field within the body.
+    pub const MSG_TYPE_OFFSET: usize = 0;
 
     /// BlockPort message format.
     pub mod block_port {
-        /// Minimum payload length for BlockPort message.
-        pub const MIN_PAYLOAD_LEN: usize = 11;
-        /// Offset to port number (bytes 9-10, big-endian).
-        pub const PORT_OFFSET: usize = 9;
+        /// Minimum body length for BlockPort: type byte + u16 port.
+        pub const MIN_PAYLOAD_LEN: usize = 3;
+        /// Offset to port number (bytes 1-2, big-endian).
+        pub const PORT_OFFSET: usize = 1;
     }
 
     /// AddDpiPattern message format.
     pub mod add_dpi {
-        /// Minimum payload length for AddDpiPattern message.
-        pub const MIN_PAYLOAD_LEN: usize = 10;
+        /// Minimum body length for AddDpiPattern: type byte + length byte.
+        pub const MIN_PAYLOAD_LEN: usize = 2;
         /// Offset to pattern length field.
-        pub const LEN_OFFSET: usize = 9;
+        pub const LEN_OFFSET: usize = 1;
         /// Offset to pattern data.
-        pub const PATTERN_OFFSET: usize = 10;
+        pub const PATTERN_OFFSET: usize = 2;
         /// Maximum pattern length in bytes.
         pub const MAX_PATTERN_LEN: usize = 32;
     }
 
     /// UploadBpfProgram message format.
     pub mod upload_bpf {
-        /// Minimum payload length for UploadBpfProgram message.
-        pub const MIN_PAYLOAD_LEN: usize = 10;
+        /// Minimum body length for UploadBpfProgram: type byte + count byte.
+        pub const MIN_PAYLOAD_LEN: usize = 2;
         /// Offset to instruction count field.
-        pub const COUNT_OFFSET: usize = 9;
+        pub const COUNT_OFFSET: usize = 1;
         /// Offset to instruction data.
-        pub const INSTR_OFFSET: usize = 10;
+        pub const INSTR_OFFSET: usize = 2;
         /// Size of each instruction in bytes.
         pub const INSTR_SIZE: usize = 7;
         /// Maximum number of instructions.
@@ -84,9 +94,9 @@ pub mod mgmt_packet {
 
     /// BanIp message format.
     pub mod ban_ip {
-        /// Minimum payload length for BanIp message.
-        pub const MIN_PAYLOAD_LEN: usize = 13;
-        /// Offset to IP address (bytes 9-12).
-        pub const IP_OFFSET: usize = 9;
+        /// Minimum body length for BanIp: type byte + 4-byte IP.
+        pub const MIN_PAYLOAD_LEN: usize = 5;
+        /// Offset to IP address (bytes 1-4).
+        pub const IP_OFFSET: usize = 1;
     }
 }
