@@ -40,6 +40,48 @@ pub enum Opcode {
     Nop = 0x00,
 }
 
+/// Reasons a BPF program may be rejected at upload time.
+///
+/// Returned by [`validate`] when a program contains instructions that would
+/// behave unsafely or unpredictably at execution time. Programs that fail
+/// validation must never reach [`VM::execute`] — if one does, the masking
+/// applied inside `execute` keeps the kernel from panicking, but the
+/// behaviour the program describes is undefined and the rejection signals
+/// that an attacker is probing the upload path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmError {
+    /// `reg_a` or `reg_b` is outside the 16-register file.
+    InvalidRegister,
+    /// A jump opcode targets an instruction index `>= program.len()`.
+    InvalidJumpTarget,
+}
+
+/// Validates a program before it can be installed.
+///
+/// The VM has 16 registers but instructions encode register indices as
+/// `u8`, so an attacker-supplied program can ask for register 200. Likewise
+/// jump targets are `u32` immediates with no inherent bound. Reject both
+/// at upload time so a malicious management packet cannot install a
+/// program that would otherwise force the executing core into masked
+/// fallback behaviour on every packet.
+pub fn validate(program: &[Instruction]) -> Result<(), VmError> {
+    let len = program.len() as u32;
+    for inst in program {
+        if inst.reg_a >= 16 || inst.reg_b >= 16 {
+            return Err(VmError::InvalidRegister);
+        }
+        match inst.op {
+            0x0A | 0x0B | 0x0C => {
+                if inst.imm >= len {
+                    return Err(VmError::InvalidJumpTarget);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Virtual machine instruction encoding.
 ///
 /// Each instruction contains an opcode, two register operands,
@@ -148,44 +190,44 @@ impl VM {
                 0x01 => {
                     let offset = inst.imm as usize;
                     if offset < packet.len() {
-                        self.regs[inst.reg_a as usize] = packet[offset] as u64;
+                        self.regs[(inst.reg_a as usize) & 0x0F] = packet[offset] as u64;
                     } else {
-                        self.regs[inst.reg_a as usize] = 0;
+                        self.regs[(inst.reg_a as usize) & 0x0F] = 0;
                     }
                 }
                 0x02 => {
                     let offset = inst.imm as usize;
                     if offset + 1 < packet.len() {
-                        self.regs[inst.reg_a as usize] =
+                        self.regs[(inst.reg_a as usize) & 0x0F] =
                             ((packet[offset] as u64) << 8) | (packet[offset + 1] as u64);
                     }
                 }
                 0x03 => {
                     let offset = inst.imm as usize;
                     if offset + 3 < packet.len() {
-                        self.regs[inst.reg_a as usize] = ((packet[offset] as u64) << 24)
+                        self.regs[(inst.reg_a as usize) & 0x0F] = ((packet[offset] as u64) << 24)
                             | ((packet[offset + 1] as u64) << 16)
                             | ((packet[offset + 2] as u64) << 8)
                             | (packet[offset + 3] as u64);
                     }
                 }
                 0x04 => {
-                    self.regs[inst.reg_a as usize] = inst.imm as u64;
+                    self.regs[(inst.reg_a as usize) & 0x0F] = inst.imm as u64;
                 }
                 0x05 => {
-                    self.regs[inst.reg_a as usize] = self.regs[inst.reg_b as usize];
+                    self.regs[(inst.reg_a as usize) & 0x0F] = self.regs[(inst.reg_b as usize) & 0x0F];
                 }
                 0x06 => {
-                    self.flag = self.regs[inst.reg_a as usize] == self.regs[inst.reg_b as usize];
+                    self.flag = self.regs[(inst.reg_a as usize) & 0x0F] == self.regs[(inst.reg_b as usize) & 0x0F];
                 }
                 0x07 => {
-                    self.flag = self.regs[inst.reg_a as usize] > self.regs[inst.reg_b as usize];
+                    self.flag = self.regs[(inst.reg_a as usize) & 0x0F] > self.regs[(inst.reg_b as usize) & 0x0F];
                 }
                 0x08 => {
-                    self.regs[inst.reg_a as usize] &= self.regs[inst.reg_b as usize];
+                    self.regs[(inst.reg_a as usize) & 0x0F] &= self.regs[(inst.reg_b as usize) & 0x0F];
                 }
                 0x09 => {
-                    self.regs[inst.reg_a as usize] |= self.regs[inst.reg_b as usize];
+                    self.regs[(inst.reg_a as usize) & 0x0F] |= self.regs[(inst.reg_b as usize) & 0x0F];
                 }
                 0x0A => {
                     self.pc = inst.imm as usize;

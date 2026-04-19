@@ -358,7 +358,7 @@ pub extern "C" fn kmain() -> ! {
                             let dispatched = if payload.len() > UDP_HEADER_LEN {
                                 let envelope = &payload[UDP_HEADER_LEN..];
                                 if let Some(body) = MGMT_AUTH.get().verify(envelope) {
-                                    dispatch_mgmt(body, engine, now);
+                                    dispatch_mgmt(body, engine, now, &src_ip);
                                     true
                                 } else {
                                     send_alert(&src_ip, AlertReason::MgmtAuthFail.as_u8(), payload);
@@ -402,7 +402,7 @@ pub extern "C" fn kmain() -> ! {
 /// ignored: the auth layer guarantees the sender knows the key, so
 /// quiet-on-malformed is acceptable as long as the verifier itself is
 /// strict.
-fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64) {
+fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, src_ip: &[u8; 4]) {
     use mgmt::mgmt_packet;
     use sec_core::net::constants::ipv4;
     if body.len() < mgmt_packet::MIN_PAYLOAD_LEN {
@@ -447,7 +447,15 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64) {
                         engine.bpf_prog[i] = vm::Instruction::new(op, ra, rb, imm);
                         cursor += upload_bpf::INSTR_SIZE;
                     }
-                    engine.bpf_len = count;
+                    // Reject programs with out-of-range register indices or
+                    // jump targets before they can run on a real packet. The
+                    // previous program (if any) stays active, since `bpf_len`
+                    // and the slots beyond `count` are untouched.
+                    if vm::validate(&engine.bpf_prog[..count]).is_ok() {
+                        engine.bpf_len = count;
+                    } else {
+                        send_alert(src_ip, AlertReason::BpfReject.as_u8(), body);
+                    }
                 }
             }
         }

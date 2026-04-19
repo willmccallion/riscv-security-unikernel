@@ -26,6 +26,10 @@ pub enum AlertReason {
     Pass = 7,
     /// Mgmt-plane packet failed authentication (bad MAC or replayed counter).
     MgmtAuthFail = 8,
+    /// Authenticated mgmt packet uploaded a malformed BPF program (bad
+    /// register index or out-of-range jump target). The program was not
+    /// installed; the previous program (if any) remains active.
+    BpfReject = 9,
 }
 
 impl AlertReason {
@@ -56,6 +60,7 @@ impl AlertReason {
             6 => Some(Self::Flow),
             7 => Some(Self::Pass),
             8 => Some(Self::MgmtAuthFail),
+            9 => Some(Self::BpfReject),
             _ => None,
         }
     }
