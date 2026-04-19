@@ -50,6 +50,15 @@ pub const TOTAL_MEMORY_SIZE: usize = 64 * 1024;
 /// cycles have elapsed since the last report.
 pub const TELEMETRY_INTERVAL_CYCLES: usize = 1_000_000_000;
 
+/// Count-Min Sketch reset interval in CPU cycles.
+///
+/// The heavy-hitter sketch is wiped on this cadence to bound
+/// false-positive growth from hash collisions and to define the
+/// sliding window over which `HEAVY_HITTER_THRESHOLD` applies.
+/// Decoupled from telemetry so that operators can tune reporting
+/// frequency without changing the detector's effective window.
+pub const CMS_RESET_INTERVAL_CYCLES: usize = 1_000_000_000;
+
 /// Flow expiration timeout in CPU cycles.
 ///
 /// Flows that have not been seen within this period are pruned

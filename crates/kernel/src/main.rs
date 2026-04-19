@@ -29,8 +29,9 @@ use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
 use sec_core::config::{
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, FLOW_TIMEOUT_CYCLES,
-    HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION_CYCLES, KERNEL_VERSION, MAC_ADDR,
-    MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS, TELEMETRY_INTERVAL_CYCLES,
+    CMS_RESET_INTERVAL_CYCLES, HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION_CYCLES,
+    KERNEL_VERSION, MAC_ADDR, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS,
+    TELEMETRY_INTERVAL_CYCLES,
     TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY, TOTAL_MEMORY_SIZE,
 };
 use sec_core::net::stack::SynCookieSecret;
@@ -185,6 +186,7 @@ pub extern "C" fn kmain() -> ! {
     let clock = MCycle;
     let mut sink = VirtioNetSink;
     let mut last_report = clock.now();
+    let mut last_cms_reset = last_report;
     let mut stats = [0u64; 8];
 
     // Per-boot SYN-cookie secret. mcycle at this point is whatever the
@@ -224,7 +226,6 @@ pub extern "C" fn kmain() -> ! {
             stats[7] = engine.flow_table.active_count as u64;
 
             send_udp_report(&stats);
-            engine.cms.reset();
             let mem = stats[6];
             let flows = stats[7];
             stats = [0; 8];
@@ -233,6 +234,11 @@ pub extern "C" fn kmain() -> ! {
 
             last_report = now;
             NetDevice::flush();
+        }
+
+        if now.wrapping_sub(last_cms_reset) > CMS_RESET_INTERVAL_CYCLES as u64 {
+            engine.cms.reset();
+            last_cms_reset = now;
         }
 
         let mut work_done = false;
