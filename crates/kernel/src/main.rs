@@ -227,6 +227,15 @@ pub extern "C" fn kmain() -> ! {
         bytes[15] = mc[1] ^ MAC_ADDR[1];
         SynCookieSecret::new(bytes)
     };
+
+    // Same per-boot material reused as the CMS salt so heavy-hitter
+    // detection isn't vulnerable to precomputed 4-way collisions.
+    let cms_seed = clock.now()
+        ^ u64::from_le_bytes([
+            MAC_ADDR[0], MAC_ADDR[1], MAC_ADDR[2], MAC_ADDR[3],
+            MAC_ADDR[4], MAC_ADDR[5], 0, 0,
+        ]);
+    engine.cms.reseed(cms_seed);
     /// Maximum number of packets to process in a single iteration.
     ///
     /// Processing packets in batches improves cache locality and reduces
