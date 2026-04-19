@@ -91,13 +91,22 @@ pub async fn start_background_task(
     stats: Arc<NetStats>,
     log_tx: UnboundedSender<LogEntry>,
     mut cmd_rx: UnboundedReceiver<GuiCommand>,
-) {
-    let socket = UdpSocket::bind(LISTEN_ADDR).await.unwrap();
-    let alert_socket = UdpSocket::bind("0.0.0.0:1337").await.unwrap();
+) -> anyhow::Result<()> {
+    // Fail loudly on bind errors — the alternative was `.unwrap()`,
+    // which tips the whole dashboard over on something as common as
+    // :1337 already being held by a previous GUI instance.
+    let socket = UdpSocket::bind(LISTEN_ADDR)
+        .await
+        .map_err(|e| anyhow::anyhow!("bind {LISTEN_ADDR}: {e}"))?;
+    let alert_socket = UdpSocket::bind("0.0.0.0:1337")
+        .await
+        .map_err(|e| anyhow::anyhow!("bind 0.0.0.0:1337: {e}"))?;
 
     let mut socket_pool = Vec::new();
     for _ in 0..50 {
-        let sock = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        let sock = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| anyhow::anyhow!("bind ephemeral: {e}"))?;
         socket_pool.push(sock);
     }
 

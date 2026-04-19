@@ -47,7 +47,10 @@ async fn main() -> Result<(), eframe::Error> {
 
     let stats_clone = stats.clone();
     tokio::spawn(async move {
-        traffic::start_background_task(stats_clone, log_tx, cmd_rx).await;
+        if let Err(e) = traffic::start_background_task(stats_clone, log_tx, cmd_rx).await {
+            eprintln!("[gui] background task failed: {e}");
+            std::process::exit(1);
+        }
     });
 
     let (log_tx_sync, log_rx_sync) = std::sync::mpsc::channel();
