@@ -52,17 +52,48 @@ impl HeuristicEngine {
     /// Some reason string if suspicious pattern detected, None otherwise
     pub fn check_payload(payload: &[u8]) -> Option<&'static str> {
         use super::heuristic_constants::payload;
-        let mut consecutive_nops = 0;
+        // x86 0x90 NOP sled detection. The previous implementation
+        // reset the counter on any non-NOP byte, so an attacker could
+        // bypass with a single junk byte every few NOPs (e.g.
+        // [0x00, 0x90, 0x90] repeated). Switch to a saturating-decay
+        // counter: still triggers on 8 contiguous NOPs, but also on
+        // payloads where NOPs strongly outnumber non-NOPs over a
+        // short window.
+        let mut nop_score: usize = 0;
         for &byte in payload {
             if byte == payload::NOP_OPCODE {
-                consecutive_nops += 1;
-                if consecutive_nops >= payload::MIN_NOP_SLED_LENGTH {
+                nop_score += 1;
+                if nop_score >= payload::MIN_NOP_SLED_LENGTH {
                     return Some("Heuristic: Shellcode (NOP Sled)");
                 }
             } else {
-                consecutive_nops = 0;
+                nop_score = nop_score.saturating_sub(1);
             }
         }
+
+        // RISC-V `addi x0, x0, 0` is the canonical NOP, encoded in
+        // little-endian as 0x13 0x00 0x00 0x00. Detect runs at any
+        // offset (a sled doesn't have to start aligned with the
+        // payload boundary).
+        const RISCV_NOP: [u8; 4] = [0x13, 0x00, 0x00, 0x00];
+        const MIN_RISCV_NOPS: usize = 8;
+        if payload.len() >= RISCV_NOP.len() * MIN_RISCV_NOPS {
+            let mut consec = 0usize;
+            let mut i = 0usize;
+            while i + RISCV_NOP.len() <= payload.len() {
+                if payload[i..i + RISCV_NOP.len()] == RISCV_NOP {
+                    consec += 1;
+                    if consec >= MIN_RISCV_NOPS {
+                        return Some("Heuristic: Shellcode (RISC-V NOP Sled)");
+                    }
+                    i += RISCV_NOP.len();
+                } else {
+                    consec = 0;
+                    i += 1;
+                }
+            }
+        }
+
         None
     }
 }
