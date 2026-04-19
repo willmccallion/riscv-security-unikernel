@@ -22,7 +22,7 @@
 )]
 
 use proptest::prelude::*;
-use sec_core::security::dos::{CountMinSketch, PenaltyBox};
+use sec_core::security::dos::{CountMinSketch, PenaltyBox, TokenBucket};
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::FlowTable;
 
@@ -193,5 +193,38 @@ proptest! {
         let mut ac = AhoCorasick::new();
         let _ = ac.insert(&pattern);
         prop_assert!(!ac.scan(&hay), "haystack of disjoint alphabet must not match");
+    }
+}
+
+// -------------------------------------------------------------- TokenBucket
+
+proptest! {
+    /// Bounded-rate invariant. Over `steps` calls spaced `step_size`
+    /// time-units apart, the total number of `allow()` successes can
+    /// never exceed `capacity + total_elapsed / cost`: the bucket can
+    /// issue its starting capacity immediately, plus one token for
+    /// every `cost` units that pass. Anything above that would be a
+    /// rate-limit bypass.
+    #[test]
+    fn token_bucket_respects_capacity_plus_refill(
+        capacity in 1u64..=64,
+        cost in 1u64..=1_000,
+        step_size in 0u64..=2_000,
+        steps in 1u64..=256,
+    ) {
+        let mut b = TokenBucket::new(capacity, cost);
+        let mut passed: u64 = 0;
+        for i in 0..steps {
+            let now = i.saturating_mul(step_size);
+            if b.allow(now) {
+                passed += 1;
+            }
+        }
+        let total_elapsed = steps.saturating_sub(1).saturating_mul(step_size);
+        let upper = capacity + total_elapsed / cost;
+        prop_assert!(
+            passed <= upper,
+            "passed {passed} exceeded capacity({capacity}) + elapsed({total_elapsed})/cost({cost}) = {upper}"
+        );
     }
 }

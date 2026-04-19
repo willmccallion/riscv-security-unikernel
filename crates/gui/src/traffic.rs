@@ -218,9 +218,7 @@ pub async fn start_background_task(
                     GuiCommand::SetMode(m) => mode = m,
                     GuiCommand::BanIp(ip_str) => {
                         if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
-                            let mut body = [0u8; 5];
-                            body[0] = ManagementMessageType::BanIp as u8;
-                            body[1..].copy_from_slice(&ip.octets());
+                            let body = build_ban_ip_body(ip);
                             send_sealed(&socket_pool[0], &mgmt_key, &body).await;
 
                             let entry = LogEntry {
@@ -238,44 +236,18 @@ pub async fn start_background_task(
                         }
                     }
                     GuiCommand::BlockPort(port) => {
-                        let mut body = [0u8; 3];
-                        body[0] = ManagementMessageType::BlockPort as u8;
-                        body[1..3].copy_from_slice(&port.to_be_bytes());
+                        let body = build_block_port_body(port);
                         send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                     }
                     GuiCommand::AddDpiPattern(pattern) => {
-                        // Kernel caps patterns at add_dpi::MAX_PATTERN_LEN (32).
-                        // Anything larger gets rejected silently by the
-                        // dispatcher, so cap here too rather than shipping a
-                        // packet that will be dropped.
-                        use sec_core::security::mgmt::mgmt_packet::add_dpi;
-                        if pattern.is_empty() || pattern.len() > add_dpi::MAX_PATTERN_LEN {
-                            continue;
+                        if let Some(body) = build_add_dpi_body(&pattern) {
+                            send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                         }
-                        let mut body = Vec::with_capacity(2 + pattern.len());
-                        body.push(ManagementMessageType::AddDpiPattern as u8);
-                        body.push(pattern.len() as u8);
-                        body.extend_from_slice(&pattern);
-                        send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                     }
                     GuiCommand::UploadBpf(bytecode) => {
-                        // Each instruction is INSTR_SIZE bytes; the kernel
-                        // accepts up to MAX_INSTR_COUNT of them. Reject
-                        // anything malformed before we bother signing it.
-                        use sec_core::security::mgmt::mgmt_packet::upload_bpf;
-                        if bytecode.is_empty()
-                            || bytecode.len() % upload_bpf::INSTR_SIZE != 0
-                            || bytecode.len() / upload_bpf::INSTR_SIZE
-                                > upload_bpf::MAX_INSTR_COUNT
-                        {
-                            continue;
+                        if let Some(body) = build_upload_bpf_body(&bytecode) {
+                            send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                         }
-                        let count = bytecode.len() / upload_bpf::INSTR_SIZE;
-                        let mut body = Vec::with_capacity(2 + bytecode.len());
-                        body.push(ManagementMessageType::UploadBpfProgram as u8);
-                        body.push(count as u8);
-                        body.extend_from_slice(&bytecode);
-                        send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                     }
                 }
             }
@@ -481,5 +453,234 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         packet_len,
         msg,
         color,
+    }
+}
+
+/// Build the unsealed body for a `BanIp` command. The kernel reads
+/// the type byte at offset 0 and the 4-byte IP at offsets 1..5.
+fn build_ban_ip_body(ip: std::net::Ipv4Addr) -> [u8; 5] {
+    let mut body = [0u8; 5];
+    body[0] = ManagementMessageType::BanIp as u8;
+    body[1..].copy_from_slice(&ip.octets());
+    body
+}
+
+/// Build the unsealed body for a `BlockPort` command (type byte +
+/// big-endian u16).
+fn build_block_port_body(port: u16) -> [u8; 3] {
+    let mut body = [0u8; 3];
+    body[0] = ManagementMessageType::BlockPort as u8;
+    body[1..3].copy_from_slice(&port.to_be_bytes());
+    body
+}
+
+/// Build the unsealed body for an `AddDpiPattern` command, or return
+/// `None` if the pattern is empty or longer than the kernel's cap.
+/// Caps enforced here match `mgmt_packet::add_dpi::MAX_PATTERN_LEN`;
+/// a pattern past that would be rejected by the dispatcher silently,
+/// so filter here to avoid shipping a packet doomed to fail.
+fn build_add_dpi_body(pattern: &[u8]) -> Option<Vec<u8>> {
+    use sec_core::security::mgmt::mgmt_packet::add_dpi;
+    if pattern.is_empty() || pattern.len() > add_dpi::MAX_PATTERN_LEN {
+        return None;
+    }
+    let mut body = Vec::with_capacity(2 + pattern.len());
+    body.push(ManagementMessageType::AddDpiPattern as u8);
+    body.push(pattern.len() as u8);
+    body.extend_from_slice(pattern);
+    Some(body)
+}
+
+/// Build the unsealed body for an `UploadBpfProgram` command. Returns
+/// `None` if the bytecode is empty, not a multiple of `INSTR_SIZE`,
+/// or exceeds `MAX_INSTR_COUNT` — all of which the kernel would
+/// reject.
+fn build_upload_bpf_body(bytecode: &[u8]) -> Option<Vec<u8>> {
+    use sec_core::security::mgmt::mgmt_packet::upload_bpf;
+    if bytecode.is_empty()
+        || bytecode.len() % upload_bpf::INSTR_SIZE != 0
+        || bytecode.len() / upload_bpf::INSTR_SIZE > upload_bpf::MAX_INSTR_COUNT
+    {
+        return None;
+    }
+    let count = bytecode.len() / upload_bpf::INSTR_SIZE;
+    let mut body = Vec::with_capacity(2 + bytecode.len());
+    body.push(ManagementMessageType::UploadBpfProgram as u8);
+    body.push(count as u8);
+    body.extend_from_slice(bytecode);
+    Some(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sec_core::security::alert::{AlertReason, alert_packet};
+    use sec_core::security::mgmt::{ManagementMessageType, mgmt_packet};
+    use sec_core::security::mgmt_auth::{MgmtAuth, seal};
+
+    const TEST_KEY: [u8; 16] = *b"TEST-KEY-TEST!KE";
+
+    /// Seal `body` under a fresh verifier, round-trip it, and return
+    /// the bytes the kernel would actually dispatch on. Failing to
+    /// verify would mean the GUI is signing a packet the kernel will
+    /// reject — which was the original C1 bug.
+    fn seal_and_verify(body: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0u8; 8 + body.len() + 8];
+        let n = seal(&TEST_KEY, 1, body, &mut packet).expect("seal into sized buffer");
+        let mut auth = MgmtAuth::new(TEST_KEY);
+        auth.verify(&packet[..n])
+            .expect("sealed packet must verify with same key")
+            .to_vec()
+    }
+
+    // ----- mgmt packet construction (covers C1 regression) -----
+
+    #[test]
+    fn ban_ip_body_roundtrips_to_kernel_view() {
+        let body = build_ban_ip_body(std::net::Ipv4Addr::new(10, 0, 0, 42));
+        let verified = seal_and_verify(&body);
+        assert_eq!(verified[0], ManagementMessageType::BanIp as u8);
+        assert_eq!(
+            &verified[mgmt_packet::ban_ip::IP_OFFSET..mgmt_packet::ban_ip::IP_OFFSET + 4],
+            &[10, 0, 0, 42],
+        );
+    }
+
+    #[test]
+    fn block_port_body_roundtrips_to_kernel_view() {
+        let body = build_block_port_body(8443);
+        let verified = seal_and_verify(&body);
+        assert_eq!(verified[0], ManagementMessageType::BlockPort as u8);
+        let port = u16::from_be_bytes([
+            verified[mgmt_packet::block_port::PORT_OFFSET],
+            verified[mgmt_packet::block_port::PORT_OFFSET + 1],
+        ]);
+        assert_eq!(port, 8443);
+    }
+
+    #[test]
+    fn add_dpi_body_roundtrips_to_kernel_view() {
+        let pattern = b"DROP TABLE users";
+        let body = build_add_dpi_body(pattern).expect("within cap");
+        let verified = seal_and_verify(&body);
+        assert_eq!(verified[0], ManagementMessageType::AddDpiPattern as u8);
+        let len = verified[mgmt_packet::add_dpi::LEN_OFFSET] as usize;
+        assert_eq!(len, pattern.len());
+        assert_eq!(
+            &verified[mgmt_packet::add_dpi::PATTERN_OFFSET
+                ..mgmt_packet::add_dpi::PATTERN_OFFSET + len],
+            pattern,
+        );
+    }
+
+    #[test]
+    fn add_dpi_rejects_empty_and_oversize() {
+        assert!(build_add_dpi_body(&[]).is_none());
+        let too_big =
+            vec![0xAA; sec_core::security::mgmt::mgmt_packet::add_dpi::MAX_PATTERN_LEN + 1];
+        assert!(build_add_dpi_body(&too_big).is_none());
+    }
+
+    #[test]
+    fn upload_bpf_body_roundtrips_to_kernel_view() {
+        use mgmt_packet::upload_bpf;
+        // Two instructions (7 bytes each) so the count-byte and body
+        // lengths are non-trivially entwined.
+        let bytecode = vec![0u8; upload_bpf::INSTR_SIZE * 2];
+        let body = build_upload_bpf_body(&bytecode).expect("valid bytecode");
+        let verified = seal_and_verify(&body);
+        assert_eq!(verified[0], ManagementMessageType::UploadBpfProgram as u8);
+        let count = verified[upload_bpf::COUNT_OFFSET] as usize;
+        assert_eq!(count, 2);
+        assert_eq!(
+            &verified[upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + bytecode.len()],
+            &bytecode[..],
+        );
+    }
+
+    #[test]
+    fn upload_bpf_rejects_malformed_bytecode() {
+        use mgmt_packet::upload_bpf;
+        assert!(build_upload_bpf_body(&[]).is_none());
+        // Not a multiple of INSTR_SIZE.
+        assert!(build_upload_bpf_body(&[0u8; 3]).is_none());
+        // Exceeds MAX_INSTR_COUNT.
+        let too_many = vec![0u8; upload_bpf::INSTR_SIZE * (upload_bpf::MAX_INSTR_COUNT + 1)];
+        assert!(build_upload_bpf_body(&too_many).is_none());
+    }
+
+    // ----- alert parser (covers H3 regression) -----
+
+    /// Build a well-formed 17-byte alert body with all metadata fields
+    /// set to recognisable canary values.
+    fn make_alert(reason: u8) -> Vec<u8> {
+        let mut data = vec![0u8; alert_packet::ALERT_BODY_LEN];
+        data[0] = alert_packet::ALERT_MESSAGE_TYPE;
+        data[alert_packet::REASON_OFFSET] = reason;
+        data[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4]
+            .copy_from_slice(&[192, 168, 1, 50]);
+        data[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + 4]
+            .copy_from_slice(&[10, 0, 0, 1]);
+        data[alert_packet::SRC_PORT_OFFSET..alert_packet::SRC_PORT_OFFSET + 2]
+            .copy_from_slice(&1234u16.to_be_bytes());
+        data[alert_packet::DST_PORT_OFFSET..alert_packet::DST_PORT_OFFSET + 2]
+            .copy_from_slice(&80u16.to_be_bytes());
+        data[alert_packet::PROTOCOL_OFFSET] = 6;
+        data[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
+            .copy_from_slice(&512u16.to_be_bytes());
+        data
+    }
+
+    #[test]
+    fn alert_parser_recovers_every_reason_variant() {
+        let cases = [
+            (AlertReason::Ddos, "[DDoS]"),
+            (AlertReason::Firewall, "[FIREWALL]"),
+            (AlertReason::Malware, "[MALWARE]"),
+            (AlertReason::Ebpf, "[eBPF]"),
+            (AlertReason::Heuristic, "[HEURISTIC]"),
+            (AlertReason::Flow, "[FLOW]"),
+            (AlertReason::Pass, "[PASS]"),
+            (AlertReason::MgmtAuthFail, "[MGMT AUTH]"),
+            (AlertReason::BpfReject, "[BPF REJECT]"),
+        ];
+        for (reason, tag) in cases {
+            let data = make_alert(reason.as_u8());
+            let entry = parse_alert(&data);
+            assert!(
+                entry.msg.starts_with(tag),
+                "reason {reason:?} → msg {:?} should start with {tag}",
+                entry.msg,
+            );
+            assert_eq!(entry.src_ip, "192.168.1.50");
+            assert_eq!(entry.dst_ip, "10.0.0.1");
+            assert_eq!(entry.src_port, 1234);
+            assert_eq!(entry.dst_port, 80);
+            assert_eq!(entry.protocol, 6);
+            assert_eq!(entry.packet_len, 512);
+        }
+    }
+
+    #[test]
+    fn alert_parser_rejects_every_short_packet_length() {
+        // H3 regression: the GUI binds 0.0.0.0:1337, so a one-byte UDP
+        // `\x02` from anywhere on the segment would panic parse_alert
+        // before the length guard. Walk every short length.
+        for n in 0..alert_packet::ALERT_BODY_LEN {
+            let data = vec![0x02u8; n];
+            let entry = parse_alert(&data);
+            assert!(
+                entry.msg.starts_with("[MALFORMED]"),
+                "len {n} → expected MALFORMED, got {:?}",
+                entry.msg,
+            );
+        }
+    }
+
+    #[test]
+    fn alert_parser_handles_unknown_reason_byte() {
+        let data = make_alert(99);
+        let entry = parse_alert(&data);
+        assert_eq!(entry.msg, "Unknown Alert");
     }
 }

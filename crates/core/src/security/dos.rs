@@ -263,3 +263,77 @@ impl TokenBucket {
         }
     }
 }
+
+#[cfg(test)]
+mod token_bucket_tests {
+    use super::TokenBucket;
+
+    #[test]
+    fn starts_full() {
+        let mut b = TokenBucket::new(5, 10);
+        for _ in 0..5 {
+            assert!(b.allow(0));
+        }
+        assert!(!b.allow(0), "6th packet at same tick must be denied");
+    }
+
+    #[test]
+    fn refills_over_time() {
+        let mut b = TokenBucket::new(5, 10);
+        for _ in 0..5 {
+            assert!(b.allow(0));
+        }
+        // 30 ticks elapsed → delta 30, cost 10 → 3 new tokens.
+        assert!(b.allow(30));
+        assert!(b.allow(30));
+        assert!(b.allow(30));
+        assert!(!b.allow(30));
+    }
+
+    #[test]
+    fn refill_saturates_at_capacity() {
+        let mut b = TokenBucket::new(5, 10);
+        for _ in 0..5 {
+            assert!(b.allow(0));
+        }
+        // Huge elapsed time — refill would be billions, must clamp to capacity.
+        assert!(b.allow(u64::MAX / 2));
+        for _ in 0..4 {
+            assert!(b.allow(u64::MAX / 2));
+        }
+        assert!(!b.allow(u64::MAX / 2));
+    }
+
+    #[test]
+    fn cost_zero_never_refills() {
+        // Guard against division by zero. The bucket is usable up to
+        // its starting capacity and then permanently empty.
+        let mut b = TokenBucket::new(3, 0);
+        assert!(b.allow(0));
+        assert!(b.allow(100));
+        assert!(b.allow(u64::MAX));
+        assert!(!b.allow(u64::MAX));
+    }
+
+    #[test]
+    fn wraparound_elapsed_is_handled() {
+        // `now.wrapping_sub(last_time)` must tolerate the clock source
+        // rolling. Seed last_time near u64::MAX, then call with a small
+        // `now` — delta wraps to a positive refill amount, not to zero.
+        let mut b = TokenBucket::new(1, 10);
+        assert!(b.allow(u64::MAX - 5));
+        assert!(!b.allow(u64::MAX - 5));
+        // 10 ticks after u64::MAX - 5 = wraps to 4.
+        assert!(b.allow(4));
+    }
+
+    #[test]
+    fn denies_when_drained_without_elapsed_time() {
+        let mut b = TokenBucket::new(2, 100);
+        assert!(b.allow(50));
+        assert!(b.allow(50));
+        // 50 ticks later — delta 0 from last_time (which is still 0
+        // because refill never ran), cost 100, so no refill yet.
+        assert!(!b.allow(50));
+    }
+}
