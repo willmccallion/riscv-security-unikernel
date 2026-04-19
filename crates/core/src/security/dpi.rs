@@ -247,6 +247,12 @@ pub enum DynRulesError {
     Full,
     /// The submitted pattern is longer than 32 bytes.
     TooLong,
+    /// The submitted pattern has zero length. Accepting one would
+    /// store a pattern whose effective match-width is zero; `check`
+    /// then calls `slice::windows(0)`, which the standard library
+    /// defines as a panic. Rejecting at add-time turns a crashable
+    /// mgmt command into a visible error.
+    Empty,
 }
 
 /// matching for pattern detection.
@@ -287,10 +293,15 @@ impl DynamicRules {
     ///
     /// # Errors
     ///
-    /// Returns [`DynRulesError::TooLong`] if the pattern is longer
-    /// than 32 bytes, or [`DynRulesError::Full`] if the 8-slot table
-    /// is already full.
+    /// Returns [`DynRulesError::Empty`] if the pattern is zero-length
+    /// (would crash `check` via `slice::windows(0)`),
+    /// [`DynRulesError::TooLong`] if the pattern is longer than 32
+    /// bytes, or [`DynRulesError::Full`] if the 8-slot table is
+    /// already full.
     pub fn add(&mut self, pattern: &[u8]) -> Result<(), DynRulesError> {
+        if pattern.is_empty() {
+            return Err(DynRulesError::Empty);
+        }
         if pattern.len() > 32 {
             return Err(DynRulesError::TooLong);
         }

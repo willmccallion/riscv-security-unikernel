@@ -402,6 +402,23 @@ fn dynamic_rules_overflow_is_signalled() {
     );
 }
 
+/// An empty pattern must be rejected at add-time. The check path calls
+/// `payload.windows(pat.len())`, and `slice::windows(0)` is defined to
+/// panic; storing a zero-length pattern turns the next data-plane
+/// packet into a kernel panic. Accepting `len=0` through the mgmt
+/// dispatcher (which sources `len` from an attacker-controlled byte)
+/// was a single-packet post-auth kill switch until this check landed.
+#[test]
+fn dynamic_rules_rejects_empty_pattern() {
+    let mut rules = DynamicRules::new();
+    assert_eq!(rules.add(&[]), Err(DynRulesError::Empty));
+    // Empty pattern must not have been stored; a non-empty add after
+    // it still succeeds and does not panic on `check`.
+    assert!(rules.add(b"abc").is_ok());
+    assert!(rules.check(b"xxabcxx"));
+    assert!(!rules.check(b"xxxxxx"));
+}
+
 /// The eBPF VM has 16 registers but encodes register indices as `u8`,
 /// so an attacker-supplied program can request register 20. The VM
 /// must reject or clamp instead of panicking, since a panic in the
