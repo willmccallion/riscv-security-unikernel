@@ -3,6 +3,18 @@
 //! Maintains a list of blocked destination ports and provides
 //! fast lookup for packet filtering decisions.
 
+/// Reasons a [`FirewallState::block_port`] call may be rejected.
+///
+/// The previous version of `block_port` returned `()` and silently
+/// dropped on overflow, so an operator adding a 17th port saw no error
+/// and believed it was loaded. A `Result` makes the rejection visible
+/// so the mgmt dispatcher can raise `MgmtRejected`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirewallError {
+    /// The 16-slot table is already full.
+    Full,
+}
+
 /// Firewall state tracking blocked ports.
 ///
 /// Maintains a fixed-size array of blocked port numbers for
@@ -32,18 +44,27 @@ impl FirewallState {
 
     /// Blocks a destination port.
     ///
-    /// Adds the port to the blocked list if there is space. Silently
-    /// ignores the request if the table is already full (caller may
-    /// instead observe state via [`Self::is_blocked`]).
+    /// Duplicates are no-ops that return `Ok(())`: without dedup an
+    /// authenticated attacker could spam the same port 16 times and
+    /// permanently wedge the table against further legitimate blocks.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `port` - Port number to block
-    pub fn block_port(&mut self, port: u16) {
-        if self.count < 16 {
-            self.blocked_ports[self.count] = port;
-            self.count += 1;
+    /// Returns [`FirewallError::Full`] if the 16-slot table is full
+    /// and `port` is not already present. Callers must surface the
+    /// error rather than discard it.
+    pub fn block_port(&mut self, port: u16) -> Result<(), FirewallError> {
+        for i in 0..self.count {
+            if self.blocked_ports[i] == port {
+                return Ok(());
+            }
         }
+        if self.count >= 16 {
+            return Err(FirewallError::Full);
+        }
+        self.blocked_ports[self.count] = port;
+        self.count += 1;
+        Ok(())
     }
 
     /// Checks if a port is blocked.

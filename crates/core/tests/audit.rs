@@ -23,6 +23,7 @@ use sec_core::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
+use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::FlowTable;
 use sec_core::security::heuristic::HeuristicEngine;
 use sec_core::security::mgmt_auth::{MgmtAuth, seal};
@@ -417,6 +418,34 @@ fn dynamic_rules_rejects_empty_pattern() {
     assert!(rules.add(b"abc").is_ok());
     assert!(rules.check(b"xxabcxx"));
     assert!(!rules.check(b"xxxxxx"));
+}
+
+/// `FirewallState::block_port` used to return `()` and had no dedup,
+/// so an authenticated attacker could send `BlockPort(P)` 16 times
+/// and permanently wedge the table against further legitimate blocks
+/// — overflow was silent and duplicates consumed all 16 slots. The
+/// fix dedups and returns a Result so the kernel raises
+/// `MgmtRejected`.
+#[test]
+fn firewall_dedups_and_signals_overflow() {
+    let mut fw = FirewallState::new();
+    // Same port 16 times must only consume one slot.
+    for _ in 0..16 {
+        assert_eq!(fw.block_port(9000), Ok(()));
+    }
+    // A different port still fits — dedup worked.
+    assert_eq!(fw.block_port(9001), Ok(()));
+    assert!(fw.is_blocked(9000));
+    assert!(fw.is_blocked(9001));
+
+    // Fill the remaining 14 slots with distinct ports, then confirm
+    // the next distinct port overflows visibly.
+    for p in 0..14u16 {
+        assert_eq!(fw.block_port(10_000 + p), Ok(()));
+    }
+    assert_eq!(fw.block_port(30_000), Err(FirewallError::Full));
+    // An already-blocked port still returns Ok even when full.
+    assert_eq!(fw.block_port(9000), Ok(()));
 }
 
 /// The eBPF VM has 16 registers but encodes register indices as `u8`,

@@ -139,7 +139,7 @@ impl SecurityEngine {
         let _ = self.ac.insert(b"eval(");
         let _ = self.ac.insert(b"UNION SELECT");
         self.ac.build();
-        self.fw.block_port(DEFAULT_BLOCKED_PORT);
+        let _ = self.fw.block_port(DEFAULT_BLOCKED_PORT);
     }
 }
 
@@ -596,10 +596,8 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, meta: &Aler
                 let p = (body[block_port::PORT_OFFSET] as u16) << 8
                     | body[block_port::PORT_OFFSET + 1] as u16;
                 // Blocking the mgmt port is an unrecoverable self-lockout: the RX firewall check runs before dispatch and there is no unblock path.
-                if p == MANAGEMENT_PORT {
+                if p == MANAGEMENT_PORT || engine.fw.block_port(p).is_err() {
                     send_alert(meta, AlertReason::MgmtRejected.as_u8());
-                } else {
-                    engine.fw.block_port(p);
                 }
             }
         }
