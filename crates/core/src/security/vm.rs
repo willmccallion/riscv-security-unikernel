@@ -70,13 +70,10 @@ pub fn validate(program: &[Instruction]) -> Result<(), VmError> {
         if inst.reg_a >= 16 || inst.reg_b >= 16 {
             return Err(VmError::InvalidRegister);
         }
-        match inst.op {
-            0x0A | 0x0B | 0x0C => {
-                if inst.imm >= len {
-                    return Err(VmError::InvalidJumpTarget);
-                }
-            }
-            _ => {}
+        if let 0x0A..=0x0C = inst.op
+            && inst.imm >= len
+        {
+            return Err(VmError::InvalidJumpTarget);
         }
     }
     Ok(())
