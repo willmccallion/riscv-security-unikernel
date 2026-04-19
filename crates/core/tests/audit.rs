@@ -242,6 +242,37 @@ fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
     assert_eq!(dp, 23);
 }
 
+/// Regression: a SYN with `seq == u32::MAX` must wrap the ACK number
+/// rather than panic on `seq + 1`. Found by the cargo-fuzz
+/// `process_packet` target during Checkpoint E.
+#[test]
+fn process_packet_handles_syn_with_max_seq_without_panicking() {
+    let mut sink = CaptureSink::default();
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, u32::MAX, &[]);
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame, &mut sink, &secret);
+}
+
+/// Regression: an ICMP echo request with only one byte of payload
+/// past the IP header must not OOB-panic when writing the echo reply
+/// header. Found by the cargo-fuzz `process_packet` target.
+#[test]
+fn process_packet_handles_truncated_icmp_without_panicking() {
+    use sec_core::net::constants::{IpProtocol, ethernet, ipv4};
+    let total = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE + 1;
+    let mut frame = vec![0u8; total];
+    frame[ethernet::TYPE_OFFSET] = 0x08;
+    frame[ethernet::TYPE_OFFSET + 1] = 0x00;
+    frame[ipv4::VERSION_IHL_OFFSET] = 0x45;
+    frame[ipv4::PROTOCOL_OFFSET] = IpProtocol::Icmp as u8;
+    frame[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+        .copy_from_slice(&[192, 168, 100, 2]);
+    frame[ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE] = 8; // EchoRequest
+    let mut sink = CaptureSink::default();
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame, &mut sink, &secret);
+}
+
 /// `process_packet` answers a SYN with a SYN-ACK without consulting
 /// any firewall — the firewall gate must therefore live in the caller.
 #[test]

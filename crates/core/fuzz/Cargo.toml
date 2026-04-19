@@ -1,0 +1,53 @@
+# Detach from the parent workspace; cargo-fuzz uses its own profile and
+# nightly toolchain.
+[workspace]
+
+[package]
+name = "sec-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+authors = ["Will McCallion"]
+license = "MIT OR Apache-2.0"
+# Excluded from the workspace (see root Cargo.toml `workspace.exclude`)
+# because cargo-fuzz needs nightly + libFuzzer instrumentation, which we
+# don't want every workspace `cargo build` to drag in. Run via `make fuzz-*`.
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sec-core = { path = ".." }
+
+[[bin]]
+name = "process_packet"
+path = "fuzz_targets/process_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mgmt_auth_verify"
+path = "fuzz_targets/mgmt_auth_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vm_execute"
+path = "fuzz_targets/vm_execute.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ahocorasick_scan"
+path = "fuzz_targets/ahocorasick_scan.rs"
+test = false
+doc = false
+bench = false
+
+# cargo-fuzz binaries don't need the workspace lint set; relax the strict
+# pedantic/nursery deny so the fuzz harness compiles without ceremony.
+[lints]

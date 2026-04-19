@@ -177,7 +177,13 @@ fn handle_ipv4<'a, S: PacketSink>(
 
     if IpProtocol::from_u8(protocol) == Some(IpProtocol::Icmp) {
         let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        if offset < packet.len() && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
+        // Need at least 4 bytes (type + code + 2-byte checksum) to write
+        // the echo reply header back into the buffer. RFC 792 actually
+        // requires 8 (type/code/csum/id/seq), but only the first four
+        // are written, so 4 is the OOB bound. Found by fuzzer crash 2.
+        const ICMP_HEADER_MIN: usize = 4;
+        if offset + ICMP_HEADER_MIN <= packet.len()
+            && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
         {
             let old_src_mac = [
                 packet[ethernet::SRC_MAC_OFFSET],
@@ -297,7 +303,17 @@ fn handle_tcp<S: PacketSink>(
         let dst_port = u16::from_be(tcp.dst_port);
         let cookie = syn_secret.cookie(src_ip, dst_ip, src_port, dst_port);
 
-        send_tcp_reply_inplace(packet, offset, cookie, seq + 1, TCP_SYN | TCP_ACK, sink);
+        // TCP sequence numbers wrap (RFC 793 §3.3); a SYN with
+        // seq=0xFFFFFFFF is legal, so the ACK must wrap to 0 instead
+        // of overflowing. Found by fuzzer crash 1.
+        send_tcp_reply_inplace(
+            packet,
+            offset,
+            cookie,
+            seq.wrapping_add(1),
+            TCP_SYN | TCP_ACK,
+            sink,
+        );
     }
 }
 
