@@ -160,6 +160,8 @@ run: kernel setup_net
 		-kernel $(KERNEL_BIN) \
 		-netdev tap,id=n0,ifname=$(TAP_DEV),script=no,downscript=no \
 		-device virtio-net-device,netdev=n0 \
+		-object rng-random,id=rng0,filename=/dev/urandom \
+		-device virtio-rng-device,rng=rng0 \
 		-echr 0x02
 
 # Run criterion benchmarks (host-native, no QEMU required)

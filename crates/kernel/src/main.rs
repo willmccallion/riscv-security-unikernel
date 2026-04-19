@@ -24,6 +24,7 @@ mod time_riscv;
 
 use crate::allocator::ALLOCATOR;
 use crate::drivers::net_device::NetDevice;
+use crate::drivers::virtio_rng::VirtioRng;
 use crate::net_sink::VirtioNetSink;
 use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
@@ -157,6 +158,7 @@ pub extern "C" fn kmain() -> ! {
     // init, before the packet loop begins.
     unsafe { (*::core::ptr::addr_of_mut!(ALLOCATOR)).init() };
     NetDevice::init();
+    let rng_present = VirtioRng::init();
 
     let engine = ENGINE.get();
     engine.init();
@@ -216,37 +218,56 @@ pub extern "C" fn kmain() -> ! {
     //      outgoing mgmt counters and detect kernel reboots)
     let mut stats = [0u64; 10];
 
-    // Per-boot SYN-cookie secret. mcycle at this point is whatever the
-    // hart counter reached during init — varies across boots — and we
-    // mix in the MAC so two kernels booting at the same cycle still
-    // diverge. SipHash inside `cookie` does the rest.
+    // Gather 32 bytes of per-boot entropy. virtio-rng (when present
+    // under QEMU or any RNG-equipped hypervisor) gives us the real
+    // thing; without it we fall back to mcycle XOR MAC, which is weak
+    // — `mcycle` at this point varies by host scheduling jitter on the
+    // order of ~10–13 bits, and the MAC is a compile-time constant.
+    // The fallback is logged so an operator deploying to bare hardware
+    // sees that the SYN-cookie / CMS / mgmt-auth secrets are not
+    // unforgeable. Add a hardware TRNG (Zkr / SiFive TRNG / OpenSBI)
+    // before relying on it.
+    let mut entropy = [0u8; 32];
+    let n = if rng_present {
+        VirtioRng::read_into(&mut entropy)
+    } else {
+        0
+    };
+    if n < entropy.len() {
+        crate::kprintln!(
+            "[!] virtio-rng unavailable (got {n}/32 bytes); falling back to mcycle XOR MAC. \
+            Per-boot secrets are predictable — do not deploy."
+        );
+        let mc = clock.now();
+        for (i, b) in entropy.iter_mut().enumerate().skip(n) {
+            // Spread the cycle counter and MAC across the remaining
+            // bytes so even a degenerate fallback isn't all zeros.
+            *b = ((mc >> ((i % 8) * 8)) as u8) ^ MAC_ADDR[i % MAC_ADDR.len()];
+        }
+    }
+
+    // Per-boot SYN-cookie secret: first 16 bytes of the entropy pool.
     let syn_secret = {
         let mut bytes = [0u8; 16];
-        let mc = clock.now().to_le_bytes();
-        bytes[..8].copy_from_slice(&mc);
-        bytes[8..14].copy_from_slice(&MAC_ADDR);
-        bytes[14] = mc[0] ^ MAC_ADDR[0];
-        bytes[15] = mc[1] ^ MAC_ADDR[1];
+        bytes.copy_from_slice(&entropy[..16]);
         SynCookieSecret::new(bytes)
     };
 
-    // Same per-boot material reused as the CMS salt so heavy-hitter
-    // detection isn't vulnerable to precomputed 4-way collisions.
-    let cms_seed = clock.now()
-        ^ u64::from_le_bytes([
-            MAC_ADDR[0], MAC_ADDR[1], MAC_ADDR[2], MAC_ADDR[3],
-            MAC_ADDR[4], MAC_ADDR[5], 0, 0,
-        ]);
+    // CMS salt: next 8 bytes. Defends heavy-hitter detection against
+    // precomputed 4-way collisions.
+    let cms_seed = u64::from_le_bytes(entropy[16..24].try_into().unwrap());
     engine.cms.reseed(cms_seed);
 
-    // Per-boot mgmt-auth epoch. Folded into the high 32 bits of every
-    // accepted mgmt counter, so a packet captured under one boot can
-    // never replay against another. Derived from the same per-boot
-    // material as the CMS seed for consistency. A non-zero epoch is
-    // required for any mgmt packet to verify, so this MUST run before
-    // the packet loop.
-    let mgmt_epoch = (cms_seed as u32) ^ ((cms_seed >> 32) as u32);
-    let mgmt_epoch = if mgmt_epoch == 0 { 1 } else { mgmt_epoch };
+    // Mgmt-auth epoch: final 4 bytes, folded with another 4 to avoid
+    // accidentally landing on 0 (which the verifier treats as
+    // uninitialised). Stamped into the high 32 bits of every accepted
+    // mgmt counter so a packet captured under one boot can never
+    // replay against another. MUST run before the packet loop.
+    let mut mgmt_epoch = u32::from_le_bytes(entropy[24..28].try_into().unwrap())
+        ^ u32::from_le_bytes(entropy[28..32].try_into().unwrap());
+    if mgmt_epoch == 0 {
+        mgmt_epoch = 1;
+    }
     MGMT_AUTH.get().set_epoch(mgmt_epoch);
     /// Maximum number of packets to process in a single iteration.
     ///
@@ -336,6 +357,18 @@ pub extern "C" fn kmain() -> ! {
         }
 
         if now.wrapping_sub(last_cms_reset) > CMS_RESET_INTERVAL_CYCLES as u64 {
+            // Reseed from fresh entropy on every reset interval so the
+            // attacker's window for collision precomputation against
+            // the current seed is bounded by the interval, not by the
+            // kernel's lifetime. If the RNG is absent (real hardware
+            // without one configured) we keep the boot-time seed —
+            // rotating it from `mcycle` would weaken, not strengthen.
+            if rng_present {
+                let mut buf = [0u8; 8];
+                if VirtioRng::read_into(&mut buf) == buf.len() {
+                    engine.cms.reseed(u64::from_le_bytes(buf));
+                }
+            }
             engine.cms.reset();
             last_cms_reset = now;
         }
