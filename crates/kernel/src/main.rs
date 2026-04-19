@@ -604,7 +604,9 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, meta: &Aler
                 let len = body[add_dpi::LEN_OFFSET] as usize;
                 if body.len() >= add_dpi::PATTERN_OFFSET + len && len <= add_dpi::MAX_PATTERN_LEN {
                     let pattern = &body[add_dpi::PATTERN_OFFSET..add_dpi::PATTERN_OFFSET + len];
-                    engine.dyn_rules.add(pattern);
+                    if engine.dyn_rules.add(pattern).is_err() {
+                        send_alert(meta, AlertReason::MgmtRejected.as_u8());
+                    }
                 }
             }
         }

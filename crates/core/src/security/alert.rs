@@ -30,6 +30,12 @@ pub enum AlertReason {
     /// register index or out-of-range jump target). The program was not
     /// installed; the previous program (if any) remains active.
     BpfReject = 9,
+    /// An authenticated mgmt command was well-formed but could not be
+    /// applied because the relevant table was full (e.g. dynamic DPI
+    /// rules, of which only 8 fit). Without this alert the operator
+    /// would believe their pattern was loaded when it was silently
+    /// discarded.
+    MgmtRejected = 10,
 }
 
 impl AlertReason {
@@ -61,6 +67,7 @@ impl AlertReason {
             7 => Some(Self::Pass),
             8 => Some(Self::MgmtAuthFail),
             9 => Some(Self::BpfReject),
+            10 => Some(Self::MgmtRejected),
             _ => None,
         }
     }

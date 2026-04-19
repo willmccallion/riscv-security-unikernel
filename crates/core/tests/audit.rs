@@ -22,7 +22,7 @@ use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
 use sec_core::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::PenaltyBox;
-use sec_core::security::dpi::AhoCorasick;
+use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
 use sec_core::security::flow::FlowTable;
 use sec_core::security::heuristic::HeuristicEngine;
 use sec_core::security::mgmt_auth::{MgmtAuth, seal};
@@ -378,6 +378,28 @@ fn process_packet_rejects_ipv4_with_wrong_version() {
     let result = process_packet(&mut frame, &mut sink, &secret);
     assert!(sink.sent.is_empty(), "version!=4 must not generate any reply");
     assert!(result.is_none(), "version!=4 must not return a payload");
+}
+
+/// `DynamicRules::add` used to return `()` and silently drop on
+/// overflow, so an operator who hit the 8-pattern cap saw no error
+/// and believed their pattern was loaded. The fix returns a Result
+/// and the kernel raises `MgmtRejected`; this test pins the new
+/// signalling so a future "make it return () again" refactor fails
+/// loudly.
+#[test]
+fn dynamic_rules_overflow_is_signalled() {
+    let mut rules = DynamicRules::new();
+    for i in 0..8 {
+        let pat = [b'a' + i as u8; 4];
+        assert!(rules.add(&pat).is_ok(), "first 8 patterns must fit");
+    }
+    let result = rules.add(b"ninth");
+    assert_eq!(result, Err(DynRulesError::Full));
+    let too_long = [0u8; 33];
+    assert_eq!(
+        DynamicRules::new().add(&too_long),
+        Err(DynRulesError::TooLong)
+    );
 }
 
 /// The eBPF VM has 16 registers but encodes register indices as `u8`,

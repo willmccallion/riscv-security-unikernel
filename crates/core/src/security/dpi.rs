@@ -237,6 +237,18 @@ impl AhoCorasick {
 ///
 /// Maintains a fixed-size array of byte patterns that can be added
 /// at runtime via the management interface. Uses simple substring
+/// Why a [`DynamicRules::add`] call was rejected. Both variants are
+/// non-fatal at the data plane (the existing rules keep running);
+/// the kernel raises an alert so the operator knows their command
+/// was not applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynRulesError {
+    /// The 8-slot table is already full.
+    Full,
+    /// The submitted pattern is longer than 32 bytes.
+    TooLong,
+}
+
 /// matching for pattern detection.
 #[derive(Debug)]
 pub struct DynamicRules {
@@ -266,18 +278,29 @@ impl DynamicRules {
 
     /// Adds a new pattern to the dynamic rules.
     ///
-    /// Patterns are limited to 32 bytes and there can be at most 8 patterns.
-    /// Longer patterns are truncated, and the table is full after 8 patterns.
+    /// Patterns are limited to 32 bytes and there can be at most 8
+    /// active patterns. The previous version of this function
+    /// returned `()` and silently dropped on overflow, so an operator
+    /// adding a 9th pattern saw no error and believed it was loaded.
+    /// Now an `Err` is returned so the caller can surface the
+    /// rejection.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `pattern` - Byte pattern to add
-    pub fn add(&mut self, pattern: &[u8]) {
-        if self.count < 8 && pattern.len() <= 32 {
-            self.patterns[self.count][..pattern.len()].copy_from_slice(pattern);
-            self.lengths[self.count] = pattern.len();
-            self.count += 1;
+    /// Returns [`DynRulesError::TooLong`] if the pattern is longer
+    /// than 32 bytes, or [`DynRulesError::Full`] if the 8-slot table
+    /// is already full.
+    pub fn add(&mut self, pattern: &[u8]) -> Result<(), DynRulesError> {
+        if pattern.len() > 32 {
+            return Err(DynRulesError::TooLong);
         }
+        if self.count >= 8 {
+            return Err(DynRulesError::Full);
+        }
+        self.patterns[self.count][..pattern.len()].copy_from_slice(pattern);
+        self.lengths[self.count] = pattern.len();
+        self.count += 1;
+        Ok(())
     }
 
     /// Checks if any dynamic rule matches the payload.

@@ -486,6 +486,10 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[BPF REJECT] Malformed BPF program from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
         ),
+        Some(AlertReason::MgmtRejected) => (
+            format!("[MGMT REJECT] Mgmt command dropped (table full) from {ip}"),
+            egui::Color32::from_rgb(255, 80, 0),
+        ),
         None => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };
 
