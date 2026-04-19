@@ -1,0 +1,15 @@
+[package]
+name = "security-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Linux userspace daemon reusing sec-core security logic (stub)."
+
+[lints]
+workspace = true
+
+[dependencies]
+sec-core = { workspace = true }

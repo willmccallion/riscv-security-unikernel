@@ -12,15 +12,15 @@ const MAX_FLOWS: usize = 74;
 /// A flow is identified by the 5-tuple: source IP, destination IP,
 /// source port, destination port, and protocol. The entry tracks
 /// statistics and timing for the flow.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 #[repr(align(8))]
 pub struct FlowEntry {
     /// Total number of packets in this flow.
     pub packet_count: u64,
     /// Total number of bytes in this flow.
     pub byte_count: u64,
-    /// Last time this flow was seen (cycle count).
-    pub last_seen: usize,
+    /// Last time this flow was seen (time-source units).
+    pub last_seen: u64,
 
     /// Source IP address in network byte order.
     pub src_ip: u32,
@@ -59,6 +59,7 @@ impl FlowEntry {
 ///
 /// Maintains a fixed-size array of flow entries. When the table is full,
 /// the oldest flow is evicted to make room for new flows.
+#[derive(Debug)]
 pub struct FlowTable {
     /// Array of flow entries.
     entries: [FlowEntry; MAX_FLOWS],
@@ -108,7 +109,7 @@ impl FlowTable {
         dst_port: u16,
         proto: u8,
         len: usize,
-        now: usize,
+        now: u64,
     ) -> bool {
         let s_ip = u32::from_be_bytes([src_ip[0], src_ip[1], src_ip[2], src_ip[3]]);
         let d_ip = u32::from_be_bytes([dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]]);
@@ -116,7 +117,7 @@ impl FlowTable {
         let mut found_idx = None;
         let mut empty_idx = None;
         let mut oldest_idx = 0;
-        let mut oldest_time = usize::MAX;
+        let mut oldest_time = u64::MAX;
 
         for i in 0..MAX_FLOWS {
             let e = &self.entries[i];
@@ -174,9 +175,9 @@ impl FlowTable {
     ///
     /// # Arguments
     ///
-    /// * `now` - Current cycle count
-    /// * `timeout` - Timeout in cycles (flows older than this are pruned)
-    pub fn prune(&mut self, now: usize, timeout: usize) {
+    /// * `now` - Current time-source value
+    /// * `timeout` - Timeout in time-source units (flows older than this are pruned)
+    pub fn prune(&mut self, now: u64, timeout: u64) {
         let mut removed = 0;
         for i in 0..MAX_FLOWS {
             if self.entries[i].is_active && (now.wrapping_sub(self.entries[i].last_seen) > timeout)

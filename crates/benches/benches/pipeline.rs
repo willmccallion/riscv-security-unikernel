@@ -124,7 +124,7 @@ fn bench_flow_update_new(c: &mut Criterion) {
                     black_box(80),
                     black_box(6),
                     black_box(1460),
-                    black_box(1_000_000usize),
+                    black_box(1_000_000u64),
                 ));
             },
             criterion::BatchSize::SmallInput,
@@ -145,7 +145,7 @@ fn bench_flow_update_existing(c: &mut Criterion) {
                 black_box(80),
                 black_box(6),
                 black_box(1460),
-                black_box(2_000_000usize),
+                black_box(2_000_000u64),
             ));
         });
     });
@@ -166,7 +166,7 @@ fn bench_flow_full_table(c: &mut Criterion) {
                 black_box(80),
                 black_box(6),
                 black_box(64),
-                black_box(3_000_000usize),
+                black_box(3_000_000u64),
             ));
         });
     });

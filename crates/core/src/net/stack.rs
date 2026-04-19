@@ -5,7 +5,7 @@
 //! extracts payload data for security inspection.
 
 use crate::config::{IP_ADDR, MAC_ADDR};
-use crate::drivers::net_device::NetDevice;
+use crate::net::PacketSink;
 use crate::net::constants::MAX_ICMP_REPLY_LEN;
 use crate::net::constants::SYN_COOKIE_MAGIC;
 use crate::net::constants::{
@@ -22,16 +22,23 @@ use crate::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 /// - Other IPv4: Extracts payload for security inspection
 ///
 /// The packet buffer may be modified in-place for generating responses.
+/// Replies are sent via `sink` — the caller supplies a concrete
+/// [`PacketSink`] implementation tied to its underlying NIC or AF_XDP
+/// TX ring.
 ///
 /// # Arguments
 ///
 /// * `packet` - Mutable reference to the packet buffer
+/// * `sink`   - Egress for generated replies (ARP, ICMP echo, SYN-ACK)
 ///
 /// # Returns
 ///
-/// Some immutable slice to payload data if available, None if the
-/// packet was consumed (e.g., ARP reply sent) or invalid.
-pub fn process_packet(packet: &mut [u8]) -> Option<&[u8]> {
+/// `Some` payload slice if available, `None` if the packet was consumed
+/// (e.g., ARP reply sent) or invalid.
+pub fn process_packet<'a, S: PacketSink>(
+    packet: &'a mut [u8],
+    sink: &mut S,
+) -> Option<&'a [u8]> {
     if packet.len() < ethernet::MIN_FRAME_SIZE {
         return None;
     }
@@ -42,10 +49,10 @@ pub fn process_packet(packet: &mut [u8]) -> Option<&[u8]> {
         (packet[ethernet::TYPE_OFFSET] as u16) << 8 | packet[ethernet::TYPE_OFFSET + 1] as u16;
     match EthernetType::from_u16(eth_type) {
         Some(EthernetType::Arp) => {
-            handle_arp(packet);
+            handle_arp(packet, sink);
             None
         }
-        Some(EthernetType::Ipv4) => handle_ipv4(packet),
+        Some(EthernetType::Ipv4) => handle_ipv4(packet, sink),
         _ => None,
     }
 }
@@ -59,7 +66,7 @@ pub fn process_packet(packet: &mut [u8]) -> Option<&[u8]> {
 /// # Arguments
 ///
 /// * `packet` - ARP packet buffer to process and modify
-fn handle_arp(packet: &mut [u8]) {
+fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     if packet.len() < arp::MIN_PACKET_SIZE {
         return;
     }
@@ -103,7 +110,7 @@ fn handle_arp(packet: &mut [u8]) {
     packet[arp::SENDER_IP_OFFSET..arp::SENDER_IP_OFFSET + ipv4::IP_ADDR_SIZE]
         .copy_from_slice(&IP_ADDR);
 
-    NetDevice::send(&packet[0..arp::MIN_PACKET_SIZE]);
+    sink.send(&packet[0..arp::MIN_PACKET_SIZE]);
 }
 
 /// Handles IPv4 packets.
@@ -119,7 +126,7 @@ fn handle_arp(packet: &mut [u8]) {
 /// # Returns
 ///
 /// Some payload slice if available, None if packet was consumed
-fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
+fn handle_ipv4<'a, S: PacketSink>(packet: &'a mut [u8], sink: &mut S) -> Option<&'a [u8]> {
     if packet.len() < ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE {
         return None;
     }
@@ -166,7 +173,7 @@ fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
             packet[offset + 2] = (csum >> 8) as u8;
             packet[offset + 3] = (csum & 0xFF) as u8;
 
-            NetDevice::send(&packet[0..len]);
+            sink.send(&packet[0..len]);
             return None;
         }
     }
@@ -180,7 +187,7 @@ fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
                 packet[ipv4::SRC_IP_OFFSET + 2],
                 packet[ipv4::SRC_IP_OFFSET + 3],
             ];
-            handle_tcp(packet, offset, &src_ip);
+            handle_tcp(packet, offset, &src_ip, sink);
         }
         return None;
     }
@@ -204,7 +211,7 @@ fn handle_ipv4(packet: &mut [u8]) -> Option<&[u8]> {
 /// * `packet` - TCP packet buffer
 /// * `offset` - Byte offset to the TCP header
 /// * `src_ip` - Source IP address for cookie generation
-fn handle_tcp(packet: &mut [u8], offset: usize, src_ip: &[u8]) {
+fn handle_tcp<S: PacketSink>(packet: &mut [u8], offset: usize, src_ip: &[u8], sink: &mut S) {
     // SAFETY: The caller has verified packet.len() >= offset + size_of::<TcpHeader>(),
     // and the packet slice is valid for reads.
     let tcp = unsafe { &*(packet.as_ptr().add(offset).cast::<TcpHeader>()) };
@@ -214,7 +221,7 @@ fn handle_tcp(packet: &mut [u8], offset: usize, src_ip: &[u8]) {
         let seq = u32::from_be(tcp.seq_num);
         let cookie = (src_ip[3] as u32) + (u16::from_be(tcp.src_port) as u32) + SYN_COOKIE_MAGIC;
 
-        send_tcp_reply_inplace(packet, offset, cookie, seq + 1, TCP_SYN | TCP_ACK);
+        send_tcp_reply_inplace(packet, offset, cookie, seq + 1, TCP_SYN | TCP_ACK, sink);
     }
 }
 
@@ -231,7 +238,14 @@ fn handle_tcp(packet: &mut [u8], offset: usize, src_ip: &[u8]) {
 /// * `seq` - Sequence number for the reply
 /// * `ack` - Acknowledgment number for the reply
 /// * `flags` - TCP flags to set in the reply
-fn send_tcp_reply_inplace(packet: &mut [u8], tcp_offset: usize, seq: u32, ack: u32, flags: u16) {
+fn send_tcp_reply_inplace<S: PacketSink>(
+    packet: &mut [u8],
+    tcp_offset: usize,
+    seq: u32,
+    ack: u32,
+    flags: u16,
+    sink: &mut S,
+) {
     let old_src_mac = [
         packet[ethernet::SRC_MAC_OFFSET],
         packet[ethernet::SRC_MAC_OFFSET + 1],
@@ -279,7 +293,7 @@ fn send_tcp_reply_inplace(packet: &mut [u8], tcp_offset: usize, seq: u32, ack: u
         *ptr = reply_tcp;
     }
 
-    NetDevice::send(&packet[0..tcp_offset + tcp::MIN_HEADER_SIZE]);
+    sink.send(&packet[0..tcp_offset + tcp::MIN_HEADER_SIZE]);
 }
 
 /// Calculates the Internet checksum for protocol headers.

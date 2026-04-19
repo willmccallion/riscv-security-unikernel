@@ -461,6 +461,7 @@ name = "benches"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "sec-core",
 ]
 
 [[package]]
@@ -2820,6 +2821,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sec-core"
+version = "0.1.0"
+
+[[package]]
+name = "security-daemon"
+version = "0.1.0"
+dependencies = [
+ "sec-core",
+]
+
+[[package]]
 name = "security-dashboard"
 version = "1.0.0"
 dependencies = [
@@ -2829,12 +2841,16 @@ dependencies = [
  "egui",
  "egui_plot",
  "rand",
+ "sec-core",
  "tokio",
 ]
 
 [[package]]
 name = "security-unikernel"
-version = "1.0.0"
+version = "0.1.0"
+dependencies = [
+ "sec-core",
+]
 
 [[package]]
 name = "serde"

@@ -36,6 +36,7 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
+sec-core = { workspace = true }
 eframe = "0.26"
 egui = "0.26"
 egui_plot = "0.26"

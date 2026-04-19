@@ -11,32 +11,35 @@
 #![no_std]
 #![no_main]
 
-/// Kernel configuration constants including network identity and thresholds.
-mod config;
-/// Core kernel infrastructure: memory allocation, panic handling, and type definitions.
-mod core;
+/// Slab allocator used during init only; the packet loop is heap-free.
+mod allocator;
 /// Hardware device drivers for network interfaces and peripherals.
 mod drivers;
-/// Network protocol stack implementation for Ethernet, IP, ARP, ICMP, and TCP.
-mod net;
-/// Security subsystems: DDoS mitigation, DPI, firewall, flow tracking, heuristics, and VM.
-mod security;
+/// VirtIO-Net backed [`sec_core::net::PacketSink`] implementation.
+mod net_sink;
+/// Kernel panic handler: halts the core.
+mod panic;
+/// RISC-V `mcycle` backed [`sec_core::time::TimeSource`] implementation.
+mod time_riscv;
 
-use crate::core::allocator::ALLOCATOR;
-use crate::core::types::Singleton;
+use crate::allocator::ALLOCATOR;
 use crate::drivers::net_device::NetDevice;
+use crate::net_sink::VirtioNetSink;
+use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
-use config::{
+use sec_core::config::{
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, FLOW_TIMEOUT_CYCLES,
     HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION_CYCLES, KERNEL_VERSION, MAC_ADDR,
     MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS, SPOOF_DETECTION_IP_OFFSET,
     SPOOF_DETECTION_MAGIC, SPOOF_DETECTION_MIN_LEN, TELEMETRY_INTERVAL_CYCLES, TELEMETRY_PORT,
     TOKEN_BUCKET_CAPACITY, TOTAL_MEMORY_SIZE,
 };
-use security::{
+use sec_core::security::{
     alert::{AlertReason, alert_packet},
     dos, dpi, firewall, flow, heuristic, mgmt, vm,
 };
+use sec_core::time::TimeSource;
+use sec_core::types::Singleton;
 
 // Linker symbol marking the end of the BSS (uninitialized data) section.
 //
@@ -103,7 +106,7 @@ impl SecurityEngine {
             fw: firewall::FirewallState::new(),
             cms: dos::CountMinSketch::new(),
             pbox: dos::PenaltyBox::new(),
-            limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_PPS as usize),
+            limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_PPS),
             vm: vm::VM::new(),
             bpf_prog: [vm::Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE],
             bpf_len: 0,
@@ -169,7 +172,9 @@ pub extern "C" fn kmain() -> ! {
     crate::kprintln!("[*] Management  : UDP :{}", MANAGEMENT_PORT);
     crate::kprintln!("[*] Telemetry   : UDP :{} (Broadcast)", TELEMETRY_PORT);
 
-    let mut last_report = get_cycles();
+    let clock = MCycle;
+    let mut sink = VirtioNetSink;
+    let mut last_report = clock.now();
     let mut stats = [0u64; 8];
     /// Maximum number of packets to process in a single iteration.
     ///
@@ -179,8 +184,8 @@ pub extern "C" fn kmain() -> ! {
     const BATCH_SIZE: usize = 64;
 
     loop {
-        let now = get_cycles();
-        if now.wrapping_sub(last_report) > TELEMETRY_INTERVAL_CYCLES {
+        let now = clock.now();
+        if now.wrapping_sub(last_report) > TELEMETRY_INTERVAL_CYCLES as u64 {
             let sp: usize;
             // SAFETY: Reading the stack pointer register via inline asm is safe;
             // sp is always a valid register on RISC-V.
@@ -189,7 +194,7 @@ pub extern "C" fn kmain() -> ! {
             let free_ram = sp.saturating_sub(ebss_addr);
             let used_ram = TOTAL_MEMORY_SIZE.saturating_sub(free_ram);
 
-            engine.flow_table.prune(now, FLOW_TIMEOUT_CYCLES);
+            engine.flow_table.prune(now, FLOW_TIMEOUT_CYCLES as u64);
 
             stats[6] = used_ram as u64;
             stats[7] = engine.flow_table.active_count as u64;
@@ -218,7 +223,7 @@ pub extern "C" fn kmain() -> ! {
                 let mut dst_port = 0u16;
                 let mut protocol = 0u8;
 
-                use crate::net::constants::{ethernet, ipv4};
+                use sec_core::net::constants::{ethernet, ipv4};
                 if packet.len() >= ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE
                     && packet[ethernet::TYPE_OFFSET] == 0x08
                     && packet[ethernet::TYPE_OFFSET + 1] == 0x00
@@ -233,7 +238,7 @@ pub extern "C" fn kmain() -> ! {
                     let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
                     let payload_offset = ipv4::HEADER_OFFSET + ihl as usize;
 
-                    use crate::net::tcp::TcpHeader;
+                    use sec_core::net::tcp::TcpHeader;
                     if let Some((sport, dport)) =
                         TcpHeader::extract_ports(&packet[payload_offset..])
                     {
@@ -249,7 +254,7 @@ pub extern "C" fn kmain() -> ! {
                         protocol,
                         packet.len(),
                         now,
-                    ) && (now & FLOW_LOG_SAMPLE_MASK) == 0
+                    ) && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0
                     {
                         send_alert(&src_ip, AlertReason::Flow.as_u8(), packet);
                     }
@@ -263,18 +268,18 @@ pub extern "C" fn kmain() -> ! {
                         );
                     }
 
-                    if engine.pbox.is_banned(&src_ip) {
+                    if engine.pbox.is_banned(&src_ip, now) {
                         drop = true;
                     } else {
                         let count = engine.cms.insert(&src_ip);
                         if count > HEAVY_HITTER_THRESHOLD {
-                            engine.pbox.ban(&src_ip, IP_BAN_DURATION_CYCLES);
+                            engine.pbox.ban(&src_ip, IP_BAN_DURATION_CYCLES as u64, now);
                             drop = true;
                         }
                     }
                 }
 
-                if drop || !engine.limiter.allow() {
+                if drop || !engine.limiter.allow(now) {
                     stats[1] += 1;
                     if stats[1] % DDOS_ALERT_SAMPLE_RATE == 0 {
                         send_alert(&src_ip, AlertReason::Ddos.as_u8(), packet);
@@ -283,7 +288,7 @@ pub extern "C" fn kmain() -> ! {
                     continue;
                 }
 
-                use crate::net::constants::{IpProtocol, tcp};
+                use sec_core::net::constants::{IpProtocol, tcp};
                 if IpProtocol::from_u8(protocol) == Some(IpProtocol::Tcp) {
                     let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
                     let tcp_offset = ipv4::HEADER_OFFSET + ihl as usize;
@@ -309,7 +314,7 @@ pub extern "C" fn kmain() -> ! {
                     }
                 }
 
-                if let Some(payload) = net::stack::process_packet(packet) {
+                if let Some(payload) = sec_core::net::stack::process_packet(packet, &mut sink) {
                     if let Some(_reason) = heuristic::HeuristicEngine::check_payload(payload) {
                         stats[5] += 1;
                         send_alert(&src_ip, AlertReason::Heuristic.as_u8(), payload);
@@ -376,7 +381,7 @@ pub extern "C" fn kmain() -> ! {
                                     if payload.len() >= ban_ip::MIN_PAYLOAD_LEN {
                                         let ip_to_ban = &payload[ban_ip::IP_OFFSET
                                             ..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE];
-                                        engine.pbox.ban(ip_to_ban, IP_BAN_DURATION_CYCLES);
+                                        engine.pbox.ban(ip_to_ban, IP_BAN_DURATION_CYCLES as u64, now);
                                     }
                                 }
                                 None => {}
@@ -406,23 +411,6 @@ pub extern "C" fn kmain() -> ! {
         if work_done {
             NetDevice::flush();
         }
-    }
-}
-
-/// Reads the current cycle count from the RISC-V cycle counter.
-///
-/// Uses the `mcycle` CSR to get a high-resolution timestamp
-/// for timing measurements and flow expiration.
-///
-/// # Returns
-///
-/// Current cycle count as a usize
-fn get_cycles() -> usize {
-    // SAFETY: csrr reads the mcycle CSR, a hardware counter register available in M-mode on RISC-V.
-    unsafe {
-        let c: usize;
-        asm!("csrr {}, mcycle", out(reg) c);
-        c
     }
 }
 
@@ -467,9 +455,9 @@ fn checksum(data: &[u8]) -> u16 {
 ///
 /// * `stats` - Array of 8 statistics values to transmit
 fn send_udp_report(stats: &[u64; 8]) {
-    use crate::net::constants::IpProtocol;
-    use crate::net::constants::udp;
-    use crate::net::constants::{BROADCAST_MAC, ethernet, ipv4};
+    use sec_core::net::constants::IpProtocol;
+    use sec_core::net::constants::udp;
+    use sec_core::net::constants::{BROADCAST_MAC, ethernet, ipv4};
     /// Size of statistics data payload in telemetry packets (8 u64 values).
     ///
     /// Each telemetry report contains 8 statistics counters, each represented
@@ -564,10 +552,9 @@ fn send_udp_report(stats: &[u64; 8]) {
 /// * `reason` - Alert reason code
 /// * `payload` - Packet payload data to include in the alert
 fn send_alert(src_ip: &[u8], reason: u8, payload: &[u8]) {
-    use crate::net::constants::IpProtocol;
-    use crate::net::constants::udp;
-    use crate::net::constants::{BROADCAST_MAC, ethernet, ipv4};
-    use alert_packet;
+    use sec_core::net::constants::IpProtocol;
+    use sec_core::net::constants::udp;
+    use sec_core::net::constants::{BROADCAST_MAC, ethernet, ipv4};
     /// Maximum size of alert UDP packet in bytes.
     ///
     /// Accommodates Ethernet header (14), IP header (20), UDP header (8),

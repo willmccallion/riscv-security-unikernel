@@ -1,0 +1,27 @@
+[package]
+name = "sec-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Shared no_std security-engine logic: CMS, Aho-Corasick, flow table, heuristics, eBPF VM, mgmt protocol."
+
+[lints.rust]
+# Workspace sets `unsafe_code = "deny"`. sec-core needs unsafe in a handful
+# of places: the Singleton cell (types.rs), eBPF bytecode transmute (vm.rs),
+# and in-place packet mutation helpers (net/stack.rs). Every block carries a
+# `// SAFETY:` comment and `clippy::undocumented_unsafe_blocks` stays denied
+# via the workspace, so discipline is preserved.
+unsafe_code = "allow"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# Inherit pedantic/nursery/cargo from workspace via default propagation
+# is not possible once we override [lints.rust], so re-declare the deny set
+# we care about and keep the targeted allows the moved modules need.
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]

@@ -1,0 +1,30 @@
+[package]
+name = "security-unikernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Bare-metal RISC-V security unikernel — 64 KB RAM, VirtIO-Net, no_std/no_main."
+
+[dependencies]
+sec-core = { workspace = true }
+
+[lints.rust]
+# Workspace sets `unsafe_code = "deny"`. The kernel genuinely needs unsafe
+# for MMIO, `global_asm!`, CSR reads, and linker symbols; every block
+# carries a `// SAFETY:` comment and clippy::undocumented_unsafe_blocks
+# is still denied by the workspace, so discipline is preserved.
+unsafe_code = "allow"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# One deliberate boot-failure panic exists in the virtio init path; warn
+# so any new ones are conscious choices rather than hidden from review.
+panic = "warn"
+
+# Kernel-specific doc exceptions not covered at workspace level.
+doc_markdown = "allow"
+items_after_statements = "allow"

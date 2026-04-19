@@ -5,19 +5,24 @@ KERNEL_BIN := target/riscv64gc-unknown-none-elf/release/security-unikernel
 
 RAM_LIMIT := 65536
 
-.PHONY: all kernel gui run setup_net bench check-size clean
+.PHONY: all kernel gui daemon run setup_net bench check-size clean
 
 all: kernel gui
 
 # kernel (RISC-V)
 kernel:
 	@echo "[*] Building Kernel (RISC-V)..."
-	@cd kernel && cargo build --release --target riscv64gc-unknown-none-elf
+	@cd crates/kernel && cargo build --release
 
 # GUI (Host)
 gui:
 	@echo "[*] Running GUI (Host)..."
-	@cd gui && cargo run --release
+	@cargo run -p security-dashboard --release
+
+# Linux userspace daemon (stub)
+daemon:
+	@echo "[*] Running Linux daemon (stub)..."
+	@cargo run -p security-daemon --release
 
 # Runtime
 setup_net:
@@ -64,5 +69,4 @@ check-size: kernel
 	  }'
 
 clean:
-	@cd kernel && cargo clean
-	@cd gui && cargo clean
+	@cargo clean

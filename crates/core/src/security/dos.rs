@@ -1,12 +1,14 @@
-// DDoS (Distributed Denial of Service) mitigation mechanisms.
-//
-// Implements multiple techniques for detecting and mitigating DDoS attacks:
-// - Count-Min Sketch for heavy hitter detection
-// - Penalty box for IP address banning
-// - Token bucket rate limiting
-
-#[cfg(target_arch = "riscv64")]
-use core::arch::asm;
+//! DDoS (Distributed Denial of Service) mitigation mechanisms.
+//!
+//! Implements multiple techniques for detecting and mitigating DDoS attacks:
+//! - Count-Min Sketch for heavy hitter detection
+//! - Penalty box for IP address banning
+//! - Token bucket rate limiting
+//!
+//! The time-sensitive structures ([`PenaltyBox`], [`TokenBucket`]) are
+//! time-source agnostic: callers pass a `now` value (cycles on the
+//! RISC-V unikernel, nanoseconds on the Linux daemon) alongside the
+//! duration/cost constants, which must share the same unit.
 
 /// Width of the Count-Min Sketch hash table.
 const CMS_WIDTH: usize = 128;
@@ -15,18 +17,19 @@ const CMS_WIDTH: usize = 128;
 const CMS_DEPTH: usize = 4;
 
 /// Entry in the penalty box tracking a banned IP address.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct BanEntry {
     /// Banned IP address in network byte order.
     ip: u32,
-    /// Cycle count when the ban expires.
-    expiry: usize,
+    /// Time-source value at which the ban expires.
+    expiry: u64,
 }
 
 /// Penalty box for tracking banned IP addresses.
 ///
 /// Maintains a fixed-size table of banned IPs with expiration times.
 /// When the table is full, new bans overwrite the oldest entries.
+#[derive(Debug)]
 pub struct PenaltyBox {
     /// Array of ban entries, limited to 16 for memory efficiency.
     entries: [BanEntry; 16],
@@ -46,49 +49,48 @@ impl PenaltyBox {
         }
     }
 
-    /// Bans an IP address for a specified duration.
+    /// Bans an IP address until `now + duration`.
     ///
-    /// If the penalty box is full, the oldest entry is overwritten.
+    /// If the penalty box is full, the oldest expired entry is
+    /// overwritten; if none are expired, the entry at index 0 is
+    /// replaced.
     ///
     /// # Arguments
     ///
-    /// * `ip_bytes` - IP address as 4 bytes in network byte order
-    /// * `duration_cycles` - Ban duration in CPU cycles
-    pub fn ban(&mut self, ip_bytes: &[u8], duration_cycles: usize) {
+    /// * `ip_bytes` - IP address as 4 bytes in network byte order.
+    /// * `duration` - Ban duration in time-source units.
+    /// * `now`      - Current time-source value.
+    pub fn ban(&mut self, ip_bytes: &[u8], duration: u64, now: u64) {
         let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
-        let now: usize = get_time();
 
         for i in 0..16 {
             if self.entries[i].expiry < now {
                 self.entries[i] = BanEntry {
                     ip,
-                    expiry: now + duration_cycles,
+                    expiry: now + duration,
                 };
                 return;
             }
         }
         self.entries[0] = BanEntry {
             ip,
-            expiry: now + duration_cycles,
+            expiry: now + duration,
         };
     }
 
     /// Checks if an IP address is currently banned.
     ///
-    /// Searches the penalty box for an active ban entry matching the
-    /// provided IP address. A ban is considered active if its expiration
-    /// time is greater than the current cycle count.
-    ///
     /// # Arguments
     ///
-    /// * `ip_bytes` - IP address as 4 bytes in network byte order
+    /// * `ip_bytes` - IP address as 4 bytes in network byte order.
+    /// * `now`      - Current time-source value; bans with `expiry > now`
+    ///                are considered active.
     ///
     /// # Returns
     ///
-    /// True if the IP is banned and the ban has not expired, false otherwise
-    pub fn is_banned(&self, ip_bytes: &[u8]) -> bool {
+    /// `true` if the IP is banned and the ban has not expired.
+    pub fn is_banned(&self, ip_bytes: &[u8], now: u64) -> bool {
         let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
-        let now: usize = get_time();
 
         for i in 0..16 {
             if self.entries[i].ip == ip && self.entries[i].expiry > now {
@@ -104,6 +106,7 @@ impl PenaltyBox {
 /// Uses multiple hash functions to track packet counts per IP address
 /// with bounded memory. Provides probabilistic guarantees on count accuracy
 /// while using constant memory regardless of the number of unique IPs.
+#[derive(Debug)]
 pub struct CountMinSketch {
     /// Two-dimensional array: depth rows, width columns.
     matrix: [[u16; CMS_WIDTH]; CMS_DEPTH],
@@ -173,50 +176,54 @@ impl CountMinSketch {
 /// Token bucket rate limiter.
 ///
 /// Implements a token bucket algorithm to limit the rate of packet
-/// processing. Tokens are refilled at a fixed rate, and each packet
-/// consumes one token. Packets are dropped when no tokens are available.
+/// processing. Tokens are refilled at a fixed rate based on elapsed
+/// time-source ticks; each packet consumes one token.
+#[derive(Debug)]
 pub struct TokenBucket {
     /// Current number of available tokens.
     tokens: u64,
     /// Maximum number of tokens (bucket capacity).
     capacity: u64,
-    /// Last cycle count when tokens were refilled.
-    last_cycle: usize,
-    /// Cycle cost per token (inverse of refill rate).
-    cost: usize,
+    /// Time-source value at the last refill.
+    last_time: u64,
+    /// Cost (in time-source units) per token refilled.
+    cost: u64,
 }
 
 impl TokenBucket {
-    /// Creates a new token bucket with the specified capacity and refill rate.
+    /// Creates a new token bucket with the specified capacity and refill cost.
     ///
     /// # Arguments
     ///
-    /// * `capacity` - Maximum number of tokens
-    /// * `cost` - Cycle cost per token (higher = slower refill)
-    pub const fn new(capacity: u64, cost: usize) -> Self {
+    /// * `capacity` - Maximum number of tokens.
+    /// * `cost`     - Time-source units per token (higher = slower refill).
+    pub const fn new(capacity: u64, cost: u64) -> Self {
         Self {
             tokens: capacity,
             capacity,
-            last_cycle: 0,
+            last_time: 0,
             cost,
         }
     }
 
     /// Checks if a packet is allowed and consumes a token if available.
     ///
-    /// Refills tokens based on elapsed cycles since the last check,
-    /// then consumes one token if available.
+    /// Refills tokens based on time-source units elapsed since the last
+    /// call, then consumes one token if available.
+    ///
+    /// # Arguments
+    ///
+    /// * `now` - Current time-source value.
     ///
     /// # Returns
     ///
-    /// True if a token was available and consumed, false otherwise
-    pub fn allow(&mut self) -> bool {
-        let now: usize = get_time();
-        let delta = now.wrapping_sub(self.last_cycle);
-        if delta >= self.cost {
-            let refill = (delta / self.cost) as u64;
+    /// `true` if a token was available and consumed, `false` otherwise.
+    pub fn allow(&mut self, now: u64) -> bool {
+        let delta = now.wrapping_sub(self.last_time);
+        if self.cost > 0 && delta >= self.cost {
+            let refill = delta / self.cost;
             self.tokens = (self.tokens + refill).min(self.capacity);
-            self.last_cycle = now;
+            self.last_time = now;
         }
         if self.tokens > 0 {
             self.tokens -= 1;
@@ -225,21 +232,4 @@ impl TokenBucket {
             false
         }
     }
-}
-
-/// Reads the current cycle count for timing operations.
-///
-/// # Returns
-///
-/// Current CPU cycle count
-fn get_time() -> usize {
-    // SAFETY: csrr reads the mcycle CSR, a hardware counter register always available in M-mode on RISC-V.
-    #[cfg(target_arch = "riscv64")]
-    unsafe {
-        let c: usize;
-        asm!("csrr {}, mcycle", out(reg) c);
-        c
-    }
-    #[cfg(not(target_arch = "riscv64"))]
-    0
 }

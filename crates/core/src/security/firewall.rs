@@ -3,8 +3,6 @@
 //! Maintains a list of blocked destination ports and provides
 //! fast lookup for packet filtering decisions.
 
-use crate::kprintln;
-
 /// Firewall state tracking blocked ports.
 ///
 /// Maintains a fixed-size array of blocked port numbers for
@@ -27,8 +25,9 @@ impl FirewallState {
 
     /// Blocks a destination port.
     ///
-    /// Adds the port to the blocked list if there is space.
-    /// Logs the action to the console.
+    /// Adds the port to the blocked list if there is space. Silently
+    /// ignores the request if the table is already full (caller may
+    /// instead observe state via [`Self::is_blocked`]).
     ///
     /// # Arguments
     ///
@@ -37,7 +36,6 @@ impl FirewallState {
         if self.count < 16 {
             self.blocked_ports[self.count] = port;
             self.count += 1;
-            kprintln!("\x1b[36m[SDN]\x1b[0m Rule Added: BLOCK Port {}", port);
         }
     }
 
