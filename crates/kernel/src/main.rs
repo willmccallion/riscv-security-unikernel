@@ -187,7 +187,19 @@ pub extern "C" fn kmain() -> ! {
     let mut sink = VirtioNetSink;
     let mut last_report = clock.now();
     let mut last_cms_reset = last_report;
-    let mut stats = [0u64; 8];
+    // Stats slot layout (per-interval counters reset on each
+    // telemetry tick; memory/flows/mgmt are gauges or independent
+    // counters that survive the reset):
+    //   0: passed user packets
+    //   1: ddos drops
+    //   2: firewall blocks
+    //   3: malware-signature matches
+    //   4: ebpf drops
+    //   5: heuristic anomalies
+    //   6: memory bytes used (gauge)
+    //   7: active flows (gauge)
+    //   8: management-plane packets (auth-success + auth-fail)
+    let mut stats = [0u64; 9];
 
     // Per-boot SYN-cookie secret. mcycle at this point is whatever the
     // hart counter reached during init — varies across boots — and we
@@ -228,7 +240,7 @@ pub extern "C" fn kmain() -> ! {
             send_udp_report(&stats);
             let mem = stats[6];
             let flows = stats[7];
-            stats = [0; 8];
+            stats = [0; 9];
             stats[6] = mem;
             stats[7] = flows;
 
@@ -361,30 +373,26 @@ pub extern "C" fn kmain() -> ! {
                     }
 
                     if payload.len() >= 4 {
-                        // Mgmt-plane traffic must be authenticated before any
-                        // dispatch happens. Otherwise any UDP packet to port
-                        // 1337 with a valid type byte rewrites global policy.
-                        // We strip the 8-byte UDP header, then ask MgmtAuth
-                        // to verify the counter+MAC and hand back the inner
-                        // command body.
+                        // Mgmt-plane traffic owns its own counter and never
+                        // falls through to the user-traffic AC scan or the
+                        // pass/malware counters — otherwise a flood of
+                        // mgmt-auth-fail packets would inflate `passed` and
+                        // hide real user traffic in the dashboard. Auth
+                        // failures still fire an alert; auth successes
+                        // dispatch as before.
                         if dst_port == MANAGEMENT_PORT {
+                            stats[8] += 1;
                             const UDP_HEADER_LEN: usize = 8;
-                            let dispatched = if payload.len() > UDP_HEADER_LEN {
+                            if payload.len() > UDP_HEADER_LEN {
                                 let envelope = &payload[UDP_HEADER_LEN..];
                                 if let Some(body) = MGMT_AUTH.get().verify(envelope) {
                                     dispatch_mgmt(body, engine, now, &meta);
-                                    true
                                 } else {
                                     send_alert(&meta, AlertReason::MgmtAuthFail.as_u8());
-                                    false
                                 }
-                            } else {
-                                false
-                            };
-                            if dispatched {
-                                NetDevice::recycle_rx_buffer();
-                                continue;
                             }
+                            NetDevice::recycle_rx_buffer();
+                            continue;
                         }
 
                         if engine.ac.scan(payload) || engine.dyn_rules.check(payload) {
@@ -517,25 +525,26 @@ fn checksum(data: &[u8]) -> u16 {
 
 /// Sends a UDP telemetry report to the control plane.
 ///
-/// Constructs a UDP packet containing 8 statistics values and broadcasts
-/// it to the management network. The packet format includes:
+/// Constructs a UDP packet containing the 9-slot statistics array
+/// and broadcasts it to the management network. The packet format
+/// includes:
 /// - Ethernet header with broadcast destination
 /// - IP header with checksum
 /// - UDP header
-/// - 64 bytes of statistics data (8 u64 values)
+/// - 72 bytes of statistics data (9 u64 values)
 ///
 /// # Arguments
 ///
-/// * `stats` - Array of 8 statistics values to transmit
-fn send_udp_report(stats: &[u64; 8]) {
+/// * `stats` - Array of 9 statistics values to transmit
+fn send_udp_report(stats: &[u64; 9]) {
     use sec_core::net::constants::IpProtocol;
     use sec_core::net::constants::udp;
     use sec_core::net::constants::{BROADCAST_MAC, ethernet, ipv4};
-    /// Size of statistics data payload in telemetry packets (8 u64 values).
+    /// Size of statistics data payload in telemetry packets (9 u64 values).
     ///
-    /// Each telemetry report contains 8 statistics counters, each represented
-    /// as a 64-bit big-endian integer, totaling 64 bytes of payload data.
-    const STATS_DATA_SIZE: usize = 64;
+    /// Each telemetry report contains 9 statistics counters, each represented
+    /// as a 64-bit big-endian integer, totaling 72 bytes of payload data.
+    const STATS_DATA_SIZE: usize = 72;
     /// Maximum size of telemetry UDP packet in bytes.
     ///
     /// Accommodates Ethernet header (14), IP header (20), UDP header (8),

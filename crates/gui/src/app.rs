@@ -141,6 +141,7 @@ impl AegisApp {
         let total_req_count = total_pass_count + total_drop_count;
 
         let flows_count = self.stats.flows.load(Ordering::Relaxed);
+        let mgmt_pps = self.stats.mgmt.load(Ordering::Relaxed);
 
         ui.add_space(5.0);
 
@@ -175,6 +176,13 @@ impl AegisApp {
                     flows_count,
                     0,
                     egui::Color32::LIGHT_BLUE,
+                );
+                self.stat_card(
+                    ui,
+                    "MGMT TRAFFIC",
+                    mgmt_pps,
+                    0,
+                    egui::Color32::from_rgb(255, 165, 0),
                 );
                 ui.end_row();
             });

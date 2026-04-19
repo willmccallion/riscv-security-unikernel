@@ -35,6 +35,7 @@ async fn main() -> Result<(), eframe::Error> {
         heur: AtomicU64::new(0),
         memory: AtomicU64::new(0),
         flows: AtomicU64::new(0),
+        mgmt: AtomicU64::new(0),
 
         total_passed: AtomicU64::new(0),
         total_dropped: AtomicU64::new(0),

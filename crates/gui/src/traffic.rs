@@ -102,8 +102,8 @@ pub async fn start_background_task(
                 let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 stats.last_seen.store(now_secs, Ordering::Relaxed);
 
-                if len >= 64 && data[0] != alert_packet::ALERT_MESSAGE_TYPE {
-                    for i in 0..8 {
+                if len >= 72 && data[0] != alert_packet::ALERT_MESSAGE_TYPE {
+                    for i in 0..9 {
                         let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
                         match i {
                             0 => {
@@ -135,6 +135,9 @@ pub async fn start_background_task(
                             }
                             7 => {
                                 stats.flows.store(val, Ordering::Relaxed);
+                            }
+                            8 => {
+                                stats.mgmt.store(val, Ordering::Relaxed);
                             }
                             _ => {}
                         }

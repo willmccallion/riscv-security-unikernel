@@ -65,6 +65,11 @@ pub struct NetStats {
     pub memory: AtomicU64,
     /// Current number of active network flows being tracked.
     pub flows: AtomicU64,
+    /// Management-plane packets observed in the last interval
+    /// (authenticated dispatches plus auth failures). Tracked
+    /// separately from `passed` so a mgmt-auth-fail flood can't
+    /// inflate the user-traffic counter.
+    pub mgmt: AtomicU64,
 
     /// Cumulative count of all packets that passed security checks.
     pub total_passed: AtomicU64,
