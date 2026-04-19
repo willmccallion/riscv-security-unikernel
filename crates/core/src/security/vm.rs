@@ -45,7 +45,7 @@ pub enum Opcode {
 /// Each instruction contains an opcode, two register operands,
 /// and an immediate value. The packed representation ensures
 /// efficient storage and loading.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 #[repr(C, packed)]
 pub struct Instruction {
     /// Instruction opcode.
@@ -82,6 +82,7 @@ impl Instruction {
 /// Maintains 16 general-purpose registers, a program counter,
 /// and a comparison flag. Executes instructions sequentially
 /// with safety limits to prevent infinite loops.
+#[derive(Debug)]
 pub struct VM {
     /// Array of 16 general-purpose 64-bit registers.
     regs: [u64; 16],

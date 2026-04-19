@@ -35,10 +35,7 @@ use crate::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 ///
 /// `Some` payload slice if available, `None` if the packet was consumed
 /// (e.g., ARP reply sent) or invalid.
-pub fn process_packet<'a, S: PacketSink>(
-    packet: &'a mut [u8],
-    sink: &mut S,
-) -> Option<&'a [u8]> {
+pub fn process_packet<'a, S: PacketSink>(packet: &'a mut [u8], sink: &mut S) -> Option<&'a [u8]> {
     if packet.len() < ethernet::MIN_FRAME_SIZE {
         return None;
     }

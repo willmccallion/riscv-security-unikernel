@@ -4,6 +4,7 @@
 //! global mutable state in a single-threaded kernel environment.
 
 use core::cell::UnsafeCell;
+use core::fmt;
 
 /// Zero-overhead wrapper for global mutable state in a single-threaded kernel.
 ///
@@ -27,6 +28,12 @@ pub struct Singleton<T> {
 /// under this execution model. If interrupts or multiple execution contexts
 /// are introduced, proper synchronization primitives must be added.
 unsafe impl<T> Sync for Singleton<T> {}
+
+impl<T> fmt::Debug for Singleton<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Singleton").finish_non_exhaustive()
+    }
+}
 
 impl<T> Singleton<T> {
     /// Creates a new Singleton with the given initial value.

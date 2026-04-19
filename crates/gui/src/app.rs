@@ -261,8 +261,9 @@ impl AegisApp {
                         ("INFO", entry.msg.as_str())
                     };
 
-                    let is_selected = self.selected_log.as_ref()
-                        .is_some_and(|s| s.timestamp.to_bits() == entry.timestamp.to_bits() && s.msg == entry.msg);
+                    let is_selected = self.selected_log.as_ref().is_some_and(|s| {
+                        s.timestamp.to_bits() == entry.timestamp.to_bits() && s.msg == entry.msg
+                    });
 
                     let bg = if is_selected {
                         egui::Color32::from_gray(40)
@@ -273,7 +274,12 @@ impl AegisApp {
                     let clicked = egui::Frame::none()
                         .fill(bg)
                         .rounding(4.0)
-                        .inner_margin(egui::Margin { left: 0.0, right: 8.0, top: 4.0, bottom: 4.0 })
+                        .inner_margin(egui::Margin {
+                            left: 0.0,
+                            right: 8.0,
+                            top: 4.0,
+                            bottom: 4.0,
+                        })
                         .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(35)))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
@@ -308,23 +314,29 @@ impl AegisApp {
                                         .size(12.0),
                                 );
 
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    // Timestamp
-                                    ui.label(
-                                        egui::RichText::new(format!("T+{:.1}s", entry.timestamp))
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        // Timestamp
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "T+{:.1}s",
+                                                entry.timestamp
+                                            ))
                                             .color(egui::Color32::from_gray(100))
                                             .size(11.0),
-                                    );
-                                    // Port if nonzero
-                                    if entry.dst_port > 0 {
-                                        ui.label(
-                                            egui::RichText::new(format!(":{}", entry.dst_port))
-                                                .color(egui::Color32::from_gray(140))
-                                                .size(11.0)
-                                                .monospace(),
                                         );
-                                    }
-                                });
+                                        // Port if nonzero
+                                        if entry.dst_port > 0 {
+                                            ui.label(
+                                                egui::RichText::new(format!(":{}", entry.dst_port))
+                                                    .color(egui::Color32::from_gray(140))
+                                                    .size(11.0)
+                                                    .monospace(),
+                                            );
+                                        }
+                                    },
+                                );
                             });
                         })
                         .response
@@ -512,14 +524,17 @@ impl AegisApp {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(5.0);
-                egui::ScrollArea::vertical().id_source("fw_list").max_height(200.0).show(ui, |ui| {
-                    for &port in &self.blocked_ports {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::RED, "BLOCK");
-                            ui.label(format!("TCP/UDP dst:{port}"));
-                        });
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .id_source("fw_list")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for &port in &self.blocked_ports {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::RED, "BLOCK");
+                                ui.label(format!("TCP/UDP dst:{port}"));
+                            });
+                        }
+                    });
             });
 
             // Right column: DPI signatures
@@ -546,14 +561,17 @@ impl AegisApp {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(5.0);
-                egui::ScrollArea::vertical().id_source("dpi_list").max_height(200.0).show(ui, |ui| {
-                    for sig in &self.dpi_signatures {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
-                            ui.monospace(format!("\"{sig}\""));
-                        });
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .id_source("dpi_list")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for sig in &self.dpi_signatures {
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
+                                ui.monospace(format!("\"{sig}\""));
+                            });
+                        }
+                    });
             });
         });
     }
@@ -585,7 +603,11 @@ impl AegisApp {
                     }
                 });
                 ui.add_space(5.0);
-                ui.add(egui::TextEdit::multiline(&mut self.ebpf_code).code_editor().desired_rows(6));
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.ebpf_code)
+                        .code_editor()
+                        .desired_rows(6),
+                );
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
                     if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
@@ -620,19 +642,29 @@ impl AegisApp {
                 if self.ebpf_programs.is_empty() {
                     ui.label(egui::RichText::new("No programs loaded").color(egui::Color32::GRAY));
                 } else {
-                    egui::ScrollArea::vertical().id_source("ebpf_list").max_height(200.0).show(ui, |ui| {
-                        for (i, prog) in self.ebpf_programs.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.colored_label(egui::Color32::LIGHT_BLUE, format!("[{}]", i + 1));
-                                ui.monospace(prog);
-                            });
-                        }
-                    });
+                    egui::ScrollArea::vertical()
+                        .id_source("ebpf_list")
+                        .max_height(200.0)
+                        .show(ui, |ui| {
+                            for (i, prog) in self.ebpf_programs.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.colored_label(
+                                        egui::Color32::LIGHT_BLUE,
+                                        format!("[{}]", i + 1),
+                                    );
+                                    ui.monospace(prog);
+                                });
+                            }
+                        });
                 }
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(5.0);
-                ui.label(egui::RichText::new("Syntax Reference").color(egui::Color32::GRAY).size(11.0));
+                ui.label(
+                    egui::RichText::new("Syntax Reference")
+                        .color(egui::Color32::GRAY)
+                        .size(11.0),
+                );
                 ui.monospace("BLOCK TCP DST <port>");
                 ui.monospace("DROP ALL");
             });

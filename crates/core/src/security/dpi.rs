@@ -8,7 +8,7 @@
 const MAX_NODES: usize = 128;
 
 /// Node in the Aho-Corasick trie structure.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct Node {
     /// Index of the first child node.
     child: u16,
@@ -40,6 +40,7 @@ impl Node {
 /// Builds a finite automaton from a set of patterns and can efficiently
 /// search for all patterns in a single pass over the input text.
 /// Uses failure links to handle pattern overlaps efficiently.
+#[derive(Debug)]
 pub struct AhoCorasick {
     /// Array of all nodes in the automaton.
     nodes: [Node; MAX_NODES],
@@ -214,6 +215,7 @@ impl AhoCorasick {
 /// Maintains a fixed-size array of byte patterns that can be added
 /// at runtime via the management interface. Uses simple substring
 /// matching for pattern detection.
+#[derive(Debug)]
 pub struct DynamicRules {
     /// Array of pattern byte arrays, limited to 8 patterns.
     pub patterns: [[u8; 32]; 8],

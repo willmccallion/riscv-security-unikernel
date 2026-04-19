@@ -7,11 +7,18 @@
 ///
 /// Maintains a fixed-size array of blocked port numbers for
 /// efficient O(n) lookup where n is the number of blocked ports.
+#[derive(Debug)]
 pub struct FirewallState {
     /// Array of blocked port numbers.
     blocked_ports: [u16; 16],
     /// Number of ports currently blocked.
     count: usize,
+}
+
+impl Default for FirewallState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl FirewallState {

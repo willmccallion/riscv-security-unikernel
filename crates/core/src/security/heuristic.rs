@@ -8,6 +8,7 @@
 ///
 /// Provides static methods for analyzing TCP flags and payload content
 /// to detect suspicious patterns that may indicate attacks.
+#[derive(Debug)]
 pub struct HeuristicEngine;
 
 impl HeuristicEngine {

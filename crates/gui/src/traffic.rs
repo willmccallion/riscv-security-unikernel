@@ -4,7 +4,9 @@
 //! receiving telemetry data and security alerts, sending management commands,
 //! and generating test traffic patterns for security testing.
 
-use crate::types::{GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TARGET_ADDR, TrafficMode};
+use crate::types::{
+    GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TARGET_ADDR, TrafficMode,
+};
 use eframe::egui;
 use rand::Rng;
 use rand::SeedableRng;

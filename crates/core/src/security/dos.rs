@@ -83,8 +83,8 @@ impl PenaltyBox {
     /// # Arguments
     ///
     /// * `ip_bytes` - IP address as 4 bytes in network byte order.
-    /// * `now`      - Current time-source value; bans with `expiry > now`
-    ///                are considered active.
+    /// * `now` - Current time-source value; bans with `expiry > now` are
+    ///   considered active.
     ///
     /// # Returns
     ///

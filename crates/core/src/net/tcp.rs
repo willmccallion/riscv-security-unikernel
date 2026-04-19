@@ -9,6 +9,7 @@ use crate::net::constants::tcp as tcp_consts;
 ///
 /// Fields are stored in network byte order (big-endian) as they appear
 /// on the wire. The structure is packed to ensure correct memory layout.
+#[derive(Debug)]
 #[repr(C, packed)]
 pub struct TcpHeader {
     /// Source port in network byte order.

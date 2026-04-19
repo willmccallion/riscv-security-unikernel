@@ -381,7 +381,11 @@ pub extern "C" fn kmain() -> ! {
                                     if payload.len() >= ban_ip::MIN_PAYLOAD_LEN {
                                         let ip_to_ban = &payload[ban_ip::IP_OFFSET
                                             ..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE];
-                                        engine.pbox.ban(ip_to_ban, IP_BAN_DURATION_CYCLES as u64, now);
+                                        engine.pbox.ban(
+                                            ip_to_ban,
+                                            IP_BAN_DURATION_CYCLES as u64,
+                                            now,
+                                        );
                                     }
                                 }
                                 None => {}

@@ -1,3 +1,12 @@
+//! Criterion benchmarks for the sec-core hot path: CMS, Aho-Corasick,
+//! eBPF VM, flow table, and heuristic engine.
+
+// Criterion's `bench_function` returns `&mut Criterion` and `black_box`
+// returns the wrapped value — both are intentionally discarded in benches.
+#![allow(unused_results)]
+// `criterion_group!` expands to an undocumented generated function.
+#![allow(missing_docs)]
+
 use benches::{dos, dpi, flow, heuristic, vm};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
@@ -86,12 +95,12 @@ fn bench_ac_scan_match(c: &mut Criterion) {
 fn udp_drop_program() -> Vec<vm::Instruction> {
     use benches::vm::Instruction;
     vec![
-        Instruction::new(0x01, 0, 0, 23),  // ldb r0, [23]   -- load proto byte
-        Instruction::new(0x04, 1, 0, 17),  // ldi r1, 17     -- UDP protocol
-        Instruction::new(0x06, 0, 1, 0),   // eq  r0, r1
-        Instruction::new(0x0B, 0, 0, 5),   // jt  5          -- if equal, jump to drop
-        Instruction::new(0x0D, 0, 0, 1),   // ret 1          -- pass
-        Instruction::new(0x0D, 0, 0, 0),   // ret 0          -- drop
+        Instruction::new(0x01, 0, 0, 23), // ldb r0, [23]   -- load proto byte
+        Instruction::new(0x04, 1, 0, 17), // ldi r1, 17     -- UDP protocol
+        Instruction::new(0x06, 0, 1, 0),  // eq  r0, r1
+        Instruction::new(0x0B, 0, 0, 5),  // jt  5          -- if equal, jump to drop
+        Instruction::new(0x0D, 0, 0, 1),  // ret 1          -- pass
+        Instruction::new(0x0D, 0, 0, 0),  // ret 0          -- drop
     ]
 }
 
@@ -155,7 +164,15 @@ fn bench_flow_full_table(c: &mut Criterion) {
     // Fill the table with 74 distinct flows, then benchmark lookup on the last one
     let mut table = flow::FlowTable::new();
     for i in 0u8..74 {
-        table.update(&[10, 0, 0, i], &[192, 168, 100, 2], i as u16 + 1024, 80, 6, 64, 0);
+        table.update(
+            &[10, 0, 0, i],
+            &[192, 168, 100, 2],
+            i as u16 + 1024,
+            80,
+            6,
+            64,
+            0,
+        );
     }
     c.bench_function("flow_update_full_table_74_flows", |b| {
         b.iter(|| {
@@ -189,7 +206,9 @@ fn bench_heuristic_tcp_flags(c: &mut Criterion) {
 fn bench_heuristic_payload_clean(c: &mut Criterion) {
     c.bench_function("heuristic_check_payload_clean", |b| {
         b.iter(|| {
-            black_box(heuristic::HeuristicEngine::check_payload(black_box(CLEAN_PAYLOAD)));
+            black_box(heuristic::HeuristicEngine::check_payload(black_box(
+                CLEAN_PAYLOAD,
+            )));
         });
     });
 }
@@ -197,7 +216,9 @@ fn bench_heuristic_payload_clean(c: &mut Criterion) {
 fn bench_heuristic_payload_nop_sled(c: &mut Criterion) {
     c.bench_function("heuristic_check_payload_nop_sled", |b| {
         b.iter(|| {
-            black_box(heuristic::HeuristicEngine::check_payload(black_box(NOP_SLED_PAYLOAD)));
+            black_box(heuristic::HeuristicEngine::check_payload(black_box(
+                NOP_SLED_PAYLOAD,
+            )));
         });
     });
 }
