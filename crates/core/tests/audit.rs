@@ -20,6 +20,7 @@ use sec_core::net::PacketSink;
 use sec_core::net::constants::{SYN_COOKIE_MAGIC, arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
 use sec_core::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
+use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::FlowTable;
@@ -513,4 +514,19 @@ fn checksum_handles_empty_slice_without_panicking() {
         result.is_ok(),
         "checksum(&[]) panicked from data.len()-1 underflow"
     );
+}
+
+/// The first DDoS drop must fire an alert. The naive `count % N == 0`
+/// rule swallows it because `1 % N == 1`, so an attack can dump
+/// `N - 1` packets before any alert reaches the operator.
+#[test]
+fn ddos_alert_fires_on_first_drop() {
+    assert!(should_emit_ddos_alert(1, 50), "first drop must alert");
+    assert!(!should_emit_ddos_alert(2, 50));
+    assert!(!should_emit_ddos_alert(49, 50));
+    assert!(should_emit_ddos_alert(50, 50));
+    assert!(should_emit_ddos_alert(100, 50));
+    // sample_rate of 0 should not be a div-by-zero; treat as "alert always".
+    assert!(should_emit_ddos_alert(1, 0));
+    assert!(should_emit_ddos_alert(99, 0));
 }

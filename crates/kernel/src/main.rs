@@ -36,7 +36,7 @@ use sec_core::config::{
 };
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::{
-    alert::{AlertMeta, AlertReason, alert_packet},
+    alert::{AlertMeta, AlertReason, alert_packet, should_emit_ddos_alert},
     dos, dpi, firewall, flow, heuristic, mgmt, mgmt_auth, vm,
 };
 use sec_core::time::TimeSource;
@@ -307,7 +307,7 @@ pub extern "C" fn kmain() -> ! {
 
                 if drop || !engine.limiter.allow(now) {
                     stats[1] += 1;
-                    if stats[1] % DDOS_ALERT_SAMPLE_RATE == 0 {
+                    if should_emit_ddos_alert(stats[1], DDOS_ALERT_SAMPLE_RATE) {
                         send_alert(&meta, AlertReason::Ddos.as_u8());
                     }
                     NetDevice::recycle_rx_buffer();

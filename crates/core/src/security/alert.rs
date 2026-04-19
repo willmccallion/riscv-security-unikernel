@@ -66,6 +66,21 @@ impl AlertReason {
     }
 }
 
+/// Whether a DDoS-drop counter value should fire a sampled alert.
+///
+/// Returns true on the very first drop and on every `sample_rate`-th
+/// drop thereafter. Without the `count == 1` arm, operators see no
+/// signal at all until `sample_rate` packets have already been
+/// dropped — the attack is well underway by the time anything is
+/// logged. A `sample_rate` of 0 falls back to "every drop fires".
+#[must_use]
+pub const fn should_emit_ddos_alert(count: u64, sample_rate: u64) -> bool {
+    if sample_rate == 0 {
+        return true;
+    }
+    count == 1 || count.is_multiple_of(sample_rate)
+}
+
 /// Alert packet format constants.
 ///
 /// Alerts carry a fixed-size, attacker-payload-free metadata record.
