@@ -5,20 +5,45 @@ KERNEL_BIN := target/riscv64gc-unknown-none-elf/release/security-unikernel
 
 RAM_LIMIT := 65536
 
-.PHONY: all kernel gui daemon run setup_net bench check-size clean miri \
+.PHONY: all kernel gui daemon run setup_net bench check-size clean miri dev-key \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build
 
 all: kernel gui
 
+# Local developer mgmt key. The kernel's build.rs refuses release builds
+# without KERNEL_MGMT_KEY, so we materialize a random 16-byte key on first
+# build and reuse it for both kernel and GUI. Never committed (see
+# .gitignore). For real deployments, set KERNEL_MGMT_KEY in the environment
+# before building and this fallback is ignored.
+DEV_KEY_FILE := .mgmt-key.local
+
+$(DEV_KEY_FILE):
+	@echo "[!] KERNEL_MGMT_KEY not set — generating local dev key at $(DEV_KEY_FILE)"
+	@echo "[!] This key is for development only. DO NOT DEPLOY a kernel built with it."
+	@openssl rand -hex 16 > $(DEV_KEY_FILE)
+
+dev-key: $(DEV_KEY_FILE)
+	@echo "[*] Dev mgmt key: $$(cat $(DEV_KEY_FILE))"
+
+# If the caller hasn't exported KERNEL_MGMT_KEY, depend on the local key
+# file and read it from inside the recipe (after the file exists).
+ifeq ($(origin KERNEL_MGMT_KEY), undefined)
+KEY_DEP := $(DEV_KEY_FILE)
+KEY_CMD := KERNEL_MGMT_KEY=$$(cat $(CURDIR)/$(DEV_KEY_FILE))
+else
+KEY_DEP :=
+KEY_CMD :=
+endif
+
 # kernel (RISC-V)
-kernel:
+kernel: $(KEY_DEP)
 	@echo "[*] Building Kernel (RISC-V)..."
-	@cd crates/kernel && cargo build --release
+	@cd crates/kernel && $(KEY_CMD) cargo build --release
 
 # GUI (Host)
-gui:
+gui: $(KEY_DEP)
 	@echo "[*] Running GUI (Host)..."
-	@cargo run -p security-dashboard --release
+	@$(KEY_CMD) cargo run -p security-dashboard --release
 
 # Linux userspace daemon (stub)
 daemon:
