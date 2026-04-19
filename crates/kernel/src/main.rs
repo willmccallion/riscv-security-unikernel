@@ -595,7 +595,12 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, meta: &Aler
             if body.len() >= block_port::MIN_PAYLOAD_LEN {
                 let p = (body[block_port::PORT_OFFSET] as u16) << 8
                     | body[block_port::PORT_OFFSET + 1] as u16;
-                engine.fw.block_port(p);
+                // Blocking the mgmt port is an unrecoverable self-lockout: the RX firewall check runs before dispatch and there is no unblock path.
+                if p == MANAGEMENT_PORT {
+                    send_alert(meta, AlertReason::MgmtRejected.as_u8());
+                } else {
+                    engine.fw.block_port(p);
+                }
             }
         }
         Some(mgmt::ManagementMessageType::AddDpiPattern) => {
