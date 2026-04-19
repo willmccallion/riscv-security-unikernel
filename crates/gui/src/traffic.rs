@@ -58,9 +58,28 @@ fn load_mgmt_key() -> [u8; 16] {
             }
             return out;
         }
-        eprintln!("KERNEL_MGMT_KEY must be 32 hex chars; falling back to dev key");
+        eprintln!("KERNEL_MGMT_KEY must be 32 hex chars");
+    } else {
+        eprintln!("KERNEL_MGMT_KEY not set");
     }
-    *b"DEV-KEY-DEV-KEY!"
+
+    // The kernel's build.rs refuses release builds without KERNEL_MGMT_KEY;
+    // mirror that here so a release-built GUI can't silently sign packets
+    // with the hard-coded dev key and have every mgmt command rejected
+    // by the kernel at the kind of subtle distance that wastes an hour
+    // of debugging.
+    #[cfg(not(debug_assertions))]
+    {
+        eprintln!(
+            "[gui] release build requires KERNEL_MGMT_KEY — refusing to use the dev-only fallback"
+        );
+        std::process::exit(1);
+    }
+    #[cfg(debug_assertions)]
+    {
+        eprintln!("[gui] debug build — falling back to DEV-KEY-DEV-KEY!");
+        *b"DEV-KEY-DEV-KEY!"
+    }
 }
 
 /// Strictly-monotonic counter for outgoing mgmt packets.
