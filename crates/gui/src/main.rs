@@ -6,6 +6,8 @@
 //! and eBPF packet filters.
 
 mod app;
+/// Per-namespace UDP sender pool for realistic multi-source traffic.
+mod netns;
 /// Background network task for kernel communication and traffic generation.
 mod traffic;
 /// Type definitions for statistics, log entries, and GUI commands.

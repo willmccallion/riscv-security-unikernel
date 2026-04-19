@@ -44,3 +44,4 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 rand = "0.8"
 crossbeam-channel = "0.5" # For communicating between Async Net and GUI
+libc = "0.2"              # setns(2) FFI for per-namespace traffic generator

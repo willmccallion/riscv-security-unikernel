@@ -10,9 +10,6 @@ use std::sync::atomic::AtomicU64;
 /// UDP address for sending management commands to the security kernel.
 pub const MGMT_ADDR: &str = "192.168.100.2:1337";
 
-/// Target address for generating test traffic.
-pub const TARGET_ADDR: &str = "192.168.100.2:80";
-
 /// Local address for receiving telemetry and alerts from the kernel.
 pub const LISTEN_ADDR: &str = "0.0.0.0:8888";
 

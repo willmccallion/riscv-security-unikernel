@@ -4,13 +4,21 @@
 //! receiving telemetry data and security alerts, sending management commands,
 //! and generating test traffic patterns for security testing.
 
-use crate::types::{
-    GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TARGET_ADDR, TrafficMode,
-};
+use crate::netns::NsPool;
+use crate::types::{GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TrafficMode};
 use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::seal;
+
+/// Namespace prefix used by `make setup_net_many`. Must match the
+/// value in the Makefile.
+const NETNS_PREFIX: &str = "sec-ns";
+/// Default number of namespaces the pool expects at startup. Can be
+/// overridden with the `AEGIS_NS_COUNT` env var (e.g. for a lighter
+/// dev setup with fewer bridges/veths). Must match the `N=` value
+/// passed to `make setup_net_many`.
+const NETNS_DEFAULT_COUNT: usize = 200;
 
 /// Seals `body` with the mgmt key and a fresh monotonic counter, then
 /// ships the resulting authenticated packet to the kernel's mgmt port.
@@ -93,6 +101,20 @@ pub async fn start_background_task(
         socket_pool.push(sock);
     }
 
+    // Try to attach to the namespaces created by `make setup_net_many`.
+    // When this succeeds, every generated packet's source IP is a real
+    // in-kernel network stack — CMS per-source counters reflect actual
+    // diversity instead of collapsing onto the handful of addresses a
+    // host-bound socket pool can present. When it fails (no setup run,
+    // no CAP_SYS_ADMIN), we log and fall back to `socket_pool` so the
+    // GUI still starts and the user sees traffic, even if the
+    // heavy-hitter behaviour is unrealistic.
+    let ns_count: usize = std::env::var("AEGIS_NS_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(NETNS_DEFAULT_COUNT);
+    let ns_pool = NsPool::try_init(NETNS_PREFIX, ns_count);
+
     let mut buf = vec![0u8; 1024];
     let mut alert_buf = vec![0u8; 1024];
     let mut mode = TrafficMode::Idle;
@@ -100,13 +122,9 @@ pub async fn start_background_task(
     let mgmt_key = load_mgmt_key();
 
     let target_ip: std::net::IpAddr = "192.168.100.2".parse().unwrap();
+    let target_80 = SocketAddr::new(target_ip, 80);
 
     let mut rng = StdRng::from_entropy();
-
-    let mut botnet = Vec::new();
-    for _ in 0..50 {
-        botnet.push([10, rng.r#gen(), rng.r#gen(), rng.r#gen()]);
-    }
 
     loop {
         tokio::select! {
@@ -234,20 +252,25 @@ pub async fn start_background_task(
                 }
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
+                // Rates are tuned against the kernel's CMS heavy-hitter
+                // threshold (100 pps/source). With N real source IPs
+                // (netns mode) the per-source rate is total/N:
+                //   Normal 2 pkts/tick × ~1000 ticks/s ÷ 200 ns ≈ 10 pps/src
+                //   DDoS 300 pkts/tick × ~1000 ticks/s ÷ 200 ns ≈ 1500 pps/src
+                // So Normal passes; DDoS lights up HH on every source.
+                // Fallback (host-pool) still roughly works since 50
+                // sockets × 10 pps = 500 pps/src — over HH — which
+                // surfaces the "you need netns for Normal" failure
+                // mode loudly rather than silently.
                 match mode {
                     TrafficMode::Normal => {
-                        let count = rng.gen_range(80..=120);
-                        for _ in 0..count {
-                            let payload = build_spoofed_packet(&mut rng, None, b"GET / HTTP/1.1");
-                            let sock = socket_pool.choose(&mut rng).unwrap();
-                            let _ = sock.send_to(&payload, TARGET_ADDR).await;
+                        for _ in 0..rng.gen_range(1..=3) {
+                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
+                                target_80, b"GET / HTTP/1.1".to_vec()).await;
                         }
                     }
                     TrafficMode::DDoS => {
-                        for _ in 0..1200 {
-                            let bot_ip = botnet.choose(&mut rng).copied();
-                            let payload = build_spoofed_packet(&mut rng, bot_ip, b"X");
-
+                        for _ in 0..300 {
                             let port = match rng.gen_range(0..10) {
                                 0..=5 => 80,
                                 6..=7 => 443,
@@ -255,19 +278,16 @@ pub async fn start_background_task(
                                 _ => rng.gen_range(1024..65535)
                             };
                             let target = SocketAddr::new(target_ip, port);
-
-                            let sock = socket_pool.choose(&mut rng).unwrap();
-                            let _ = sock.send_to(&payload, target).await;
+                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
+                                target, b"X".to_vec()).await;
                         }
                     }
                     TrafficMode::Live => {
                         let elapsed = start_time.elapsed().as_secs() % 30;
 
-                        let count = rng.gen_range(60..=100);
-                        for _ in 0..count {
-                            let payload = build_spoofed_packet(&mut rng, None, b"GET / HTTP/1.1");
-                            let sock = socket_pool.choose(&mut rng).unwrap();
-                            let _ = sock.send_to(&payload, TARGET_ADDR).await;
+                        for _ in 0..rng.gen_range(1..=3) {
+                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
+                                target_80, b"GET / HTTP/1.1".to_vec()).await;
                         }
 
                         if rng.gen_bool(0.10) {
@@ -276,24 +296,19 @@ pub async fn start_background_task(
                             } else {
                                 b"<script>alert(1)</script>"
                             };
-                            let payload = build_spoofed_packet(&mut rng, None, payload);
-                            let sock = socket_pool.choose(&mut rng).unwrap();
-                            let _ = sock.send_to(&payload, TARGET_ADDR).await;
+                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
+                                target_80, payload.to_vec()).await;
                         }
 
                         if rng.gen_bool(0.05) {
                             let mut payload = vec![0x90; 16];
                             payload.extend_from_slice(b"\xcc\xcc\xcc\xcc");
-                            let payload = build_spoofed_packet(&mut rng, None, &payload);
-                            let sock = socket_pool.choose(&mut rng).unwrap();
-                            let _ = sock.send_to(&payload, TARGET_ADDR).await;
+                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
+                                target_80, payload).await;
                         }
 
                         if (15..25).contains(&elapsed) {
-                            for _ in 0..1200 {
-                                let bot_ip = botnet.choose(&mut rng).copied();
-                                let payload = build_spoofed_packet(&mut rng, bot_ip, b"X");
-
+                            for _ in 0..300 {
                                 let port = match rng.gen_range(0..10) {
                                     0..=5 => 80,
                                     6..=7 => 443,
@@ -301,9 +316,8 @@ pub async fn start_background_task(
                                     _ => rng.gen_range(1024..65535)
                                 };
                                 let target = SocketAddr::new(target_ip, port);
-
-                                let sock = socket_pool.choose(&mut rng).unwrap();
-                                let _ = sock.send_to(&payload, target).await;
+                                send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
+                                    target, b"X".to_vec()).await;
                             }
                         }
                     }
@@ -314,35 +328,22 @@ pub async fn start_background_task(
     }
 }
 
-/// Constructs a spoofed UDP packet with custom source IP and payload.
-///
-/// The packet format includes a magic header (0xAE617300) followed by
-/// the source IP address and the payload data. This format is recognized
-/// by the kernel for testing IP spoofing detection.
-///
-/// # Arguments
-///
-/// * `rng` - Random number generator for generating random source IPs
-/// * `fixed_ip` - Optional fixed source IP, otherwise randomly generated
-/// * `payload` - Packet payload data
-///
-/// # Returns
-///
-/// A byte vector containing the complete spoofed packet.
-fn build_spoofed_packet(rng: &mut StdRng, fixed_ip: Option<[u8; 4]>, payload: &[u8]) -> Vec<u8> {
-    let mut packet = Vec::with_capacity(8 + payload.len());
-    packet.extend_from_slice(&[0xAE, 0x61, 0x73, 0x00]);
-
-    if let Some(ip) = fixed_ip {
-        packet.extend_from_slice(&ip);
-    } else {
-        packet.push(10);
-        packet.push(rng.r#gen());
-        packet.push(rng.r#gen());
-        packet.push(rng.r#gen());
+/// Send a test-traffic UDP packet. Prefers the per-namespace pool so
+/// the packet carries a real, distinct source IP; falls back to the
+/// host socket pool when netns init failed.
+async fn send_traffic(
+    ns_pool: Option<&NsPool>,
+    socket_pool: &[UdpSocket],
+    rng: &mut StdRng,
+    dst: SocketAddr,
+    payload: Vec<u8>,
+) {
+    if let Some(pool) = ns_pool {
+        let idx = rng.gen_range(0..pool.len());
+        pool.send(idx, dst, payload);
+    } else if let Some(sock) = socket_pool.choose(rng) {
+        let _ = sock.send_to(&payload, dst).await;
     }
-    packet.extend_from_slice(payload);
-    packet
 }
 
 /// Parses a security alert packet received from the kernel.

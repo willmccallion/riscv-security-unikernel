@@ -2,10 +2,17 @@
 TAP_DEV := tap0
 HOST_IP := 192.168.100.1
 KERNEL_BIN := target/riscv64gc-unknown-none-elf/release/security-unikernel
+GUI_BIN := target/release/security-dashboard
+
+# Multi-source traffic generator (netns mode).
+BRIDGE := br-sec
+NS_PREFIX := sec-ns
+NS_COUNT ?= 200
 
 RAM_LIMIT := 65536
 
-.PHONY: all kernel gui daemon run setup_net bench check-size clean miri dev-key \
+.PHONY: all kernel gui daemon run setup_net setup_net_many teardown_net_many \
+        bench check-size clean miri dev-key \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build
 
 all: kernel gui
@@ -41,9 +48,21 @@ kernel: $(KEY_DEP)
 	@cd crates/kernel && $(KEY_CMD) cargo build --release
 
 # GUI (Host)
+#
+# Builds the GUI, then grants it CAP_SYS_ADMIN so the traffic generator
+# can `setns(2)` into each per-source namespace without running the
+# whole dashboard as root. The capability has to be re-applied after
+# every rebuild (cargo replaces the binary); doing it here keeps the
+# flow a single `make gui`. Requires sudo once per build; skipped if
+# `make setup_net_many` hasn't been run and the GUI will fall back to
+# host-bound sockets.
 gui: $(KEY_DEP)
-	@echo "[*] Running GUI (Host)..."
-	@$(KEY_CMD) cargo run -p security-dashboard --release
+	@echo "[*] Building GUI (Host)..."
+	@$(KEY_CMD) cargo build -p security-dashboard --release
+	@echo "[*] Granting cap_sys_admin to GUI binary (sudo)..."
+	@sudo setcap cap_sys_admin,cap_net_admin+ep $(GUI_BIN)
+	@echo "[*] Running GUI..."
+	@$(KEY_CMD) $(GUI_BIN)
 
 # Linux userspace daemon (stub)
 daemon:
@@ -53,11 +72,81 @@ daemon:
 # Runtime
 setup_net:
 	@echo "[*] Configuring Network..."
+	@# If setup_net_many is already active, the bridge owns $(HOST_IP)
+	@# and tap0 is enslaved to it; re-flushing tap0 or re-adding
+	@# $(HOST_IP) to it would yank networking out from under the
+	@# namespaces. Detect and skip.
+	@if ip link show $(BRIDGE) > /dev/null 2>&1; then \
+		echo "[*] Bridge $(BRIDGE) present — leaving multi-source topology alone"; \
+	else \
+		(ip link show $(TAP_DEV) > /dev/null 2>&1 || \
+			sudo ip tuntap add dev $(TAP_DEV) mode tap user $(shell whoami)) && \
+		sudo ip link set $(TAP_DEV) up && \
+		sudo ip addr flush dev $(TAP_DEV) && \
+		sudo ip addr add $(HOST_IP)/24 dev $(TAP_DEV); \
+	fi
+
+# Multi-source traffic topology.
+#
+# Goal: let the GUI traffic generator present NS_COUNT genuinely
+# distinct source IPs so the kernel's per-source heavy-hitter detector
+# is exercised against real diversity (not just ~50 host-bound
+# sockets, which trips the threshold on every legit client).
+#
+# Topology: a bridge joins the QEMU tap to one veth pair per
+# namespace. Each namespace gets 192.168.100.{10+i}/24, default
+# route via $(HOST_IP), and its veth-host peer is enslaved to the
+# bridge. $(HOST_IP) stays on the bridge (not on tap0) so the host,
+# QEMU kernel, and all namespace endpoints sit on one L2 segment.
+#
+# Idempotent: re-running first tears down, then rebuilds. The GUI's
+# setcap already picks up the new namespaces on next launch.
+#
+# Requires sudo (CAP_NET_ADMIN). NS_COUNT defaults to 200; override
+# with `make setup_net_many NS_COUNT=50` for a lighter dev setup.
+setup_net_many: teardown_net_many
+	@echo "[*] Creating bridge $(BRIDGE) and $(NS_COUNT) namespaces..."
+	@sudo ip link add name $(BRIDGE) type bridge
+	@sudo ip link set $(BRIDGE) up
+	@# Move tap0 onto the bridge: flush its IP (it now belongs to the
+	@# bridge itself) and enslave it. Recreate tap0 if the user
+	@# skipped setup_net.
 	@ip link show $(TAP_DEV) > /dev/null 2>&1 || \
 		(sudo ip tuntap add dev $(TAP_DEV) mode tap user $(shell whoami))
 	@sudo ip link set $(TAP_DEV) up
 	@sudo ip addr flush dev $(TAP_DEV)
-	@sudo ip addr add $(HOST_IP)/24 dev $(TAP_DEV)
+	@sudo ip link set $(TAP_DEV) master $(BRIDGE)
+	@sudo ip addr add $(HOST_IP)/24 dev $(BRIDGE)
+	@for i in $$(seq 0 $$(($(NS_COUNT) - 1))); do \
+		idx=$$(printf "%03d" $$i); \
+		ns=$(NS_PREFIX)-$$idx; \
+		veth_h=vh-$$idx; veth_n=vn-$$idx; \
+		ip=192.168.100.$$(( 10 + $$i )); \
+		sudo ip netns add $$ns; \
+		sudo ip link add $$veth_h type veth peer name $$veth_n; \
+		sudo ip link set $$veth_n netns $$ns; \
+		sudo ip link set $$veth_h master $(BRIDGE); \
+		sudo ip link set $$veth_h up; \
+		sudo ip -n $$ns addr add $$ip/24 dev $$veth_n; \
+		sudo ip -n $$ns link set $$veth_n up; \
+		sudo ip -n $$ns link set lo up; \
+		sudo ip -n $$ns route add default via $(HOST_IP); \
+	done
+	@echo "[*] Done: $(NS_COUNT) namespaces (192.168.100.10 .. 192.168.100.$$(( 10 + $(NS_COUNT) - 1 )))"
+
+teardown_net_many:
+	@echo "[*] Tearing down netns topology (if present)..."
+	@for ns in $$(ip netns list 2>/dev/null | awk '/^$(NS_PREFIX)-/ {print $$1}'); do \
+		sudo ip netns del $$ns 2>/dev/null || true; \
+	done
+	@# Veth host-ends are deleted with their peer in the ns, but
+	@# belt-and-braces in case a ns was already gone.
+	@for v in $$(ip -o link show type veth 2>/dev/null | awk -F': ' '/vh-[0-9]/ {print $$2}' | awk '{print $$1}'); do \
+		sudo ip link del $$v 2>/dev/null || true; \
+	done
+	@if ip link show $(BRIDGE) > /dev/null 2>&1; then \
+		sudo ip link del $(BRIDGE); \
+	fi
 
 run: kernel setup_net
 	@echo "[*] Starting QEMU..."
