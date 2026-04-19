@@ -18,20 +18,28 @@ pub const LISTEN_ADDR: &str = "0.0.0.0:8888";
 
 /// Represents a single security event or alert logged by the kernel.
 ///
-/// Each entry contains metadata about the event including source IP,
-/// destination port, timestamp, and the raw packet payload for inspection.
+/// Carries the fixed-size metadata record the kernel ships in alert
+/// packets — source/destination addresses, ports, protocol, and the
+/// observed packet length. Inbound payload bytes are deliberately not
+/// echoed by the kernel, so none are stored here.
 #[derive(Clone, Debug)]
 pub struct LogEntry {
     /// Time elapsed since application start in seconds.
     pub timestamp: f64,
     /// Source IP address that triggered the event.
     pub src_ip: String,
+    /// Destination IP address recorded by the kernel.
+    pub dst_ip: String,
+    /// Source port of the packet (0 if unknown).
+    pub src_port: u16,
+    /// Destination port of the packet (0 if unknown).
+    pub dst_port: u16,
+    /// IP protocol number (6 = TCP, 17 = UDP, ...).
+    pub protocol: u8,
+    /// Total observed packet length in bytes (saturated to u16::MAX).
+    pub packet_len: u16,
     /// Human-readable description of the security event.
     pub msg: String,
-    /// Raw packet payload captured for analysis.
-    pub payload: Vec<u8>,
-    /// Destination port of the packet.
-    pub dst_port: u16,
     /// Color code for UI display based on event severity.
     pub color: egui::Color32,
 }

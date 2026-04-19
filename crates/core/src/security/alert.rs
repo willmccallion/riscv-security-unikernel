@@ -67,6 +67,11 @@ impl AlertReason {
 }
 
 /// Alert packet format constants.
+///
+/// Alerts carry a fixed-size, attacker-payload-free metadata record.
+/// Echoing inbound bytes onto the management broadcast domain would
+/// hand attacker-controlled data to every log/parser tool listening
+/// for alerts, so the wire format is metadata-only.
 pub mod alert_packet {
     /// Alert message type identifier in UDP payload.
     pub const ALERT_MESSAGE_TYPE: u8 = 0x02;
@@ -74,10 +79,54 @@ pub mod alert_packet {
     pub const REASON_OFFSET: usize = 1;
     /// Offset to source IP address in alert packet.
     pub const SRC_IP_OFFSET: usize = 2;
-    /// Size of source IP address field.
+    /// Size of an IPv4 address field.
     pub const SRC_IP_SIZE: usize = 4;
-    /// Offset to payload data in alert packet.
-    pub const PAYLOAD_OFFSET: usize = 6;
-    /// Maximum payload length in alert packets.
-    pub const MAX_PAYLOAD_LEN: usize = 64;
+    /// Offset to destination IP address in alert packet.
+    pub const DST_IP_OFFSET: usize = 6;
+    /// Offset to source port (big-endian u16).
+    pub const SRC_PORT_OFFSET: usize = 10;
+    /// Offset to destination port (big-endian u16).
+    pub const DST_PORT_OFFSET: usize = 12;
+    /// Offset to IP protocol number.
+    pub const PROTOCOL_OFFSET: usize = 14;
+    /// Offset to packet length (big-endian u16, saturated).
+    pub const PACKET_LEN_OFFSET: usize = 15;
+    /// Total bytes of alert body on the wire.
+    pub const ALERT_BODY_LEN: usize = 17;
+}
+
+/// Fixed-size metadata included in every security alert.
+///
+/// Built by the kernel from already-parsed packet fields and shipped
+/// across the management network in place of any attacker-controlled
+/// payload bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct AlertMeta {
+    /// Source IPv4 address.
+    pub src_ip: [u8; 4],
+    /// Destination IPv4 address.
+    pub dst_ip: [u8; 4],
+    /// Source port (host byte order). Zero if unknown / non-TCP/UDP.
+    pub src_port: u16,
+    /// Destination port (host byte order). Zero if unknown / non-TCP/UDP.
+    pub dst_port: u16,
+    /// IP protocol number (6 = TCP, 17 = UDP, etc.).
+    pub protocol: u8,
+    /// Total packet length in bytes, saturated to `u16::MAX`.
+    pub packet_len: u16,
+}
+
+impl AlertMeta {
+    /// All-zero metadata, used when no per-packet context is available
+    /// (e.g. an early-rejected mgmt envelope).
+    pub const fn empty() -> Self {
+        Self {
+            src_ip: [0; 4],
+            dst_ip: [0; 4],
+            src_port: 0,
+            dst_port: 0,
+            protocol: 0,
+            packet_len: 0,
+        }
+    }
 }

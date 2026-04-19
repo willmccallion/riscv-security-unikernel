@@ -382,40 +382,29 @@ impl AegisApp {
                             ui.label(&log.src_ip);
                             ui.end_row();
 
+                            ui.label("Dest IP:");
+                            ui.label(&log.dst_ip);
+                            ui.end_row();
+
+                            ui.label("Src Port:");
+                            ui.label(format!("{}", log.src_port));
+                            ui.end_row();
+
                             ui.label("Dst Port:");
                             ui.label(format!("{}", log.dst_port));
+                            ui.end_row();
+
+                            ui.label("Protocol:");
+                            ui.label(format!("{}", log.protocol));
+                            ui.end_row();
+
+                            ui.label("Packet Len:");
+                            ui.label(format!("{} bytes", log.packet_len));
                             ui.end_row();
 
                             ui.label("Reason:");
                             ui.colored_label(log.color, &log.msg);
                             ui.end_row();
-                        });
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.label("Captured Payload (Hex / ASCII):");
-
-                    egui::ScrollArea::vertical()
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            ui.monospace(format!("{:?}", log.payload));
-                            ui.add_space(5.0);
-
-                            for (i, chunk) in log.payload.chunks(16).enumerate() {
-                                let hex: String =
-                                    chunk.iter().map(|b| format!("{b:02X} ")).collect();
-                                let ascii: String = chunk
-                                    .iter()
-                                    .map(|&b| {
-                                        if (32..126).contains(&b) {
-                                            b as char
-                                        } else {
-                                            '.'
-                                        }
-                                    })
-                                    .collect();
-                                ui.monospace(format!("{:04X}  {:48}  |{}|", i * 16, hex, ascii));
-                            }
                         });
                 });
 
@@ -623,9 +612,12 @@ impl AegisApp {
                         let entry = LogEntry {
                             timestamp: self.start_time.elapsed().as_secs_f64(),
                             src_ip: "Localhost".to_string(),
-                            msg: "eBPF: Compilation Failed".to_string(),
-                            payload: vec![],
+                            dst_ip: String::new(),
+                            src_port: 0,
                             dst_port: 0,
+                            protocol: 0,
+                            packet_len: 0,
+                            msg: "eBPF: Compilation Failed".to_string(),
                             color: egui::Color32::RED,
                         };
                         self.logs.push_front(entry);

@@ -170,9 +170,12 @@ pub async fn start_background_task(
                             let entry = LogEntry {
                                 timestamp: 0.0,
                                 src_ip: "Localhost".to_string(),
-                                msg: format!("MANUAL BAN: {ip_str}"),
-                                payload: vec![],
+                                dst_ip: String::new(),
+                                src_port: 0,
                                 dst_port: 0,
+                                protocol: 0,
+                                packet_len: 0,
+                                msg: format!("MANUAL BAN: {ip_str}"),
                                 color: egui::Color32::from_rgb(255, 0, 255),
                             };
                             let _ = log_tx.send(entry);
@@ -307,38 +310,31 @@ fn build_spoofed_packet(rng: &mut StdRng, fixed_ip: Option<[u8; 4]>, payload: &[
 /// A LogEntry with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
     let reason_byte = data[alert_packet::REASON_OFFSET];
-    let ip_start = alert_packet::SRC_IP_OFFSET;
+    let src_ip_bytes = &data[alert_packet::SRC_IP_OFFSET
+        ..alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE];
     let ip = format!(
         "{}.{}.{}.{}",
-        data[ip_start],
-        data[ip_start + 1],
-        data[ip_start + 2],
-        data[ip_start + 3],
+        src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
     );
-
-    let payload = if data.len() > alert_packet::PAYLOAD_OFFSET {
-        data[alert_packet::PAYLOAD_OFFSET..].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    // Offset into the captured payload where the destination port lives for
-    // different alert reasons: the raw Ethernet frame (DDoS/eBPF/Flow) puts
-    // dst port at bytes 36..=37, while the already-parsed UDP payload
-    // (Firewall/Malware/Heuristic) has it at bytes 2..=3.
-    let dst_port = match AlertReason::from_u8(reason_byte) {
-        Some(AlertReason::Ddos | AlertReason::Ebpf | AlertReason::Flow)
-            if payload.len() >= 38 =>
-        {
-            u16::from_be_bytes([payload[36], payload[37]])
-        }
-        Some(AlertReason::Firewall | AlertReason::Malware | AlertReason::Heuristic)
-            if payload.len() >= 4 =>
-        {
-            u16::from_be_bytes([payload[2], payload[3]])
-        }
-        _ => 0,
-    };
+    let dst_ip_bytes = &data[alert_packet::DST_IP_OFFSET
+        ..alert_packet::DST_IP_OFFSET + alert_packet::SRC_IP_SIZE];
+    let dst_ip = format!(
+        "{}.{}.{}.{}",
+        dst_ip_bytes[0], dst_ip_bytes[1], dst_ip_bytes[2], dst_ip_bytes[3],
+    );
+    let src_port = u16::from_be_bytes([
+        data[alert_packet::SRC_PORT_OFFSET],
+        data[alert_packet::SRC_PORT_OFFSET + 1],
+    ]);
+    let dst_port = u16::from_be_bytes([
+        data[alert_packet::DST_PORT_OFFSET],
+        data[alert_packet::DST_PORT_OFFSET + 1],
+    ]);
+    let protocol = data[alert_packet::PROTOCOL_OFFSET];
+    let packet_len = u16::from_be_bytes([
+        data[alert_packet::PACKET_LEN_OFFSET],
+        data[alert_packet::PACKET_LEN_OFFSET + 1],
+    ]);
 
     let (msg, color) = match AlertReason::from_u8(reason_byte) {
         Some(AlertReason::Ddos) => (
@@ -358,11 +354,7 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             egui::Color32::LIGHT_BLUE,
         ),
         Some(AlertReason::Heuristic) => (
-            if !payload.is_empty() && payload[0] == 0x90 {
-                format!("[HEURISTIC] Shellcode Detected from {ip}")
-            } else {
-                format!("[HEURISTIC] Anomaly Detected from {ip}")
-            },
+            format!("[HEURISTIC] Anomaly Detected from {ip}"),
             egui::Color32::from_rgb(255, 0, 255),
         ),
         Some(AlertReason::Flow) => (
@@ -387,9 +379,12 @@ fn parse_alert(data: &[u8]) -> LogEntry {
     LogEntry {
         timestamp: 0.0,
         src_ip: ip,
-        msg,
-        payload,
+        dst_ip,
+        src_port,
         dst_port,
+        protocol,
+        packet_len,
+        msg,
         color,
     }
 }

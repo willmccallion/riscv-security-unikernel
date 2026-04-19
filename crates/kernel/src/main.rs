@@ -36,7 +36,7 @@ use sec_core::config::{
 };
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::{
-    alert::{AlertReason, alert_packet},
+    alert::{AlertMeta, AlertReason, alert_packet},
     dos, dpi, firewall, flow, heuristic, mgmt, mgmt_auth, vm,
 };
 use sec_core::time::TimeSource;
@@ -247,24 +247,23 @@ pub extern "C" fn kmain() -> ! {
             if let Some(packet) = NetDevice::try_receive() {
                 work_done = true;
                 let mut drop = false;
-                let mut src_ip = [0u8; 4];
-                let mut dst_ip = [0u8; 4];
-                let mut src_port = 0u16;
-                let mut dst_port = 0u16;
-                let mut protocol = 0u8;
+                let mut meta = AlertMeta::empty();
+                meta.packet_len = packet.len().min(u16::MAX as usize) as u16;
+                let dst_port;
+                let protocol;
 
                 use sec_core::net::constants::{ethernet, ipv4};
                 if packet.len() >= ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE
                     && packet[ethernet::TYPE_OFFSET] == 0x08
                     && packet[ethernet::TYPE_OFFSET + 1] == 0x00
                 {
-                    src_ip.copy_from_slice(
+                    meta.src_ip.copy_from_slice(
                         &packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE],
                     );
-                    dst_ip.copy_from_slice(
+                    meta.dst_ip.copy_from_slice(
                         &packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE],
                     );
-                    protocol = packet[ipv4::PROTOCOL_OFFSET];
+                    meta.protocol = packet[ipv4::PROTOCOL_OFFSET];
                     let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
                     let payload_offset = ipv4::HEADER_OFFSET + ihl as usize;
 
@@ -272,38 +271,44 @@ pub extern "C" fn kmain() -> ! {
                     if let Some((sport, dport)) =
                         TcpHeader::extract_ports(&packet[payload_offset..])
                     {
-                        src_port = sport;
-                        dst_port = dport;
+                        meta.src_port = sport;
+                        meta.dst_port = dport;
                     }
 
+                    dst_port = meta.dst_port;
+                    protocol = meta.protocol;
+
                     if engine.flow_table.update(
-                        &src_ip,
-                        &dst_ip,
-                        src_port,
-                        dst_port,
-                        protocol,
+                        &meta.src_ip,
+                        &meta.dst_ip,
+                        meta.src_port,
+                        meta.dst_port,
+                        meta.protocol,
                         packet.len(),
                         now,
                     ) && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0
                     {
-                        send_alert(&src_ip, AlertReason::Flow.as_u8(), packet);
+                        send_alert(&meta, AlertReason::Flow.as_u8());
                     }
 
-                    if engine.pbox.is_banned(&src_ip, now) {
+                    if engine.pbox.is_banned(&meta.src_ip, now) {
                         drop = true;
                     } else {
-                        let count = engine.cms.insert(&src_ip);
+                        let count = engine.cms.insert(&meta.src_ip);
                         if count > HEAVY_HITTER_THRESHOLD {
-                            engine.pbox.ban(&src_ip, IP_BAN_DURATION_CYCLES as u64, now);
+                            engine.pbox.ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
                             drop = true;
                         }
                     }
+                } else {
+                    dst_port = meta.dst_port;
+                    protocol = meta.protocol;
                 }
 
                 if drop || !engine.limiter.allow(now) {
                     stats[1] += 1;
                     if stats[1] % DDOS_ALERT_SAMPLE_RATE == 0 {
-                        send_alert(&src_ip, AlertReason::Ddos.as_u8(), packet);
+                        send_alert(&meta, AlertReason::Ddos.as_u8());
                     }
                     NetDevice::recycle_rx_buffer();
                     continue;
@@ -317,7 +322,7 @@ pub extern "C" fn kmain() -> ! {
                         let flags = packet[tcp_offset + tcp::FLAGS_OFFSET];
                         if let Some(_reason) = heuristic::HeuristicEngine::check_tcp_flags(flags) {
                             stats[5] += 1;
-                            send_alert(&src_ip, AlertReason::Heuristic.as_u8(), packet);
+                            send_alert(&meta, AlertReason::Heuristic.as_u8());
                             NetDevice::recycle_rx_buffer();
                             continue;
                         }
@@ -329,7 +334,7 @@ pub extern "C" fn kmain() -> ! {
                     let result = engine.vm.execute(prog, packet);
                     if result == 0 {
                         stats[4] += 1;
-                        send_alert(&src_ip, AlertReason::Ebpf.as_u8(), packet);
+                        send_alert(&meta, AlertReason::Ebpf.as_u8());
                         NetDevice::recycle_rx_buffer();
                         continue;
                     }
@@ -340,7 +345,7 @@ pub extern "C" fn kmain() -> ! {
                 // for a packet headed to a blocked destination port.
                 if dst_port != 0 && engine.fw.is_blocked(dst_port) {
                     stats[2] += 1;
-                    send_alert(&src_ip, AlertReason::Firewall.as_u8(), packet);
+                    send_alert(&meta, AlertReason::Firewall.as_u8());
                     NetDevice::recycle_rx_buffer();
                     continue;
                 }
@@ -350,7 +355,7 @@ pub extern "C" fn kmain() -> ! {
                 {
                     if let Some(_reason) = heuristic::HeuristicEngine::check_payload(payload) {
                         stats[5] += 1;
-                        send_alert(&src_ip, AlertReason::Heuristic.as_u8(), payload);
+                        send_alert(&meta, AlertReason::Heuristic.as_u8());
                         NetDevice::recycle_rx_buffer();
                         continue;
                     }
@@ -358,19 +363,19 @@ pub extern "C" fn kmain() -> ! {
                     if payload.len() >= 4 {
                         // Mgmt-plane traffic must be authenticated before any
                         // dispatch happens. Otherwise any UDP packet to port
-                        // 1337 with a valid type byte rewrites global policy
-                        // (CRIT-3). We strip the 8-byte UDP header, then ask
-                        // MgmtAuth to verify the counter+MAC and hand back
-                        // the inner command body.
+                        // 1337 with a valid type byte rewrites global policy.
+                        // We strip the 8-byte UDP header, then ask MgmtAuth
+                        // to verify the counter+MAC and hand back the inner
+                        // command body.
                         if dst_port == MANAGEMENT_PORT {
                             const UDP_HEADER_LEN: usize = 8;
                             let dispatched = if payload.len() > UDP_HEADER_LEN {
                                 let envelope = &payload[UDP_HEADER_LEN..];
                                 if let Some(body) = MGMT_AUTH.get().verify(envelope) {
-                                    dispatch_mgmt(body, engine, now, &src_ip);
+                                    dispatch_mgmt(body, engine, now, &meta);
                                     true
                                 } else {
-                                    send_alert(&src_ip, AlertReason::MgmtAuthFail.as_u8(), payload);
+                                    send_alert(&meta, AlertReason::MgmtAuthFail.as_u8());
                                     false
                                 }
                             } else {
@@ -384,10 +389,10 @@ pub extern "C" fn kmain() -> ! {
 
                         if engine.ac.scan(payload) || engine.dyn_rules.check(payload) {
                             stats[3] += 1;
-                            send_alert(&src_ip, AlertReason::Malware.as_u8(), payload);
+                            send_alert(&meta, AlertReason::Malware.as_u8());
                         } else {
                             stats[0] += 1;
-                            send_alert(&src_ip, AlertReason::Pass.as_u8(), payload);
+                            send_alert(&meta, AlertReason::Pass.as_u8());
                         }
                     }
                 }
@@ -411,7 +416,7 @@ pub extern "C" fn kmain() -> ! {
 /// ignored: the auth layer guarantees the sender knows the key, so
 /// quiet-on-malformed is acceptable as long as the verifier itself is
 /// strict.
-fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, src_ip: &[u8; 4]) {
+fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, meta: &AlertMeta) {
     use mgmt::mgmt_packet;
     use sec_core::net::constants::ipv4;
     if body.len() < mgmt_packet::MIN_PAYLOAD_LEN {
@@ -463,7 +468,7 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, src_ip: &[u
                     if vm::validate(&engine.bpf_prog[..count]).is_ok() {
                         engine.bpf_len = count;
                     } else {
-                        send_alert(src_ip, AlertReason::BpfReject.as_u8(), body);
+                        send_alert(meta, AlertReason::BpfReject.as_u8());
                     }
                 }
             }
@@ -610,24 +615,20 @@ fn send_udp_report(stats: &[u64; 8]) {
 
 /// Sends a security alert to the control plane.
 ///
-/// Constructs a UDP packet containing alert information including
-/// the reason code, source IP address, and captured packet payload.
-/// Alerts are sent to the management interface for logging and analysis.
-///
-/// # Arguments
-///
-/// * `src_ip` - Source IP address that triggered the alert
-/// * `reason` - Alert reason code
-/// * `payload` - Packet payload data to include in the alert
-fn send_alert(src_ip: &[u8], reason: u8, payload: &[u8]) {
+/// Constructs a UDP packet carrying a fixed-size metadata record
+/// (source/destination addresses, ports, protocol, packet length).
+/// Attacker-controlled bytes from the inbound packet are deliberately
+/// not echoed: the management broadcast domain must not be a vector
+/// for relaying untrusted payloads to log/parser tools.
+fn send_alert(meta: &AlertMeta, reason: u8) {
     use sec_core::net::constants::IpProtocol;
     use sec_core::net::constants::udp;
     use sec_core::net::constants::{BROADCAST_MAC, ethernet, ipv4};
     /// Maximum size of alert UDP packet in bytes.
     ///
     /// Accommodates Ethernet header (14), IP header (20), UDP header (8),
-    /// alert header (6), and payload data (up to 64 bytes).
-    const ALERT_PACKET_SIZE: usize = 128;
+    /// and the fixed-size alert metadata body.
+    const ALERT_PACKET_SIZE: usize = 64;
     /// IPv4 broadcast address for the management network.
     ///
     /// Alert packets are broadcast to this address to ensure all
@@ -677,24 +678,28 @@ fn send_alert(src_ip: &[u8], reason: u8, payload: &[u8]) {
     packet[UDP_HEADER_OFFSET + 6] = 0x00;
     packet[UDP_HEADER_OFFSET + 7] = 0x00;
 
-    /// Offset to alert payload data within the packet.
+    /// Offset to alert body within the packet.
     ///
     /// Marks the start of the alert message structure containing
-    /// message type, reason code, source IP, and optional payload data.
-    const ALERT_PAYLOAD_OFFSET: usize = UDP_HEADER_OFFSET + udp::HEADER_SIZE;
-    let mut offset = ALERT_PAYLOAD_OFFSET;
-    packet[offset] = alert_packet::ALERT_MESSAGE_TYPE;
-    packet[offset + alert_packet::REASON_OFFSET] = reason;
-    if src_ip.len() >= ipv4::IP_ADDR_SIZE {
-        packet[offset + alert_packet::SRC_IP_OFFSET
-            ..offset + alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE]
-            .copy_from_slice(&src_ip[0..ipv4::IP_ADDR_SIZE]);
-    }
-    offset += alert_packet::PAYLOAD_OFFSET;
-
-    let copy_len = payload.len().min(alert_packet::MAX_PAYLOAD_LEN);
-    packet[offset..offset + copy_len].copy_from_slice(&payload[0..copy_len]);
-    offset += copy_len;
+    /// the message type, reason code, and metadata fields.
+    const ALERT_BODY_OFFSET: usize = UDP_HEADER_OFFSET + udp::HEADER_SIZE;
+    let body = ALERT_BODY_OFFSET;
+    packet[body] = alert_packet::ALERT_MESSAGE_TYPE;
+    packet[body + alert_packet::REASON_OFFSET] = reason;
+    packet[body + alert_packet::SRC_IP_OFFSET
+        ..body + alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE]
+        .copy_from_slice(&meta.src_ip);
+    packet[body + alert_packet::DST_IP_OFFSET
+        ..body + alert_packet::DST_IP_OFFSET + alert_packet::SRC_IP_SIZE]
+        .copy_from_slice(&meta.dst_ip);
+    packet[body + alert_packet::SRC_PORT_OFFSET..body + alert_packet::SRC_PORT_OFFSET + 2]
+        .copy_from_slice(&meta.src_port.to_be_bytes());
+    packet[body + alert_packet::DST_PORT_OFFSET..body + alert_packet::DST_PORT_OFFSET + 2]
+        .copy_from_slice(&meta.dst_port.to_be_bytes());
+    packet[body + alert_packet::PROTOCOL_OFFSET] = meta.protocol;
+    packet[body + alert_packet::PACKET_LEN_OFFSET..body + alert_packet::PACKET_LEN_OFFSET + 2]
+        .copy_from_slice(&meta.packet_len.to_be_bytes());
+    let offset = body + alert_packet::ALERT_BODY_LEN;
 
     let ip_len = (offset - ipv4::HEADER_OFFSET) as u16;
     packet[ipv4::HEADER_OFFSET + 2] = (ip_len >> 8) as u8;
