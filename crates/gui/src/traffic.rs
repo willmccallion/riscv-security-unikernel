@@ -11,6 +11,19 @@ use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::seal;
+
+/// Seals `body` with the mgmt key and a fresh monotonic counter, then
+/// ships the resulting authenticated packet to the kernel's mgmt port.
+///
+/// Every mgmt-plane command funnels through here so the counter and MAC
+/// construction live in exactly one place — the kernel rejects anything
+/// signed differently, so it must match `mgmt_auth::seal` byte-for-byte.
+async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) {
+    let mut packet = vec![0u8; 8 + body.len() + 8];
+    if seal(key, next_counter(), body, &mut packet).is_some() {
+        let _ = sock.send_to(&packet, MGMT_ADDR).await;
+    }
+}
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -157,18 +170,12 @@ pub async fn start_background_task(
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     GuiCommand::SetMode(m) => mode = m,
-                    GuiCommand::SendBytes(bytes) => {
-                        let _ = socket_pool[0].send_to(&bytes, MGMT_ADDR).await;
-                    }
                     GuiCommand::BanIp(ip_str) => {
                         if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
                             let mut body = [0u8; 5];
                             body[0] = ManagementMessageType::BanIp as u8;
                             body[1..].copy_from_slice(&ip.octets());
-                            let mut packet = [0u8; 8 + 5 + 8];
-                            let n = seal(&mgmt_key, next_counter(), &body, &mut packet)
-                                .expect("packet buffer fits sealed body");
-                            let _ = socket_pool[0].send_to(&packet[..n], MGMT_ADDR).await;
+                            send_sealed(&socket_pool[0], &mgmt_key, &body).await;
 
                             let entry = LogEntry {
                                 timestamp: 0.0,
@@ -183,6 +190,46 @@ pub async fn start_background_task(
                             };
                             let _ = log_tx.send(entry);
                         }
+                    }
+                    GuiCommand::BlockPort(port) => {
+                        let mut body = [0u8; 3];
+                        body[0] = ManagementMessageType::BlockPort as u8;
+                        body[1..3].copy_from_slice(&port.to_be_bytes());
+                        send_sealed(&socket_pool[0], &mgmt_key, &body).await;
+                    }
+                    GuiCommand::AddDpiPattern(pattern) => {
+                        // Kernel caps patterns at add_dpi::MAX_PATTERN_LEN (32).
+                        // Anything larger gets rejected silently by the
+                        // dispatcher, so cap here too rather than shipping a
+                        // packet that will be dropped.
+                        use sec_core::security::mgmt::mgmt_packet::add_dpi;
+                        if pattern.is_empty() || pattern.len() > add_dpi::MAX_PATTERN_LEN {
+                            continue;
+                        }
+                        let mut body = Vec::with_capacity(2 + pattern.len());
+                        body.push(ManagementMessageType::AddDpiPattern as u8);
+                        body.push(pattern.len() as u8);
+                        body.extend_from_slice(&pattern);
+                        send_sealed(&socket_pool[0], &mgmt_key, &body).await;
+                    }
+                    GuiCommand::UploadBpf(bytecode) => {
+                        // Each instruction is INSTR_SIZE bytes; the kernel
+                        // accepts up to MAX_INSTR_COUNT of them. Reject
+                        // anything malformed before we bother signing it.
+                        use sec_core::security::mgmt::mgmt_packet::upload_bpf;
+                        if bytecode.is_empty()
+                            || bytecode.len() % upload_bpf::INSTR_SIZE != 0
+                            || bytecode.len() / upload_bpf::INSTR_SIZE
+                                > upload_bpf::MAX_INSTR_COUNT
+                        {
+                            continue;
+                        }
+                        let count = bytecode.len() / upload_bpf::INSTR_SIZE;
+                        let mut body = Vec::with_capacity(2 + bytecode.len());
+                        body.push(ManagementMessageType::UploadBpfProgram as u8);
+                        body.push(count as u8);
+                        body.extend_from_slice(&bytecode);
+                        send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                     }
                 }
             }

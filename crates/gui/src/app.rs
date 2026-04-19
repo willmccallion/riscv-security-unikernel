@@ -507,11 +507,7 @@ impl AegisApp {
                     if ui.button("BLOCK PORT").clicked()
                         && let Ok(port) = self.sdn_port.trim().parse::<u16>()
                     {
-                        // Kernel mgmt packet: 8 bytes padding + msg_type (0x01) + 2 byte port
-                        let mut packet = vec![0u8; 8];
-                        packet.push(0x01);
-                        packet.extend_from_slice(&port.to_be_bytes());
-                        self.send(GuiCommand::SendBytes(packet));
+                        self.send(GuiCommand::BlockPort(port));
                         if !self.blocked_ports.contains(&port) {
                             self.blocked_ports.push(port);
                         }
@@ -541,13 +537,7 @@ impl AegisApp {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.sdn_sig);
                     if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
-                        // Kernel mgmt packet: 8 bytes padding + msg_type (0x02) + len byte + pattern
-                        let mut packet = vec![0u8; 8];
-                        packet.push(0x02);
-                        let bytes = self.sdn_sig.as_bytes();
-                        packet.push(u8::try_from(bytes.len()).unwrap_or(u8::MAX));
-                        packet.extend_from_slice(bytes);
-                        self.send(GuiCommand::SendBytes(packet));
+                        self.send(GuiCommand::AddDpiPattern(self.sdn_sig.as_bytes().to_vec()));
                         let sig = self.sdn_sig.clone();
                         if !self.dpi_signatures.contains(&sig) {
                             self.dpi_signatures.push(sig);
@@ -608,12 +598,7 @@ impl AegisApp {
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
                     if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
-                        // Kernel mgmt packet: 8 bytes padding + msg_type (0x03) + count byte + instructions
-                        let mut packet = vec![0u8; 8];
-                        packet.push(0x03);
-                        packet.push(u8::try_from(bytecode.len() / 7).unwrap_or(u8::MAX));
-                        packet.extend_from_slice(&bytecode);
-                        self.send(GuiCommand::SendBytes(packet));
+                        self.send(GuiCommand::UploadBpf(bytecode));
                         let prog = self.ebpf_code.trim().to_string();
                         self.ebpf_programs.push(prog);
                     } else {

@@ -103,11 +103,20 @@ pub enum LogMode {
 }
 
 /// Commands that can be sent from the GUI to the background network task.
+///
+/// Every variant that reaches the kernel management plane is sealed with
+/// the pre-shared MAC key and a monotonic counter by `traffic.rs` before
+/// it goes on the wire. The GUI never constructs raw management packets
+/// directly — the kernel rejects anything without a valid MAC.
 pub enum GuiCommand {
     /// Change the traffic generation mode.
     SetMode(TrafficMode),
-    /// Send raw bytes to the kernel management interface.
-    SendBytes(Vec<u8>),
     /// Manually ban an IP address in the kernel's penalty box.
     BanIp(String),
+    /// Install a firewall rule blocking the given destination port.
+    BlockPort(u16),
+    /// Add a DPI signature pattern (capped to 32 bytes at the kernel).
+    AddDpiPattern(Vec<u8>),
+    /// Upload a compiled eBPF program (7 bytes per instruction, 64 max).
+    UploadBpf(Vec<u8>),
 }
