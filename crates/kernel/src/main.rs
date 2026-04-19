@@ -15,6 +15,8 @@
 mod allocator;
 /// Hardware device drivers for network interfaces and peripherals.
 mod drivers;
+
+mod entropy;
 /// VirtIO-Net backed [`sec_core::net::PacketSink`] implementation.
 mod net_sink;
 /// Kernel panic handler: halts the core.
@@ -218,32 +220,25 @@ pub extern "C" fn kmain() -> ! {
     //      outgoing mgmt counters and detect kernel reboots)
     let mut stats = [0u64; 10];
 
-    // Gather 32 bytes of per-boot entropy. virtio-rng (when present
-    // under QEMU or any RNG-equipped hypervisor) gives us the real
-    // thing; without it we fall back to mcycle XOR MAC, which is weak
-    // — `mcycle` at this point varies by host scheduling jitter on the
-    // order of ~10–13 bits, and the MAC is a compile-time constant.
-    // The fallback is logged so an operator deploying to bare hardware
-    // sees that the SYN-cookie / CMS / mgmt-auth secrets are not
-    // unforgeable. Add a hardware TRNG (Zkr / SiFive TRNG / OpenSBI)
-    // before relying on it.
+    // Gather 32 bytes of per-boot entropy from every source the
+    // kernel can reach: Zkr (RISC-V K extension TRNG, gated on the
+    // `zkr` Cargo feature), virtio-rng (QEMU and other hypervisors),
+    // and `mcycle` as a degraded last resort. `gather` XOR-mixes
+    // them, so as long as **any** source is unpredictable the output
+    // is unpredictable.
     let mut entropy = [0u8; 32];
-    let n = if rng_present {
-        VirtioRng::read_into(&mut entropy)
-    } else {
-        0
-    };
-    if n < entropy.len() {
+    let report = entropy::gather(&mut entropy, rng_present);
+    crate::kprintln!(
+        "[*] Entropy     : zkr={} virtio-rng={} mcycle={}",
+        report.zkr,
+        report.virtio_rng,
+        report.mcycle
+    );
+    if !report.has_strong_source() {
         crate::kprintln!(
-            "[!] virtio-rng unavailable (got {n}/32 bytes); falling back to mcycle XOR MAC. \
-            Per-boot secrets are predictable — do not deploy."
+            "[!] No strong entropy source — per-boot secrets derive from mcycle alone. \
+             Add virtio-rng (QEMU) or build with --features zkr (RISC-V K silicon) before deploying."
         );
-        let mc = clock.now();
-        for (i, b) in entropy.iter_mut().enumerate().skip(n) {
-            // Spread the cycle counter and MAC across the remaining
-            // bytes so even a degenerate fallback isn't all zeros.
-            *b = ((mc >> ((i % 8) * 8)) as u8) ^ MAC_ADDR[i % MAC_ADDR.len()];
-        }
     }
 
     // Per-boot SYN-cookie secret: first 16 bytes of the entropy pool.
