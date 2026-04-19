@@ -10,7 +10,7 @@ use crate::net::constants::MAX_ICMP_REPLY_LEN;
 use crate::net::constants::{
     ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp,
 };
-use crate::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
+use crate::net::tcp::{TCP_ACK, TCP_SYN};
 use crate::security::hash::siphash24;
 
 /// Per-boot secret keying the SYN-cookie PRF.
@@ -305,15 +305,22 @@ fn handle_tcp<S: PacketSink>(
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) {
-    // SAFETY: The caller has verified packet.len() >= offset + size_of::<TcpHeader>(),
-    // and the packet slice is valid for reads.
-    let tcp = unsafe { &*(packet.as_ptr().add(offset).cast::<TcpHeader>()) };
-    let flags = u16::from_be(tcp.data_offset_flags) & 0x003F;
+    // The TCP header lives at an offset of `14 + IHL` from the packet
+    // start, where IHL is variable. Casting `packet.as_ptr().add(offset)`
+    // to `&TcpHeader` would be sound under `#[repr(C, packed)]` (the
+    // resulting reference is alignment-1), but on real RV64GC silicon
+    // without hardware misaligned-access support the struct-assignment
+    // store the reply path used to do would trap to an absent `mtvec`
+    // handler and jump to garbage. Read field-by-field via byte slices
+    // so the compiler always emits per-byte loads, matching what the
+    // rest of this file does for IPv4 / Ethernet / ARP.
+    let tcp = &packet[offset..offset + tcp::MIN_HEADER_SIZE];
+    let flags = u16::from_be_bytes([tcp[12], tcp[13]]) & 0x003F;
 
     if (flags & TCP_SYN) != 0 {
-        let seq = u32::from_be(tcp.seq_num);
-        let src_port = u16::from_be(tcp.src_port);
-        let dst_port = u16::from_be(tcp.dst_port);
+        let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+        let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
+        let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
         let cookie = syn_secret.cookie(src_ip, dst_ip, src_port, dst_port);
 
         // TCP sequence numbers wrap (RFC 793 §3.3); a SYN with
@@ -373,30 +380,33 @@ fn send_tcp_reply_inplace<S: PacketSink>(
     packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
         .copy_from_slice(&old_src_ip);
 
-    let orig_dst_port;
-    let orig_src_port;
-    {
-        // SAFETY: The caller has verified packet.len() >= tcp_offset + size_of::<TcpHeader>(),
-        // and the packet slice is valid for reads.
-        let orig_tcp = unsafe { &*(packet.as_ptr().add(tcp_offset).cast::<TcpHeader>()) };
-        orig_dst_port = orig_tcp.dst_port;
-        orig_src_port = orig_tcp.src_port;
-    }
+    // Read the original ports byte-wise (see the comment in handle_tcp
+    // for why we no longer cast through `&TcpHeader`).
+    let (reply_dst_port, reply_src_port) = {
+        let orig = &packet[tcp_offset..tcp_offset + tcp::MIN_HEADER_SIZE];
+        let orig_src = u16::from_be_bytes([orig[0], orig[1]]);
+        let orig_dst = u16::from_be_bytes([orig[2], orig[3]]);
+        // The reply swaps source and destination.
+        (orig_src, orig_dst)
+    };
 
-    let reply_tcp = TcpHeader::new(
-        u16::from_be(orig_dst_port),
-        u16::from_be(orig_src_port),
-        seq,
-        ack,
-        flags,
-    );
+    /// Default TCP receive-window size advertised in SYN-ACK replies.
+    /// Matches what `TcpHeader::new` used; the SYN-cookie path does
+    /// not maintain per-flow state, so this is a fixed value.
+    const REPLY_WINDOW: u16 = 64240;
+    /// Header length encoded in the data-offset nibble (5 × 4 = 20 bytes).
+    const DATA_OFFSET_5: u16 = 5 << 12;
 
-    // SAFETY: packet.len() >= tcp_offset + size_of::<TcpHeader>() was verified by the caller,
-    // and the packet slice is valid for writes.
-    unsafe {
-        let ptr = packet.as_mut_ptr().add(tcp_offset).cast::<TcpHeader>();
-        *ptr = reply_tcp;
-    }
+    let offset_flags = DATA_OFFSET_5 | flags;
+    let reply = &mut packet[tcp_offset..tcp_offset + tcp::MIN_HEADER_SIZE];
+    reply[0..2].copy_from_slice(&reply_src_port.to_be_bytes());
+    reply[2..4].copy_from_slice(&reply_dst_port.to_be_bytes());
+    reply[4..8].copy_from_slice(&seq.to_be_bytes());
+    reply[8..12].copy_from_slice(&ack.to_be_bytes());
+    reply[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+    reply[14..16].copy_from_slice(&REPLY_WINDOW.to_be_bytes());
+    reply[16..18].copy_from_slice(&[0, 0]); // checksum (caller may recompute)
+    reply[18..20].copy_from_slice(&[0, 0]); // urgent pointer
 
     sink.send(&packet[0..tcp_offset + tcp::MIN_HEADER_SIZE]);
 }

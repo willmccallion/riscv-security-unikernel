@@ -165,6 +165,8 @@ pub mod tcp {
     pub const SRC_PORT_OFFSET: usize = 0;
     /// Offset to destination port (bytes 2-3).
     pub const DST_PORT_OFFSET: usize = 2;
+    /// Offset to sequence number (bytes 4-7).
+    pub const SEQ_NUM_OFFSET: usize = 4;
     /// Size of port number in bytes.
     pub const PORT_SIZE: usize = 2;
 }

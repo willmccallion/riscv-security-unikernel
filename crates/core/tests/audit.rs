@@ -287,6 +287,55 @@ fn process_packet_emits_syn_ack_for_syn() {
     assert_eq!(flags & (TCP_SYN | TCP_ACK), TCP_SYN | TCP_ACK);
 }
 
+/// Regression: the SYN-ACK reply path must work when the TCP header
+/// sits at an offset that is not 4-byte aligned within the frame
+/// buffer. IHL=9 puts a 36-byte IP header in the frame, which lands
+/// the TCP header at byte 50 — odd-aligned relative to the start of
+/// the IP header. Earlier code cast the TCP-header pointer through
+/// `&TcpHeader`; on RV64GC silicon without a misaligned-access trap
+/// handler that would jump to garbage. Byte-wise parsing must keep
+/// behaviour identical to the IHL=5 path.
+#[test]
+fn process_packet_handles_syn_with_extended_ip_options() {
+    const IHL_WORDS: usize = 9;
+    const IHL_BYTES: usize = IHL_WORDS * 4;
+    let total = ethernet::MIN_FRAME_SIZE + IHL_BYTES + tcp::MIN_HEADER_SIZE;
+    let mut frame = vec![0u8; total];
+
+    frame[0..6].copy_from_slice(&KERNEL_MAC);
+    frame[6..12].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    frame[ethernet::TYPE_OFFSET] = 0x08;
+    frame[ethernet::TYPE_OFFSET + 1] = 0x00;
+
+    frame[ipv4::VERSION_IHL_OFFSET] = 0x40 | (IHL_WORDS as u8);
+    frame[ipv4::PROTOCOL_OFFSET] = 6;
+    frame[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + 4].copy_from_slice(&[10, 0, 0, 5]);
+    frame[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP);
+
+    let tcp_off = ethernet::MIN_FRAME_SIZE + IHL_BYTES;
+    let src_port: u16 = 4444;
+    let dst_port: u16 = 80;
+    frame[tcp_off..tcp_off + 2].copy_from_slice(&src_port.to_be_bytes());
+    frame[tcp_off + 2..tcp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
+    frame[tcp_off + 4..tcp_off + 8].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+    let dof = (5u16 << 12) | TCP_SYN;
+    frame[tcp_off + 12..tcp_off + 14].copy_from_slice(&dof.to_be_bytes());
+
+    let mut sink = CaptureSink::default();
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame, &mut sink, &secret);
+
+    assert_eq!(sink.sent.len(), 1, "SYN with IHL=9 must produce SYN-ACK");
+    let reply = &sink.sent[0];
+    let reply_tcp_off = ethernet::MIN_FRAME_SIZE + IHL_BYTES;
+    let flags = u16::from_be_bytes([reply[reply_tcp_off + 12], reply[reply_tcp_off + 13]]) & 0x003F;
+    assert_eq!(flags & (TCP_SYN | TCP_ACK), TCP_SYN | TCP_ACK);
+    let reply_src = u16::from_be_bytes([reply[reply_tcp_off], reply[reply_tcp_off + 1]]);
+    let reply_dst = u16::from_be_bytes([reply[reply_tcp_off + 2], reply[reply_tcp_off + 3]]);
+    assert_eq!(reply_src, dst_port);
+    assert_eq!(reply_dst, src_port);
+}
+
 /// The eBPF VM has 16 registers but encodes register indices as `u8`,
 /// so an attacker-supplied program can request register 20. The VM
 /// must reject or clamp instead of panicking, since a panic in the
