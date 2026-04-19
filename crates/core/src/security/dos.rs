@@ -33,6 +33,11 @@ struct BanEntry {
 pub struct PenaltyBox {
     /// Array of ban entries, limited to 16 for memory efficiency.
     entries: [BanEntry; 16],
+    /// Round-robin pointer for eviction when every slot is still active.
+    /// Without this, every overflow ban lands in slot 0, so an attacker
+    /// who learns the table is full can pin one IP and watch every
+    /// subsequent ban evict it (audit HIGH-3).
+    next_evict: usize,
 }
 
 impl Default for PenaltyBox {
@@ -46,6 +51,7 @@ impl PenaltyBox {
     pub const fn new() -> Self {
         Self {
             entries: [BanEntry { ip: 0, expiry: 0 }; 16],
+            next_evict: 0,
         }
     }
 
@@ -72,7 +78,9 @@ impl PenaltyBox {
                 return;
             }
         }
-        self.entries[0] = BanEntry {
+        let idx = self.next_evict;
+        self.next_evict = (self.next_evict + 1) % 16;
+        self.entries[idx] = BanEntry {
             ip,
             expiry: now + duration,
         };
