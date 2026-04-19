@@ -74,7 +74,7 @@ check-size: kernel
 # every unsafe block we ship.
 miri:
 	@echo "[*] Running Miri on sec-core..."
-	@cargo +nightly miri test -p sec-core
+	@MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test -p sec-core
 
 # cargo-fuzz harnesses for the parsers and stateful primitives that take
 # attacker-controlled bytes. Each target runs until interrupted; pass

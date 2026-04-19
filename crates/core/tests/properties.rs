@@ -5,6 +5,13 @@
 //! just the hand-crafted inputs in `audit.rs`. Proptest generates
 //! sequences of operations against each primitive and shrinks failing
 //! cases down to a minimal counter-example.
+//!
+//! Skipped under miri: 256 cases per property × 8 properties × miri's
+//! ~1000× interpreter overhead is hours of wall time, and the
+//! memory-safety story is already covered by the unit tests and
+//! `audit.rs`. Run natively with `cargo test -p sec-core --test properties`.
+
+#![cfg(not(miri))]
 
 #![allow(
     clippy::unwrap_used,
