@@ -287,6 +287,14 @@ impl VirtioNet {
     ///
     /// * `packet` - Complete Ethernet frame to transmit
     pub fn send(packet: &[u8]) {
+        // The packet body has to fit alongside the 10-byte VirtIO net
+        // header in a single `BUF_SIZE` buffer. Current callers all
+        // pass small stack buffers, but silently corrupting adjacent
+        // queue memory on the first oversize caller would be an ugly
+        // bug to hunt.
+        if packet.len() > BUF_SIZE - NET_HDR_SIZE {
+            return;
+        }
         // SAFETY: TX_QUEUE is a mutable static only accessed from this single-threaded kernel.
         // Volatile writes and fences ensure the device sees the descriptor before the available
         // index is updated.
