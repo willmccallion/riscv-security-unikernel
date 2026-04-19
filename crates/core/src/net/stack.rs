@@ -104,9 +104,20 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     if packet.len() < arp::MIN_PACKET_SIZE {
         return;
     }
-    let hw_type = packet[arp::HW_TYPE_OFFSET];
-    let opcode = packet[arp::OPCODE_OFFSET];
-    if hw_type != 0 || ArpOpcode::from_u16(opcode as u16) != Some(ArpOpcode::Request) {
+    // hw_type and opcode are both 2-byte big-endian fields. The
+    // previous code read only the high byte of each, which works for
+    // Ethernet ARP (hw_type=0x0001 has high byte 0x00) but lets a
+    // non-Ethernet ARP (hw_type=0xFFFF, etc.) through because the
+    // mask happened to alias to opcode bits. Audit MED-1.
+    let hw_type = u16::from_be_bytes([
+        packet[arp::HW_TYPE_OFFSET],
+        packet[arp::HW_TYPE_OFFSET + 1],
+    ]);
+    let opcode = u16::from_be_bytes([
+        packet[arp::OPCODE_OFFSET],
+        packet[arp::OPCODE_OFFSET + 1],
+    ]);
+    if hw_type != 1 || ArpOpcode::from_u16(opcode) != Some(ArpOpcode::Request) {
         return;
     }
     if packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
@@ -125,7 +136,9 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
         .copy_from_slice(&MAC_ADDR);
 
-    packet[arp::OPCODE_OFFSET] = ArpOpcode::Reply as u8;
+    // Opcode is big-endian 2 bytes; Reply = 0x0002.
+    packet[arp::OPCODE_OFFSET] = 0;
+    packet[arp::OPCODE_OFFSET + 1] = ArpOpcode::Reply as u8;
 
     let old_sender_ip = [
         packet[arp::SENDER_IP_OFFSET],

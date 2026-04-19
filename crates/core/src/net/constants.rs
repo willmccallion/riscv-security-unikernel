@@ -137,10 +137,14 @@ pub mod ipv4 {
 pub mod arp {
     /// Minimum ARP packet size in bytes.
     pub const MIN_PACKET_SIZE: usize = 42;
-    /// Offset to hardware type field (bytes 20-21).
-    pub const HW_TYPE_OFFSET: usize = 20;
-    /// Offset to operation code field (byte 21).
-    pub const OPCODE_OFFSET: usize = 21;
+    /// Offset to hardware type field (bytes 14-15 of an Ethernet+ARP
+    /// frame, immediately after the 14-byte Ethernet header). Ethernet
+    /// hw_type is 0x0001; anything else is a non-Ethernet ARP we
+    /// shouldn't reply to.
+    pub const HW_TYPE_OFFSET: usize = 14;
+    /// Offset to operation code field (bytes 20-21). Two bytes wide;
+    /// Request = 0x0001, Reply = 0x0002.
+    pub const OPCODE_OFFSET: usize = 20;
     /// Offset to sender MAC address (bytes 22-27).
     pub const SENDER_MAC_OFFSET: usize = 22;
     /// Offset to sender IP address (bytes 28-31).
