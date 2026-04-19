@@ -360,6 +360,22 @@ async fn send_traffic(
 ///
 /// A LogEntry with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
+    // The GUI binds 0.0.0.0:1337 for alerts, so anyone on the segment
+    // can send a one-byte `\x02` and reach this function. Short-circuit
+    // before any fixed-offset index would panic the whole dashboard.
+    if data.len() < alert_packet::ALERT_BODY_LEN {
+        return LogEntry {
+            timestamp: 0.0,
+            src_ip: String::new(),
+            dst_ip: String::new(),
+            src_port: 0,
+            dst_port: 0,
+            protocol: 0,
+            packet_len: data.len().min(u16::MAX as usize) as u16,
+            msg: format!("[MALFORMED] short alert packet ({} bytes)", data.len()),
+            color: egui::Color32::from_rgb(255, 80, 0),
+        };
+    }
     let reason_byte = data[alert_packet::REASON_OFFSET];
     let src_ip_bytes = &data[alert_packet::SRC_IP_OFFSET
         ..alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE];
