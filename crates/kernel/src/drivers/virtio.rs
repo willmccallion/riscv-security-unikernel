@@ -237,7 +237,13 @@ impl VirtioNet {
                 let id = (*rx).used.ring[ring_idx].id as usize;
                 let len = (*rx).used.ring[ring_idx].len as usize;
 
-                if id >= QUEUE_SIZE {
+                // The device writes `len` into the used ring. A
+                // misbehaving or buggy device could report a length past
+                // the end of our 1536-byte buffer; accepting it would
+                // hand every downstream parser a `from_raw_parts_mut`
+                // slice that extends into unmapped memory. Drop the
+                // descriptor and recycle the slot instead.
+                if id >= QUEUE_SIZE || len > BUF_SIZE {
                     RX_IDX = RX_IDX.wrapping_add(1);
                     return None;
                 }
