@@ -18,7 +18,8 @@ use crate::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 /// Handles various protocol types:
 /// - ARP: Generates ARP replies for address resolution
 /// - ICMP: Responds to ping requests
-/// - TCP: Handles SYN packets with SYN cookies
+/// - TCP SYN: Handles with SYN cookies (no payload returned)
+/// - TCP data: Returns the TCP application payload for inspection
 /// - Other IPv4: Extracts payload for security inspection
 ///
 /// The packet buffer may be modified in-place for generating responses.
@@ -177,7 +178,20 @@ fn handle_ipv4<'a, S: PacketSink>(packet: &'a mut [u8], sink: &mut S) -> Option<
 
     if IpProtocol::from_u8(protocol) == Some(IpProtocol::Tcp) {
         let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        if offset + tcp::MIN_HEADER_SIZE <= packet.len() {
+        if offset + tcp::MIN_HEADER_SIZE > packet.len() {
+            return None;
+        }
+
+        // Parse flags and the TCP header length *before* any mutation
+        // so we can decide whether to emit a SYN-ACK (which rewrites
+        // `packet` in place) or hand the TCP application payload back
+        // to the caller for DPI / firewall inspection.
+        let dof_flags_be =
+            ((packet[offset + 12] as u16) << 8) | (packet[offset + 13] as u16);
+        let flags = dof_flags_be & 0x003F;
+        let tcp_header_len = (((dof_flags_be >> 12) & 0x0F) as usize) * 4;
+
+        if (flags & TCP_SYN) != 0 {
             let src_ip = [
                 packet[ipv4::SRC_IP_OFFSET],
                 packet[ipv4::SRC_IP_OFFSET + 1],
@@ -185,8 +199,15 @@ fn handle_ipv4<'a, S: PacketSink>(packet: &'a mut [u8], sink: &mut S) -> Option<
                 packet[ipv4::SRC_IP_OFFSET + 3],
             ];
             handle_tcp(packet, offset, &src_ip, sink);
+            return None;
         }
-        return None;
+
+        let payload_offset = offset + tcp_header_len;
+        return if payload_offset <= packet.len() {
+            Some(&packet[payload_offset..])
+        } else {
+            None
+        };
     }
 
     let payload_offset = ipv4::HEADER_OFFSET + ihl as usize;

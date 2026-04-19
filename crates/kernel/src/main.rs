@@ -304,6 +304,16 @@ pub extern "C" fn kmain() -> ! {
                     }
                 }
 
+                // Firewall gate runs *before* `process_packet` so the
+                // stack never emits an ARP reply, ICMP echo, or SYN-ACK
+                // for a packet headed to a blocked destination port.
+                if dst_port != 0 && engine.fw.is_blocked(dst_port) {
+                    stats[2] += 1;
+                    send_alert(&src_ip, AlertReason::Firewall.as_u8(), packet);
+                    NetDevice::recycle_rx_buffer();
+                    continue;
+                }
+
                 if let Some(payload) = sec_core::net::stack::process_packet(packet, &mut sink) {
                     if let Some(_reason) = heuristic::HeuristicEngine::check_payload(payload) {
                         stats[5] += 1;
@@ -382,12 +392,7 @@ pub extern "C" fn kmain() -> ! {
                             }
                         }
 
-                        if engine.fw.is_blocked(dst_port) {
-                            stats[2] += 1;
-                            send_alert(&src_ip, AlertReason::Firewall.as_u8(), payload);
-                            NetDevice::recycle_rx_buffer();
-                            continue;
-                        } else if engine.ac.scan(payload) || engine.dyn_rules.check(payload) {
+                        if engine.ac.scan(payload) || engine.dyn_rules.check(payload) {
                             stats[3] += 1;
                             send_alert(&src_ip, AlertReason::Malware.as_u8(), payload);
                         } else {
