@@ -203,6 +203,10 @@ impl FlowTable {
                 removed += 1;
             }
         }
-        self.active_count -= removed;
+        // Defensive: today every `is_active = true` corresponds to an
+        // `active_count += 1` so the invariant holds, but this counter
+        // has no other validation and a future refactor that miscounts
+        // would underflow silently. Cheap to harden.
+        self.active_count = self.active_count.saturating_sub(removed);
     }
 }
