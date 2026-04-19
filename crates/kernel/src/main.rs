@@ -237,6 +237,11 @@ pub extern "C" fn kmain() -> ! {
             stats[6] = used_ram as u64;
             stats[7] = engine.flow_table.active_count as u64;
 
+            crate::kprintln!(
+                "[hb] pass={} drop(ddos={} fw={} mal={} bpf={} heur={}) flows={} mgmt={}",
+                stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], stats[7], stats[8]
+            );
+
             send_udp_report(&stats);
             let mem = stats[6];
             let flows = stats[7];
