@@ -24,6 +24,7 @@ use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::FlowTable;
 use sec_core::security::heuristic::HeuristicEngine;
+use sec_core::security::mgmt_auth::{MgmtAuth, seal};
 use sec_core::security::vm::{Instruction, VM};
 
 /// Captures every frame the stack hands to its sink so tests can
@@ -423,6 +424,39 @@ fn ahocorasick_signals_when_a_pattern_failed_to_insert() {
     assert!(
         inserted,
         "pattern silently failed to insert into a full trie; insert must signal full"
+    );
+}
+
+/// An unsigned (or wrong-key) mgmt packet must not be dispatched —
+/// otherwise any UDP packet to the management port owns the security
+/// policy. Verifies CRIT-3 stays fixed.
+#[test]
+fn mgmt_auth_rejects_unsigned_packet() {
+    let key = [0x55u8; 16];
+    let mut auth = MgmtAuth::new(key);
+    let body = [0x04u8, 10, 0, 0, 7];
+    let mut packet = vec![0u8; 8 + body.len() + 8];
+    packet[..8].copy_from_slice(&1u64.to_be_bytes());
+    packet[8..8 + body.len()].copy_from_slice(&body);
+    assert!(
+        auth.verify(&packet).is_none(),
+        "MgmtAuth must reject a packet whose MAC region is unsigned"
+    );
+}
+
+/// Replaying a recorded mgmt packet must not re-execute the command;
+/// the counter has to advance monotonically.
+#[test]
+fn mgmt_auth_rejects_replayed_packet() {
+    let key = [0x55u8; 16];
+    let mut auth = MgmtAuth::new(key);
+    let body = [0x01u8, 0x00, 0x50];
+    let mut packet = [0u8; 32];
+    let n = seal(&key, 7, &body, &mut packet).expect("buffer fits");
+    assert!(auth.verify(&packet[..n]).is_some(), "first verify");
+    assert!(
+        auth.verify(&packet[..n]).is_none(),
+        "replay of the same packet must be rejected"
     );
 }
 

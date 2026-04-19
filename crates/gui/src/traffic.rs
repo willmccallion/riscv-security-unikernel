@@ -335,6 +335,10 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[PASS] Allowed from {ip}"),
             egui::Color32::from_gray(140),
         ),
+        Some(AlertReason::MgmtAuthFail) => (
+            format!("[MGMT AUTH] Rejected unsigned/replayed mgmt packet from {ip}"),
+            egui::Color32::from_rgb(255, 80, 0),
+        ),
         None => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };
 

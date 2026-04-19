@@ -24,6 +24,8 @@ pub enum AlertReason {
     Flow = 6,
     /// Packet passed all security checks.
     Pass = 7,
+    /// Mgmt-plane packet failed authentication (bad MAC or replayed counter).
+    MgmtAuthFail = 8,
 }
 
 impl AlertReason {
@@ -53,6 +55,7 @@ impl AlertReason {
             5 => Some(Self::Heuristic),
             6 => Some(Self::Flow),
             7 => Some(Self::Pass),
+            8 => Some(Self::MgmtAuthFail),
             _ => None,
         }
     }

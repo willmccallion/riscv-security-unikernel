@@ -14,11 +14,15 @@ pub mod dpi;
 pub mod firewall;
 /// Network flow tracking and connection state management.
 pub mod flow;
+/// Hand-rolled SipHash-2-4 keyed hash, shared by mgmt-auth and SYN cookies.
+pub mod hash;
 /// Heuristic-based anomaly detection for protocol and payload analysis.
 pub mod heuristic;
 /// Heuristic detection constants for TCP flags and payload patterns.
 pub mod heuristic_constants;
 /// Management interface message types and constants.
 pub mod mgmt;
+/// Authenticated wire format for management-plane commands.
+pub mod mgmt_auth;
 /// Virtual machine for executing eBPF-like packet filter programs.
 pub mod vm;
