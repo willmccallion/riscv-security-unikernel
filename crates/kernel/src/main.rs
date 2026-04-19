@@ -212,7 +212,9 @@ pub extern "C" fn kmain() -> ! {
     //   6: memory bytes used (gauge)
     //   7: active flows (gauge)
     //   8: management-plane packets (auth-success + auth-fail)
-    let mut stats = [0u64; 9];
+    //   9: boot epoch (gauge; lets the GUI stamp the right epoch into
+    //      outgoing mgmt counters and detect kernel reboots)
+    let mut stats = [0u64; 10];
 
     // Per-boot SYN-cookie secret. mcycle at this point is whatever the
     // hart counter reached during init — varies across boots — and we
@@ -236,6 +238,16 @@ pub extern "C" fn kmain() -> ! {
             MAC_ADDR[4], MAC_ADDR[5], 0, 0,
         ]);
     engine.cms.reseed(cms_seed);
+
+    // Per-boot mgmt-auth epoch. Folded into the high 32 bits of every
+    // accepted mgmt counter, so a packet captured under one boot can
+    // never replay against another. Derived from the same per-boot
+    // material as the CMS seed for consistency. A non-zero epoch is
+    // required for any mgmt packet to verify, so this MUST run before
+    // the packet loop.
+    let mgmt_epoch = (cms_seed as u32) ^ ((cms_seed >> 32) as u32);
+    let mgmt_epoch = if mgmt_epoch == 0 { 1 } else { mgmt_epoch };
+    MGMT_AUTH.get().set_epoch(mgmt_epoch);
     /// Maximum number of packets to process in a single iteration.
     ///
     /// Processing packets in batches improves cache locality and reduces
@@ -310,12 +322,14 @@ pub extern "C" fn kmain() -> ! {
             }
             interval_rx = 0;
 
+            stats[9] = mgmt_epoch as u64;
             send_udp_report(&stats);
             let mem = stats[6];
             let flows = stats[7];
-            stats = [0; 9];
+            stats = [0; 10];
             stats[6] = mem;
             stats[7] = flows;
+            stats[9] = mgmt_epoch as u64;
 
             last_report = now;
             NetDevice::flush();
@@ -628,20 +642,20 @@ fn checksum(data: &[u8]) -> u16 {
 /// - Ethernet header with broadcast destination
 /// - IP header with checksum
 /// - UDP header
-/// - 72 bytes of statistics data (9 u64 values)
+/// - 80 bytes of statistics data (10 u64 values)
 ///
 /// # Arguments
 ///
-/// * `stats` - Array of 9 statistics values to transmit
-fn send_udp_report(stats: &[u64; 9]) {
+/// * `stats` - Array of 10 statistics values to transmit
+fn send_udp_report(stats: &[u64; 10]) {
     use sec_core::net::constants::IpProtocol;
     use sec_core::net::constants::udp;
     use sec_core::net::constants::{BROADCAST_MAC, ethernet, ipv4};
-    /// Size of statistics data payload in telemetry packets (9 u64 values).
+    /// Size of statistics data payload in telemetry packets (10 u64 values).
     ///
-    /// Each telemetry report contains 9 statistics counters, each represented
-    /// as a 64-bit big-endian integer, totaling 72 bytes of payload data.
-    const STATS_DATA_SIZE: usize = 72;
+    /// Each telemetry report contains 10 statistics counters, each represented
+    /// as a 64-bit big-endian integer, totaling 80 bytes of payload data.
+    const STATS_DATA_SIZE: usize = 80;
     /// Maximum size of telemetry UDP packet in bytes.
     ///
     /// Accommodates Ethernet header (14), IP header (20), UDP header (8),

@@ -479,9 +479,10 @@ fn ahocorasick_signals_when_a_pattern_failed_to_insert() {
 fn mgmt_auth_rejects_unsigned_packet() {
     let key = [0x55u8; 16];
     let mut auth = MgmtAuth::new(key);
+    auth.set_epoch(0x1234_5678);
     let body = [0x04u8, 10, 0, 0, 7];
     let mut packet = vec![0u8; 8 + body.len() + 8];
-    packet[..8].copy_from_slice(&1u64.to_be_bytes());
+    packet[..8].copy_from_slice(&((0x1234_5678u64 << 32) | 1).to_be_bytes());
     packet[8..8 + body.len()].copy_from_slice(&body);
     assert!(
         auth.verify(&packet).is_none(),
@@ -495,9 +496,11 @@ fn mgmt_auth_rejects_unsigned_packet() {
 fn mgmt_auth_rejects_replayed_packet() {
     let key = [0x55u8; 16];
     let mut auth = MgmtAuth::new(key);
+    let epoch: u32 = 0x1234_5678;
+    auth.set_epoch(epoch);
     let body = [0x01u8, 0x00, 0x50];
     let mut packet = [0u8; 32];
-    let n = seal(&key, 7, &body, &mut packet).expect("buffer fits");
+    let n = seal(&key, ((epoch as u64) << 32) | 7, &body, &mut packet).expect("buffer fits");
     assert!(auth.verify(&packet[..n]).is_some(), "first verify");
     assert!(
         auth.verify(&packet[..n]).is_none(),

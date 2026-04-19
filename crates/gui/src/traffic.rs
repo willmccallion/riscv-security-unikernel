@@ -26,9 +26,18 @@ const NETNS_DEFAULT_COUNT: usize = 200;
 /// Every mgmt-plane command funnels through here so the counter and MAC
 /// construction live in exactly one place — the kernel rejects anything
 /// signed differently, so it must match `mgmt_auth::seal` byte-for-byte.
+///
+/// Returns silently without sending if the boot epoch is not yet known
+/// (no telemetry packet from the kernel has been seen). Sending under
+/// epoch=0 is guaranteed to be rejected, so the operator would just see
+/// a silently-discarded command.
 async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) {
+    let Some(counter) = next_counter() else {
+        eprintln!("[gui] dropping mgmt command: kernel epoch unknown (no telemetry yet)");
+        return;
+    };
     let mut packet = vec![0u8; 8 + body.len() + 8];
-    if seal(key, next_counter(), body, &mut packet).is_some() {
+    if seal(key, counter, body, &mut packet).is_some() {
         let _ = sock.send_to(&packet, MGMT_ADDR).await;
     }
 }
@@ -38,7 +47,7 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -82,16 +91,50 @@ fn load_mgmt_key() -> [u8; 16] {
     }
 }
 
-/// Strictly-monotonic counter for outgoing mgmt packets.
-///
-/// Uses Unix-nanos so we always exceed whatever the kernel saw last,
-/// even across operator restarts. The kernel resets `last_counter` to
-/// 0 on boot, so the GUI never has to coordinate with kernel state.
-fn next_counter() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1)
+/// Last boot epoch seen in a kernel telemetry packet. Zero means we
+/// have not yet learned an epoch, in which case no mgmt packet can be
+/// sealed (the kernel would reject every counter built around epoch 0).
+static KERNEL_EPOCH: AtomicU32 = AtomicU32::new(0);
+
+/// In-epoch monotonic sequence for outgoing mgmt packets. Initialised
+/// from the low 32 bits of Unix-millis on first use so a GUI restart
+/// within the same kernel epoch still picks a sequence above whatever
+/// the previous instance sent. Reset to 0 whenever the kernel epoch
+/// rotates (i.e. a kernel reboot).
+static MGMT_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// Records a kernel-advertised epoch. If it differs from what we last
+/// saw, restart the in-epoch sequence so the first post-rotation packet
+/// is `seq=1` and the kernel's freshly-zeroed `last_seq` accepts it.
+fn observe_kernel_epoch(epoch: u32) {
+    if epoch == 0 {
+        return;
+    }
+    let prev = KERNEL_EPOCH.swap(epoch, Ordering::Relaxed);
+    if prev != epoch {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u32)
+            .unwrap_or(1);
+        MGMT_SEQ.store(seed, Ordering::Relaxed);
+    }
+}
+
+/// Builds the next mgmt counter as `(epoch << 32) | seq`, or returns
+/// `None` if no telemetry has yet announced an epoch. The sequence
+/// portion increments strictly for every packet; if it ever wraps to 0
+/// (unreachable in practice — would need >4 billion mgmt commands in
+/// one boot) we skip 0 so the kernel keeps accepting `seq > 0`.
+fn next_counter() -> Option<u64> {
+    let epoch = KERNEL_EPOCH.load(Ordering::Relaxed);
+    if epoch == 0 {
+        return None;
+    }
+    let mut seq = MGMT_SEQ.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    if seq == 0 {
+        seq = MGMT_SEQ.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+    }
+    Some(((epoch as u64) << 32) | (seq as u64))
 }
 
 /// Main background task that runs continuously.
@@ -161,8 +204,8 @@ pub async fn start_background_task(
                 let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 stats.last_seen.store(now_secs, Ordering::Relaxed);
 
-                if len >= 72 && data[0] != alert_packet::ALERT_MESSAGE_TYPE {
-                    for i in 0..9 {
+                if len >= 80 && data[0] != alert_packet::ALERT_MESSAGE_TYPE {
+                    for i in 0..10 {
                         let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
                         match i {
                             0 => {
@@ -197,6 +240,9 @@ pub async fn start_background_task(
                             }
                             8 => {
                                 stats.mgmt.store(val, Ordering::Relaxed);
+                            }
+                            9 => {
+                                observe_kernel_epoch(val as u32);
                             }
                             _ => {}
                         }
@@ -519,6 +565,7 @@ mod tests {
     use sec_core::security::mgmt_auth::{MgmtAuth, seal};
 
     const TEST_KEY: [u8; 16] = *b"TEST-KEY-TEST!KE";
+    const TEST_EPOCH: u32 = 0xABCD_1234;
 
     /// Seal `body` under a fresh verifier, round-trip it, and return
     /// the bytes the kernel would actually dispatch on. Failing to
@@ -526,8 +573,10 @@ mod tests {
     /// reject — which was the original C1 bug.
     fn seal_and_verify(body: &[u8]) -> Vec<u8> {
         let mut packet = vec![0u8; 8 + body.len() + 8];
-        let n = seal(&TEST_KEY, 1, body, &mut packet).expect("seal into sized buffer");
+        let counter = ((TEST_EPOCH as u64) << 32) | 1;
+        let n = seal(&TEST_KEY, counter, body, &mut packet).expect("seal into sized buffer");
         let mut auth = MgmtAuth::new(TEST_KEY);
+        auth.set_epoch(TEST_EPOCH);
         auth.verify(&packet[..n])
             .expect("sealed packet must verify with same key")
             .to_vec()
@@ -675,6 +724,23 @@ mod tests {
                 entry.msg,
             );
         }
+    }
+
+    #[test]
+    fn next_counter_is_none_until_kernel_epoch_observed() {
+        // Run in an isolated process via a forked test would be ideal,
+        // but the static atomics are process-wide. Snapshot, mutate,
+        // restore so the test is independent of others' ordering.
+        let saved_epoch = KERNEL_EPOCH.swap(0, Ordering::Relaxed);
+        let saved_seq = MGMT_SEQ.swap(0, Ordering::Relaxed);
+
+        assert!(next_counter().is_none(), "no telemetry seen → no counter");
+        observe_kernel_epoch(0xDEAD_BEEF);
+        let c = next_counter().expect("epoch known → counter available");
+        assert_eq!((c >> 32) as u32, 0xDEAD_BEEF, "epoch in high 32 bits");
+
+        KERNEL_EPOCH.store(saved_epoch, Ordering::Relaxed);
+        MGMT_SEQ.store(saved_seq, Ordering::Relaxed);
     }
 
     #[test]

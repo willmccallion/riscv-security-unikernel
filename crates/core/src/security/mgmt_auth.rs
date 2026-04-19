@@ -7,15 +7,26 @@
 //! ```
 //!
 //! The kernel rejects any packet whose MAC does not match
-//! `SipHash-2-4(key, counter || body)` or whose counter is not
-//! strictly greater than the last accepted counter. This blocks two
-//! attacks that the previous implementation was wide open to:
+//! `SipHash-2-4(key, counter || body)` or whose counter is not valid
+//! for the current boot epoch. The 64-bit counter is split into:
+//!
+//! ```text
+//!   high 32 bits = boot epoch (set at kernel init from per-boot entropy)
+//!   low  32 bits = monotonic sequence within that epoch
+//! ```
+//!
+//! A receiver only accepts a packet if the epoch matches its own and
+//! the sequence is strictly greater than the last accepted sequence.
+//! This blocks three attacks the previous implementation was open to:
 //!
 //! - **Forgery.** Without the pre-shared key an off-path attacker
 //!   cannot construct a valid MAC, so they cannot ban arbitrary IPs,
 //!   block ports, install eBPF programs, or push DPI signatures.
-//! - **Replay.** A passively recorded mgmt packet cannot be re-sent to
-//!   re-execute the same command, because its counter is now stale.
+//! - **In-boot replay.** A passively recorded mgmt packet cannot be
+//!   re-sent within the same boot, because its sequence is now stale.
+//! - **Cross-reboot replay.** A packet captured before a reboot will
+//!   not verify after the reboot, because the kernel's new epoch
+//!   differs from the one embedded in the captured counter.
 //!
 //! 64-bit MAC + 64-bit counter keeps the per-packet overhead at 16
 //! bytes — small enough to leave room for the actual command inside a
@@ -32,37 +43,57 @@ pub const MIN_PACKET_LEN: usize = COUNTER_LEN + 1 + MAC_LEN;
 
 /// Stateful verifier for the authenticated mgmt protocol.
 ///
-/// Holds the pre-shared key and the highest counter value seen so far.
-/// Every mgmt packet is checked against both before its body is
-/// surfaced to the dispatcher.
+/// Holds the pre-shared key, the current boot epoch (high 32 bits of
+/// the wire counter), and the highest sequence value (low 32 bits)
+/// accepted within that epoch. Every mgmt packet is checked against
+/// all three before its body is surfaced to the dispatcher.
 #[derive(Debug)]
 pub struct MgmtAuth {
     key: [u8; 16],
-    last_counter: u64,
+    epoch: u32,
+    last_seq: u32,
 }
 
 impl MgmtAuth {
     /// Constructs a verifier from a 16-byte pre-shared key.
     ///
     /// The kernel embeds the key at compile time via `build.rs`; the
-    /// host-side GUI loads it from the same source. `last_counter`
-    /// starts at zero — survives reboots because the counter the
-    /// sender issues is monotonic for the lifetime of the receiver,
-    /// and a receiver that just rebooted will accept everything from
-    /// `1` upward.
+    /// host-side GUI loads it from the same source. The epoch starts
+    /// at zero — the kernel must call [`set_epoch`] during init with
+    /// per-boot entropy before any mgmt packet can verify, so a packet
+    /// captured before a reboot can never replay against the new boot.
     pub const fn new(key: [u8; 16]) -> Self {
         Self {
             key,
-            last_counter: 0,
+            epoch: 0,
+            last_seq: 0,
         }
+    }
+
+    /// Installs the per-boot epoch and resets the in-epoch sequence.
+    ///
+    /// The epoch is the high 32 bits of every accepted counter for the
+    /// lifetime of this boot. Senders learn the current epoch via the
+    /// telemetry stream and stamp it into outgoing packets; verifiers
+    /// reject any packet whose epoch does not match.
+    pub fn set_epoch(&mut self, epoch: u32) {
+        self.epoch = epoch;
+        self.last_seq = 0;
+    }
+
+    /// Returns the current boot epoch.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     /// Verifies an inbound mgmt packet and returns its body slice.
     ///
-    /// Returns `None` if the packet is too short, the counter is not
-    /// strictly greater than the last accepted counter (replay), or
-    /// the MAC does not match. On success the verifier advances its
-    /// last-seen counter so the same packet cannot be replayed.
+    /// Returns `None` if the packet is too short, the counter's epoch
+    /// does not match the verifier's epoch (cross-reboot replay), the
+    /// sequence is not strictly greater than the last accepted one
+    /// (in-epoch replay), or the MAC does not match. On success the
+    /// verifier advances its in-epoch sequence so the same packet
+    /// cannot be replayed.
     ///
     /// The MAC is compared in constant time so an attacker cannot
     /// learn correct prefix bytes by measuring reply latency.
@@ -74,7 +105,9 @@ impl MgmtAuth {
         let counter = u64::from_be_bytes([
             packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7],
         ]);
-        if counter <= self.last_counter {
+        let epoch = (counter >> 32) as u32;
+        let seq = counter as u32;
+        if epoch != self.epoch || seq <= self.last_seq {
             return None;
         }
 
@@ -87,7 +120,7 @@ impl MgmtAuth {
             return None;
         }
 
-        self.last_counter = counter;
+        self.last_seq = seq;
         Some(&packet[COUNTER_LEN..mac_start])
     }
 }
@@ -115,12 +148,20 @@ pub fn seal(key: &[u8; 16], counter: u64, body: &[u8], out: &mut [u8]) -> Option
 mod tests {
     use super::*;
 
+    const TEST_EPOCH: u32 = 0xCAFEBABE;
+
+    fn counter(epoch: u32, seq: u32) -> u64 {
+        ((epoch as u64) << 32) | (seq as u64)
+    }
+
     fn fixture() -> ([u8; 16], MgmtAuth) {
         let key = [
             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
             0x1e, 0x1f,
         ];
-        (key, MgmtAuth::new(key))
+        let mut auth = MgmtAuth::new(key);
+        auth.set_epoch(TEST_EPOCH);
+        (key, auth)
     }
 
     #[test]
@@ -128,7 +169,7 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x04, 10, 0, 0, 5];
         let mut packet = [0u8; 32];
-        let n = seal(&key, 1, &body, &mut packet).unwrap();
+        let n = seal(&key, counter(TEST_EPOCH, 1), &body, &mut packet).unwrap();
         let got = auth.verify(&packet[..n]).expect("valid packet");
         assert_eq!(got, &body);
     }
@@ -138,7 +179,7 @@ mod tests {
         let (_, mut auth) = fixture();
         let body = [0x04, 10, 0, 0, 5];
         let mut packet = [0u8; COUNTER_LEN + 5 + MAC_LEN];
-        packet[..COUNTER_LEN].copy_from_slice(&1u64.to_be_bytes());
+        packet[..COUNTER_LEN].copy_from_slice(&counter(TEST_EPOCH, 1).to_be_bytes());
         packet[COUNTER_LEN..COUNTER_LEN + body.len()].copy_from_slice(&body);
         // MAC region left as all-zero
         assert!(auth.verify(&packet).is_none());
@@ -149,7 +190,7 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x01, 0x00, 0x50];
         let mut packet = [0u8; 32];
-        let n = seal(&key, 7, &body, &mut packet).unwrap();
+        let n = seal(&key, counter(TEST_EPOCH, 7), &body, &mut packet).unwrap();
         assert!(auth.verify(&packet[..n]).is_some());
         assert!(
             auth.verify(&packet[..n]).is_none(),
@@ -163,7 +204,7 @@ mod tests {
         let attacker_key = [0xAA; 16];
         let body = [0x04, 10, 0, 0, 5];
         let mut packet = [0u8; 32];
-        let n = seal(&attacker_key, 1, &body, &mut packet).unwrap();
+        let n = seal(&attacker_key, counter(TEST_EPOCH, 1), &body, &mut packet).unwrap();
         assert!(auth.verify(&packet[..n]).is_none());
     }
 
@@ -179,11 +220,42 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x01, 0x00, 0x50];
         let mut later = [0u8; 32];
-        let n_later = seal(&key, 100, &body, &mut later).unwrap();
+        let n_later = seal(&key, counter(TEST_EPOCH, 100), &body, &mut later).unwrap();
         assert!(auth.verify(&later[..n_later]).is_some());
 
         let mut earlier = [0u8; 32];
-        let n_earlier = seal(&key, 50, &body, &mut earlier).unwrap();
+        let n_earlier = seal(&key, counter(TEST_EPOCH, 50), &body, &mut earlier).unwrap();
         assert!(auth.verify(&earlier[..n_earlier]).is_none());
+    }
+
+    #[test]
+    fn verify_rejects_packet_from_prior_boot_epoch() {
+        // A packet captured under one epoch (e.g. before a reboot) must
+        // not verify against a verifier that has since switched to a
+        // different epoch, even if the MAC is otherwise correct and the
+        // sequence number would be acceptable on its own.
+        let (key, mut auth) = fixture();
+        let body = [0x01, 0x00, 0x50];
+        let mut packet = [0u8; 32];
+        let stale_epoch = TEST_EPOCH.wrapping_sub(1);
+        let n = seal(&key, counter(stale_epoch, 1), &body, &mut packet).unwrap();
+        assert!(auth.verify(&packet[..n]).is_none());
+    }
+
+    #[test]
+    fn set_epoch_resets_in_epoch_sequence() {
+        // After a (hypothetical) epoch rotation the sequence counter
+        // must restart so the next packet's seq=1 is accepted.
+        let (key, mut auth) = fixture();
+        let body = [0x01];
+        let mut packet = [0u8; 32];
+        let n = seal(&key, counter(TEST_EPOCH, 50), &body, &mut packet).unwrap();
+        assert!(auth.verify(&packet[..n]).is_some());
+
+        let new_epoch = TEST_EPOCH.wrapping_add(1);
+        auth.set_epoch(new_epoch);
+        let mut next = [0u8; 32];
+        let n2 = seal(&key, counter(new_epoch, 1), &body, &mut next).unwrap();
+        assert!(auth.verify(&next[..n2]).is_some());
     }
 }
