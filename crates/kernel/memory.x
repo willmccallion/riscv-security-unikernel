@@ -9,14 +9,34 @@ MEMORY
 
 SECTIONS
 {
-    .text : { *(.text.entry) *(.text .text.*) } > RAM
-    .rodata : { *(.rodata .rodata.*) } > RAM
-    .data : { *(.data .data.*) } > RAM
-    .bss : { 
-        _sbss = .; 
-        *(.bss .bss.*) 
-        *(COMMON) 
-        _ebss = .; 
+    .text : {
+        _stext = .;
+        *(.text.entry)
+        *(.text .text.*)
+        . = ALIGN(4);
+        _etext = .;
+    } > RAM
+
+    .rodata : {
+        _srodata = .;
+        *(.rodata .rodata.*)
+        . = ALIGN(4);
+        _erodata = .;
+    } > RAM
+
+    .data : {
+        _sdata = .;
+        *(.data .data.*)
+        . = ALIGN(4);
+        _edata = .;
+    } > RAM
+
+    .bss : {
+        _sbss = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(4);
+        _ebss = .;
     } > RAM
 
     /* Heap/Stack space */

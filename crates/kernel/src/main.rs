@@ -21,8 +21,12 @@ mod entropy;
 mod net_sink;
 /// Kernel panic handler: halts the core.
 mod panic;
+/// Physical Memory Protection setup: locks W^X across the kernel image.
+mod pmp;
 /// RISC-V `mcycle` backed [`sec_core::time::TimeSource`] implementation.
 mod time_riscv;
+/// M-mode trap handler: prints the cause and halts.
+mod trap;
 
 use crate::allocator::ALLOCATOR;
 use crate::drivers::net_device::NetDevice;
@@ -156,6 +160,14 @@ static MGMT_AUTH: Singleton<mgmt_auth::MgmtAuth> =
 /// code and assumes a valid stack has been set up.
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
+    // Trap handler first so a misconfigured PMP write (or any other
+    // synchronous fault from this point on) prints diagnostics and
+    // halts instead of jumping to whatever value `mtvec` powered up
+    // to. PMP runs immediately after to lock W^X before any driver
+    // touches MMIO.
+    trap::init();
+    pmp::init();
+
     // SAFETY: ALLOCATOR is a mutable static only accessed here during single-threaded kernel
     // init, before the packet loop begins.
     unsafe { (*::core::ptr::addr_of_mut!(ALLOCATOR)).init() };
