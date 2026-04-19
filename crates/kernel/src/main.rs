@@ -708,8 +708,9 @@ fn send_udp_report(stats: &[u64; 9]) {
 
     /// Offset to statistics payload data within the packet.
     ///
-    /// Marks the start of the 64-byte statistics array containing
-    /// 8 u64 values in big-endian format.
+    /// Marks the start of the 72-byte statistics array containing
+    /// 9 big-endian u64 counters (see the slot comment above the
+    /// `stats` declaration in `kmain`).
     const STATS_OFFSET: usize = UDP_HEADER_OFFSET + udp::HEADER_SIZE;
     let mut offset = STATS_OFFSET;
     for &val in stats {

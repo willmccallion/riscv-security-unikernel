@@ -106,7 +106,7 @@ flowchart LR
     end
 
     subgraph Kernel["Kernel (RISC-V / 64 KB)"]
-        TLM["Telemetry broadcast<br/>UDP :8888 · 64-byte frames"]
+        TLM["Telemetry broadcast<br/>UDP :8888 · 72-byte frames"]
         MGT["Management listener<br/>UDP :1337"]
     end
 
@@ -115,7 +115,7 @@ flowchart LR
     T -->|spoofed packets| Kernel
 ```
 
-**Telemetry frame (64 bytes):** passed/DDoS-drop/firewall-block/malware-detect/eBPF-reject/heuristic-reject/RAM-used/active-flows — all as big-endian u64.
+**Telemetry frame (72 bytes):** passed/DDoS-drop/firewall-block/malware-detect/eBPF-reject/heuristic-reject/RAM-used/active-flows/mgmt-traffic — all as big-endian u64.
 
 **Traffic modes:** Normal (80–120 pps), DDoS (1,200 pps from 50 bot IPs), Live (mixed HTTP + periodic injection bursts).
 
