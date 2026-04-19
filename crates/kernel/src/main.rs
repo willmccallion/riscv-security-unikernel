@@ -23,6 +23,8 @@ mod net_sink;
 mod panic;
 /// Physical Memory Protection setup: locks W^X across the kernel image.
 mod pmp;
+/// Stack-overflow detection via a sentinel region between BSS and the stack.
+mod stack_guard;
 /// RISC-V `mcycle` backed [`sec_core::time::TimeSource`] implementation.
 mod time_riscv;
 /// M-mode trap handler: prints the cause and halts.
@@ -167,6 +169,7 @@ pub extern "C" fn kmain() -> ! {
     // touches MMIO.
     trap::init();
     pmp::init();
+    stack_guard::arm();
 
     // SAFETY: ALLOCATOR is a mutable static only accessed here during single-threaded kernel
     // init, before the packet loop begins.
@@ -286,6 +289,10 @@ pub extern "C" fn kmain() -> ! {
     loop {
         let now = clock.now();
         if now.wrapping_sub(last_report) > TELEMETRY_INTERVAL_CYCLES as u64 {
+            // Catch a stack overflow before we send telemetry built
+            // on possibly-corrupted state. Halts on detection.
+            stack_guard::check_or_halt();
+
             let sp: usize;
             // SAFETY: Reading the stack pointer register via inline asm is safe;
             // sp is always a valid register on RISC-V.
