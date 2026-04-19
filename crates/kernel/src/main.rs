@@ -33,6 +33,7 @@ use sec_core::config::{
     MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS, TELEMETRY_INTERVAL_CYCLES,
     TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY, TOTAL_MEMORY_SIZE,
 };
+use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::{
     alert::{AlertReason, alert_packet},
     dos, dpi, firewall, flow, heuristic, mgmt, mgmt_auth, vm,
@@ -182,6 +183,20 @@ pub extern "C" fn kmain() -> ! {
     let mut sink = VirtioNetSink;
     let mut last_report = clock.now();
     let mut stats = [0u64; 8];
+
+    // Per-boot SYN-cookie secret. mcycle at this point is whatever the
+    // hart counter reached during init — varies across boots — and we
+    // mix in the MAC so two kernels booting at the same cycle still
+    // diverge. SipHash inside `cookie` does the rest.
+    let syn_secret = {
+        let mut bytes = [0u8; 16];
+        let mc = clock.now().to_le_bytes();
+        bytes[..8].copy_from_slice(&mc);
+        bytes[8..14].copy_from_slice(&MAC_ADDR);
+        bytes[14] = mc[0] ^ MAC_ADDR[0];
+        bytes[15] = mc[1] ^ MAC_ADDR[1];
+        SynCookieSecret::new(bytes)
+    };
     /// Maximum number of packets to process in a single iteration.
     ///
     /// Processing packets in batches improves cache locality and reduces
@@ -321,7 +336,9 @@ pub extern "C" fn kmain() -> ! {
                     continue;
                 }
 
-                if let Some(payload) = sec_core::net::stack::process_packet(packet, &mut sink) {
+                if let Some(payload) =
+                    sec_core::net::stack::process_packet(packet, &mut sink, &syn_secret)
+                {
                     if let Some(_reason) = heuristic::HeuristicEngine::check_payload(payload) {
                         stats[5] += 1;
                         send_alert(&src_ip, AlertReason::Heuristic.as_u8(), payload);

@@ -18,7 +18,7 @@
 
 use sec_core::net::PacketSink;
 use sec_core::net::constants::{SYN_COOKIE_MAGIC, arp, ethernet, ipv4, tcp};
-use sec_core::net::stack::{checksum, process_packet};
+use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
 use sec_core::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
 use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::AhoCorasick;
@@ -44,6 +44,17 @@ impl PacketSink for CaptureSink {
 const KERNEL_IP: [u8; 4] = [192, 168, 100, 2];
 /// Kernel MAC from `sec_core::config::MAC_ADDR`.
 const KERNEL_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+
+/// Deterministic SYN-cookie secret used by every test that exercises
+/// the SYN-ACK reply path. Real kernels build one per boot from
+/// `mcycle` XOR MAC; tests need a fixed value so cookies are
+/// reproducible.
+fn test_syn_secret() -> SynCookieSecret {
+    SynCookieSecret::new([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
+        0x10,
+    ])
+}
 
 /// Build a minimal Ethernet+IPv4+TCP frame of the requested kind.
 fn build_tcp_frame(
@@ -141,8 +152,9 @@ fn syn_cookie_depends_on_destination_port() {
     let mut frame_a = build_tcp_frame([10, 0, 0, 7], 4444, 80, TCP_SYN, 0xDEAD_BEEF, &[]);
     let mut frame_b = build_tcp_frame([10, 0, 0, 7], 4444, 443, TCP_SYN, 0xDEAD_BEEF, &[]);
 
-    let _ = process_packet(&mut frame_a, &mut sink_a);
-    let _ = process_packet(&mut frame_b, &mut sink_b);
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame_a, &mut sink_a, &secret);
+    let _ = process_packet(&mut frame_b, &mut sink_b, &secret);
 
     assert_eq!(sink_a.sent.len(), 1, "SYN to dst=80 should be answered");
     assert_eq!(sink_b.sent.len(), 1, "SYN to dst=443 should be answered");
@@ -165,7 +177,8 @@ fn syn_cookie_is_not_derivable_from_public_inputs() {
     let src_port: u16 = 51_234;
     let mut frame = build_tcp_frame(src, src_port, 80, TCP_SYN, 0, &[]);
 
-    let _ = process_packet(&mut frame, &mut sink);
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame, &mut sink, &secret);
     assert_eq!(sink.sent.len(), 1);
     let seq = read_seq(&sink.sent[0]);
 
@@ -203,7 +216,8 @@ fn non_syn_tcp_returns_payload_to_caller() {
     let payload = b"GET / HTTP/1.1\r\nDROP TABLE users--";
     let mut frame = build_tcp_frame([10, 0, 0, 5], 1024, 80, TCP_ACK, 1, payload);
 
-    let result = process_packet(&mut frame, &mut sink);
+    let secret = test_syn_secret();
+    let result = process_packet(&mut frame, &mut sink, &secret);
     assert!(
         sink.sent.is_empty(),
         "non-SYN TCP must not generate a SYN-ACK"
@@ -234,7 +248,8 @@ fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
 fn process_packet_emits_syn_ack_for_syn() {
     let mut sink = CaptureSink::default();
     let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, 0, &[]);
-    let _ = process_packet(&mut frame, &mut sink);
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame, &mut sink, &secret);
     assert_eq!(sink.sent.len(), 1, "SYN must produce SYN-ACK");
     let flags = read_flags(&sink.sent[0]);
     assert_eq!(flags & (TCP_SYN | TCP_ACK), TCP_SYN | TCP_ACK);
@@ -330,7 +345,8 @@ fn arp_hw_type_offset_matches_wire_layout() {
 fn arp_request_with_non_ethernet_hw_type_is_ignored() {
     let mut sink = CaptureSink::default();
     let mut frame = build_arp_request([0xFF, 0xFF], KERNEL_IP);
-    let _ = process_packet(&mut frame, &mut sink);
+    let secret = test_syn_secret();
+    let _ = process_packet(&mut frame, &mut sink, &secret);
     assert!(
         sink.sent.is_empty(),
         "ARP with hw_type=0xFFFF should not generate a reply"
