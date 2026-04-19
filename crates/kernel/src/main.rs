@@ -187,6 +187,19 @@ pub extern "C" fn kmain() -> ! {
     let mut sink = VirtioNetSink;
     let mut last_report = clock.now();
     let mut last_cms_reset = last_report;
+    // Heartbeat state. We want a cheap sign-of-life on the serial
+    // console without burying the boot banner: print one dot per tick
+    // and switch to a single rewriting line (`[idle Nx]`) after 100
+    // ticks so a long quiet period collapses to one row. Real traffic
+    // or drops break out to a full stats line.
+    let mut dots_on_line: u32 = 0;
+    let mut idle_ticks: u32 = 0;
+    let mut interval_rx: u64 = 0;
+    // 60 dots fits in every terminal wider than 60 columns without
+    // visual wrapping, so `\r` always returns to the start of the row
+    // we actually wrote. Wider lines wrap on narrow ttys and break
+    // every cursor-rewind trick below.
+    const DOT_LINE_MAX: u32 = 60;
     // Stats slot layout (per-interval counters reset on each
     // telemetry tick; memory/flows/mgmt are gauges or independent
     // counters that survive the reset):
@@ -237,10 +250,56 @@ pub extern "C" fn kmain() -> ! {
             stats[6] = used_ram as u64;
             stats[7] = engine.flow_table.active_count as u64;
 
-            crate::kprintln!(
-                "[hb] pass={} drop(ddos={} fw={} mal={} bpf={} heur={}) flows={} mgmt={}",
-                stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], stats[7], stats[8]
-            );
+            let interval_drops =
+                stats[1] + stats[2] + stats[3] + stats[4] + stats[5];
+            let had_activity =
+                interval_rx > 0 || interval_drops > 0 || stats[8] > 0;
+            // 60 ASCII spaces — used to blank a 60-char row with
+            // nothing but plain text, since `\x1b[K` is unreliable
+            // when the row visually wrapped.
+            const PAD: &str =
+                "                                                            ";
+            if had_activity {
+                // Clear whatever idle display is on screen so the
+                // event line lands on its own row. Two rows when an
+                // idle counter has been established, one row while
+                // dots are still accumulating on the first pass.
+                if idle_ticks > 0 {
+                    crate::kprint!("\x1b[A\r{}\r\x1b[B\r{}\r", PAD, PAD);
+                } else if dots_on_line > 0 {
+                    crate::kprint!("\r{}\r", PAD);
+                }
+                crate::kprintln!(
+                    "[hb] rx={} pass={} drop(ddos={} fw={} mal={} bpf={} heur={}) flows={} mgmt={}",
+                    interval_rx,
+                    stats[0], stats[1], stats[2], stats[3], stats[4], stats[5], stats[7], stats[8]
+                );
+                dots_on_line = 0;
+                idle_ticks = 0;
+            } else if dots_on_line < DOT_LINE_MAX {
+                crate::kprint!(".");
+                dots_on_line += 1;
+            } else {
+                // Dots row is full — wrap without scrolling. On the
+                // first wrap we overwrite the dots row with the idle
+                // counter and open one new row beneath it (one-time,
+                // one-line scroll). Every subsequent wrap bounces the
+                // cursor between the two rows in place, so a quiet
+                // kernel never occupies more than two lines.
+                idle_ticks += 1;
+                if idle_ticks == 1 {
+                    crate::kprint!("\r[idle 1x]{}\n", &PAD[9..]);
+                } else {
+                    crate::kprint!(
+                        "\x1b[A\r[idle {}x]{}\r\x1b[B\r{}\r",
+                        idle_ticks,
+                        PAD,
+                        PAD
+                    );
+                }
+                dots_on_line = 0;
+            }
+            interval_rx = 0;
 
             send_udp_report(&stats);
             let mem = stats[6];
@@ -263,6 +322,30 @@ pub extern "C" fn kmain() -> ! {
         for _ in 0..BATCH_SIZE {
             if let Some(packet) = NetDevice::try_receive() {
                 work_done = true;
+                // Count only packets actually addressed to us so
+                // stray broadcasts / host ARP probes / IPv6 multicast
+                // on the tap don't trigger the heartbeat. IPv4 dst
+                // must match our IP, or the frame must be an ARP
+                // request/reply whose target IP matches ours.
+                use sec_core::net::constants::arp;
+                let for_us = {
+                    use sec_core::net::constants::{ethernet, ipv4};
+                    let ethertype = packet.len() >= ethernet::TYPE_OFFSET + 2
+                        && packet[ethernet::TYPE_OFFSET] == 0x08;
+                    let is_ipv4 = ethertype && packet[ethernet::TYPE_OFFSET + 1] == 0x00;
+                    let is_arp = ethertype && packet[ethernet::TYPE_OFFSET + 1] == 0x06;
+                    (is_ipv4
+                        && packet.len() >= ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE
+                        && packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+                            == sec_core::config::IP_ADDR)
+                        || (is_arp
+                            && packet.len() >= arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE
+                            && packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+                                == sec_core::config::IP_ADDR)
+                };
+                if for_us {
+                    interval_rx += 1;
+                }
                 let mut drop = false;
                 let mut meta = AlertMeta::empty();
                 meta.packet_len = packet.len().min(u16::MAX as usize) as u16;
