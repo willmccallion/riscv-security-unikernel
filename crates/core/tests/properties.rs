@@ -168,7 +168,7 @@ proptest! {
         suffix in proptest::collection::vec(any::<u8>(), 0..32),
     ) {
         let mut ac = AhoCorasick::new();
-        ac.insert(&pattern);
+        let _ = ac.insert(&pattern);
         let mut hay = prefix;
         hay.extend_from_slice(&pattern);
         hay.extend_from_slice(&suffix);
@@ -184,7 +184,7 @@ proptest! {
         hay in proptest::collection::vec(0x00u8..=0x7F, 0..256),
     ) {
         let mut ac = AhoCorasick::new();
-        ac.insert(&pattern);
+        let _ = ac.insert(&pattern);
         prop_assert!(!ac.scan(&hay), "haystack of disjoint alphabet must not match");
     }
 }

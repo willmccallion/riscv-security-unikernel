@@ -60,10 +60,10 @@ fn bench_cms_insert_varied(c: &mut Criterion) {
 
 fn build_ac() -> dpi::AhoCorasick {
     let mut ac = dpi::AhoCorasick::new();
-    ac.insert(b"DROP TABLE");
-    ac.insert(b"<script>");
-    ac.insert(b"eval(");
-    ac.insert(b"UNION SELECT");
+    let _ = ac.insert(b"DROP TABLE");
+    let _ = ac.insert(b"<script>");
+    let _ = ac.insert(b"eval(");
+    let _ = ac.insert(b"UNION SELECT");
     ac.build();
     ac
 }

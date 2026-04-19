@@ -460,17 +460,14 @@ fn ahocorasick_signals_when_a_pattern_failed_to_insert() {
         for j in 0u8..32 {
             p.push(prefix.wrapping_add(j).wrapping_add(1));
         }
-        ac.insert(&p);
+        let _ = ac.insert(&p);
     }
 
     let needle = b"NEEDLE_THAT_SHOULD_FAIL_TO_INSERT";
-    ac.insert(needle);
-    ac.build();
-
-    let inserted = ac.scan(needle);
+    let result = ac.insert(needle);
     assert!(
-        inserted,
-        "pattern silently failed to insert into a full trie; insert must signal full"
+        result.is_err(),
+        "trie was meant to be full; insert(needle) should have returned Err but returned Ok"
     );
 }
 

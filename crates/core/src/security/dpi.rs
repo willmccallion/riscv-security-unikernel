@@ -7,6 +7,20 @@
 /// Maximum number of nodes in the Aho-Corasick automaton.
 const MAX_NODES: usize = 128;
 
+/// Reasons an `AhoCorasick::insert` may fail.
+///
+/// Returned to callers so they can surface a real error instead of
+/// silently dropping the pattern. A trie that's quietly full will
+/// answer `scan` with `false` for every newly-added signature, which
+/// is indistinguishable from "no match" — exactly what an attacker
+/// who can flood the trie wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpiError {
+    /// The trie has reached its node capacity; the pattern was not
+    /// added in full and `scan` will not detect it.
+    TrieFull,
+}
+
 /// Node in the Aho-Corasick trie structure.
 #[derive(Copy, Clone, Debug)]
 struct Node {
@@ -74,7 +88,15 @@ impl AhoCorasick {
     /// # Arguments
     ///
     /// * `pattern` - Byte pattern to add
-    pub fn insert(&mut self, pattern: &[u8]) {
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if every byte of the pattern was added; `Err(DpiError::TrieFull)`
+    /// if node capacity was hit partway through. On failure the trie is left
+    /// in a consistent state but the pattern's terminal node is not marked,
+    /// so `scan` will not match it. Callers must surface the error rather
+    /// than discard it.
+    pub fn insert(&mut self, pattern: &[u8]) -> Result<(), DpiError> {
         let mut curr = 0;
         for &b in pattern {
             let mut found = false;
@@ -91,7 +113,7 @@ impl AhoCorasick {
 
             if !found {
                 if self.count >= MAX_NODES {
-                    return;
+                    return Err(DpiError::TrieFull);
                 }
                 let new_node_idx = self.count;
                 self.count += 1;
@@ -104,6 +126,7 @@ impl AhoCorasick {
             }
         }
         self.nodes[curr].is_match = true;
+        Ok(())
     }
 
     /// Builds the failure links for the automaton.

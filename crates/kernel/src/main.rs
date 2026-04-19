@@ -121,10 +121,13 @@ impl SecurityEngine {
     /// Sets up the Aho-Corasick automaton with common attack patterns
     /// and configures initial firewall rules.
     fn init(&mut self) {
-        self.ac.insert(b"DROP TABLE");
-        self.ac.insert(b"<script>");
-        self.ac.insert(b"eval(");
-        self.ac.insert(b"UNION SELECT");
+        // 4 short patterns into a 128-node trie — capacity-safe by
+        // construction, so dropping the Result is sound. Runtime
+        // pattern uploads (when added) must not ignore the Result.
+        let _ = self.ac.insert(b"DROP TABLE");
+        let _ = self.ac.insert(b"<script>");
+        let _ = self.ac.insert(b"eval(");
+        let _ = self.ac.insert(b"UNION SELECT");
         self.ac.build();
         self.fw.block_port(DEFAULT_BLOCKED_PORT);
     }

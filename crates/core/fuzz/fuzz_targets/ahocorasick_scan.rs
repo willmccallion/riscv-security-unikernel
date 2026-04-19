@@ -26,7 +26,7 @@ fuzz_target!(|data: &[u8]| {
         if cursor + len > data.len() {
             break;
         }
-        ac.insert(&data[cursor..cursor + len]);
+        let _ = ac.insert(&data[cursor..cursor + len]);
         cursor += len;
     }
     let _ = ac.scan(&data[cursor..]);
