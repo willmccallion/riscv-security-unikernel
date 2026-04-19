@@ -102,21 +102,28 @@ impl MgmtAuth {
             return None;
         }
 
-        let counter = u64::from_be_bytes([
-            packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7],
-        ]);
-        let epoch = (counter >> 32) as u32;
-        let seq = counter as u32;
-        if epoch != self.epoch || seq <= self.last_seq {
-            return None;
-        }
-
+        // MAC is verified BEFORE the counter is inspected. If we
+        // returned early on a stale counter, an attacker measuring
+        // reply latency could distinguish "wrong key" (slow, ~100
+        // cycles of SipHash) from "stale counter" (fast, no hash) for
+        // any chosen counter value, which leaks whether they have
+        // already rolled past our last-seen sequence. Always paying
+        // the SipHash cost erases that distinguisher.
         let mac_start = packet.len() - MAC_LEN;
         let signed_region = &packet[..mac_start];
         let provided_mac = &packet[mac_start..];
 
         let expected = siphash24(&self.key, signed_region).to_be_bytes();
         if !ct_eq(&expected, provided_mac) {
+            return None;
+        }
+
+        let counter = u64::from_be_bytes([
+            packet[0], packet[1], packet[2], packet[3], packet[4], packet[5], packet[6], packet[7],
+        ]);
+        let epoch = (counter >> 32) as u32;
+        let seq = counter as u32;
+        if epoch != self.epoch || seq <= self.last_seq {
             return None;
         }
 
