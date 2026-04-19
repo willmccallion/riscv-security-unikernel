@@ -325,7 +325,7 @@ fn send_tcp_reply_inplace<S: PacketSink>(
 /// # Returns
 ///
 /// 16-bit checksum value
-fn checksum(data: &[u8]) -> u16 {
+pub fn checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;
     while i < data.len() - 1 {
@@ -340,3 +340,4 @@ fn checksum(data: &[u8]) -> u16 {
     }
     !sum as u16
 }
+
