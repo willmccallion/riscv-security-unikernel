@@ -8,6 +8,8 @@ use crate::types::{
     GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TARGET_ADDR, TrafficMode,
 };
 use eframe::egui;
+use sec_core::security::alert::{AlertReason, alert_packet};
+use sec_core::security::mgmt::ManagementMessageType;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -66,7 +68,7 @@ pub async fn start_background_task(
                 let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 stats.last_seen.store(now_secs, Ordering::Relaxed);
 
-                if len >= 64 && data[0] != 0x02 {
+                if len >= 64 && data[0] != alert_packet::ALERT_MESSAGE_TYPE {
                     for i in 0..8 {
                         let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
                         match i {
@@ -103,14 +105,14 @@ pub async fn start_background_task(
                             _ => {}
                         }
                     }
-                } else if data[0] == 0x02 {
+                } else if data[0] == alert_packet::ALERT_MESSAGE_TYPE {
                     let msg = parse_alert(data);
                     let _ = log_tx.send(msg);
                 }
             }
             Ok((len, _)) = alert_socket.recv_from(&mut alert_buf) => {
                 let data = &alert_buf[..len];
-                if data[0] == 0x02 {
+                if data[0] == alert_packet::ALERT_MESSAGE_TYPE {
                     let msg = parse_alert(data);
                     let _ = log_tx.send(msg);
                 }
@@ -123,7 +125,7 @@ pub async fn start_background_task(
                     }
                     GuiCommand::BanIp(ip_str) => {
                         if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
-                            let mut packet = vec![0x04];
+                            let mut packet = vec![ManagementMessageType::BanIp as u8];
                             packet.extend_from_slice(&ip.octets());
                             let _ = socket_pool[0].send_to(&packet, MGMT_ADDR).await;
 
@@ -266,39 +268,58 @@ fn build_spoofed_packet(rng: &mut StdRng, fixed_ip: Option<[u8; 4]>, payload: &[
 ///
 /// A LogEntry with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
-    let reason = data[1];
-    let ip = format!("{}.{}.{}.{}", data[2], data[3], data[4], data[5]);
+    let reason_byte = data[alert_packet::REASON_OFFSET];
+    let ip_start = alert_packet::SRC_IP_OFFSET;
+    let ip = format!(
+        "{}.{}.{}.{}",
+        data[ip_start],
+        data[ip_start + 1],
+        data[ip_start + 2],
+        data[ip_start + 3],
+    );
 
-    let payload = if data.len() > 6 {
-        data[6..].to_vec()
+    let payload = if data.len() > alert_packet::PAYLOAD_OFFSET {
+        data[alert_packet::PAYLOAD_OFFSET..].to_vec()
     } else {
         Vec::new()
     };
 
-    let dst_port = match reason {
-        1 | 4 | 6 if payload.len() >= 38 => u16::from_be_bytes([payload[36], payload[37]]),
-        2 | 3 | 5 if payload.len() >= 4 => u16::from_be_bytes([payload[2], payload[3]]),
+    // Offset into the captured payload where the destination port lives for
+    // different alert reasons: the raw Ethernet frame (DDoS/eBPF/Flow) puts
+    // dst port at bytes 36..=37, while the already-parsed UDP payload
+    // (Firewall/Malware/Heuristic) has it at bytes 2..=3.
+    let dst_port = match AlertReason::from_u8(reason_byte) {
+        Some(AlertReason::Ddos | AlertReason::Ebpf | AlertReason::Flow)
+            if payload.len() >= 38 =>
+        {
+            u16::from_be_bytes([payload[36], payload[37]])
+        }
+        Some(AlertReason::Firewall | AlertReason::Malware | AlertReason::Heuristic)
+            if payload.len() >= 4 =>
+        {
+            u16::from_be_bytes([payload[2], payload[3]])
+        }
         _ => 0,
     };
 
-    let (msg, color) = match reason {
-        1 => (
+    let (msg, color) = match AlertReason::from_u8(reason_byte) {
+        Some(AlertReason::Ddos) => (
             format!("[DDoS] High Volume from {ip}"),
             egui::Color32::YELLOW,
         ),
-        2 => (
+        Some(AlertReason::Firewall) => (
             format!("[FIREWALL] Blocked Port access from {ip}"),
             egui::Color32::RED,
         ),
-        3 => (
+        Some(AlertReason::Malware) => (
             format!("[MALWARE] Signature Match from {ip}"),
             egui::Color32::RED,
         ),
-        4 => (
+        Some(AlertReason::Ebpf) => (
             format!("[eBPF] Custom Filter Drop from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
-        5 => (
+        Some(AlertReason::Heuristic) => (
             if !payload.is_empty() && payload[0] == 0x90 {
                 format!("[HEURISTIC] Shellcode Detected from {ip}")
             } else {
@@ -306,15 +327,15 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             },
             egui::Color32::from_rgb(255, 0, 255),
         ),
-        6 => (
+        Some(AlertReason::Flow) => (
             format!("[FLOW] New Connection from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
-        7 => (
+        Some(AlertReason::Pass) => (
             format!("[PASS] Allowed from {ip}"),
             egui::Color32::from_gray(140),
         ),
-        _ => ("Unknown Alert".to_string(), egui::Color32::GRAY),
+        None => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };
 
     LogEntry {

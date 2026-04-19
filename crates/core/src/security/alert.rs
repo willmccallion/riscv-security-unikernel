@@ -39,6 +39,23 @@ impl AlertReason {
     pub const fn as_u8(self) -> u8 {
         self as u8
     }
+
+    /// Converts a raw u8 reason code back to the enum variant.
+    ///
+    /// Used by control-plane consumers (GUI, daemon) when parsing alert
+    /// packets off the wire. Returns `None` for unrecognised codes.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Ddos),
+            2 => Some(Self::Firewall),
+            3 => Some(Self::Malware),
+            4 => Some(Self::Ebpf),
+            5 => Some(Self::Heuristic),
+            6 => Some(Self::Flow),
+            7 => Some(Self::Pass),
+            _ => None,
+        }
+    }
 }
 
 /// Alert packet format constants.
