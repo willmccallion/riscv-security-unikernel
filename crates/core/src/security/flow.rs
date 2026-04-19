@@ -7,6 +7,15 @@
 /// Maximum number of flows that can be tracked simultaneously.
 const MAX_FLOWS: usize = 74;
 
+/// Minimum age (in time-source units) an active flow must reach before
+/// it becomes eligible for eviction by a new 5-tuple. Without this, an
+/// attacker who floods unique 5-tuples evicts long-lived legitimate
+/// flows just by being newer; with it, the table refuses to evict any
+/// flow that has been touched in the last `MIN_EVICTION_AGE` ticks and
+/// instead drops the new flow on the floor. Tuned well below
+/// `FLOW_TIMEOUT_CYCLES` so genuinely stale entries are still recyclable.
+const MIN_EVICTION_AGE: u64 = 1_000_000;
+
 /// Entry in the flow table representing a single network flow.
 ///
 /// A flow is identified by the 5-tuple: source IP, destination IP,
@@ -150,6 +159,14 @@ impl FlowTable {
                 self.active_count += 1;
                 e_idx
             } else {
+                // Table is full and every entry is active. Refuse to
+                // evict if the oldest flow is still recent — otherwise
+                // a unique-5-tuple flood can churn out long-lived
+                // legitimate flows simply by being newer.
+                let age = now.wrapping_sub(oldest_time);
+                if age < MIN_EVICTION_AGE {
+                    return false;
+                }
                 oldest_idx
             };
 
