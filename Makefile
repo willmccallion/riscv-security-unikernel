@@ -5,7 +5,7 @@ KERNEL_BIN := target/riscv64gc-unknown-none-elf/release/security-unikernel
 
 RAM_LIMIT := 65536
 
-.PHONY: all kernel gui daemon run setup_net bench check-size clean
+.PHONY: all kernel gui daemon run setup_net bench check-size clean miri
 
 all: kernel gui
 
@@ -67,6 +67,13 @@ check-size: kernel
 	      print "PASS: within budget" \
 	    } \
 	  }'
+
+# Miri runs the sec-core test suite under an interpreter that detects UB
+# (out-of-bounds, uninit reads, aliasing/provenance violations). Exercises
+# every unsafe block we ship.
+miri:
+	@echo "[*] Running Miri on sec-core..."
+	@cargo +nightly miri test -p sec-core
 
 clean:
 	@cargo clean

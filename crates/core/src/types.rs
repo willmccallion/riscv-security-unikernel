@@ -65,3 +65,17 @@ impl<T> Singleton<T> {
         unsafe { &mut *self.data.get() }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Exists so `cargo +nightly miri test -p sec-core` exercises the
+    // UnsafeCell access in `Singleton::get` and flags any aliasing UB.
+    #[test]
+    fn singleton_get_round_trips_a_write() {
+        static CELL: Singleton<u32> = Singleton::new(0);
+        *CELL.get() = 0xDEAD_BEEF;
+        assert_eq!(*CELL.get(), 0xDEAD_BEEF);
+    }
+}
