@@ -620,7 +620,15 @@ fn send_udp_report(stats: &[u64; 8]) {
 /// Attacker-controlled bytes from the inbound packet are deliberately
 /// not echoed: the management broadcast domain must not be a vector
 /// for relaying untrusted payloads to log/parser tools.
+///
+/// `AlertReason::Pass` is silently dropped here. Every packet that
+/// clears every check would otherwise broadcast a frame, drowning
+/// the management LAN under normal traffic and burying the alerts
+/// that actually matter.
 fn send_alert(meta: &AlertMeta, reason: u8) {
+    if reason == AlertReason::Pass.as_u8() {
+        return;
+    }
     use sec_core::net::constants::IpProtocol;
     use sec_core::net::constants::udp;
     use sec_core::net::constants::{BROADCAST_MAC, ethernet, ipv4};
