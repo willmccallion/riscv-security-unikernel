@@ -486,6 +486,9 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, src_ip: &[u
 ///
 /// 16-bit checksum value
 fn checksum(data: &[u8]) -> u16 {
+    if data.is_empty() {
+        return 0xFFFF;
+    }
     let mut sum: u32 = 0;
     let mut i = 0;
     while i < data.len() - 1 {

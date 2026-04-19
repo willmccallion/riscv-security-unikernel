@@ -413,6 +413,13 @@ fn send_tcp_reply_inplace<S: PacketSink>(
 ///
 /// 16-bit checksum value
 pub fn checksum(data: &[u8]) -> u16 {
+    // The loop condition uses `data.len() - 1`, which would underflow
+    // to usize::MAX on an empty slice and run off into unmapped memory.
+    // Empty input has no bytes to fold, so the one's complement of the
+    // empty sum (0) is 0xFFFF.
+    if data.is_empty() {
+        return 0xFFFF;
+    }
     let mut sum: u32 = 0;
     let mut i = 0;
     while i < data.len() - 1 {
