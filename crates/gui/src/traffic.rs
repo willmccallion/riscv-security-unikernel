@@ -52,43 +52,62 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-/// Loads the mgmt MAC key from `KERNEL_MGMT_KEY` (32 hex chars) or
-/// falls back to the dev key the kernel uses when built without one.
-/// The kernel rejects mgmt packets signed with the wrong key, so this
-/// must match what the kernel was built with.
+/// Loads the mgmt MAC key from the first source that resolves:
+///   1. `KERNEL_MGMT_KEY` env var (32 hex chars).
+///   2. `.mgmt-key.local` at the workspace root (same file the kernel
+///      build reads, materialised by `make dev-key`).
+///
+/// Exits the process on failure. The old debug-only fallback baked in a
+/// constant key that was identical across every checkout — a binary
+/// leaked from a developer laptop would then authenticate to any other
+/// debug-built kernel on the network.
 fn load_mgmt_key() -> [u8; 16] {
     if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
-        if hex.len() == 32 {
-            let mut out = [0u8; 16];
-            for (i, b) in out.iter_mut().enumerate() {
-                let hi = u8::from_str_radix(&hex[i * 2..i * 2 + 1], 16).unwrap_or(0);
-                let lo = u8::from_str_radix(&hex[i * 2 + 1..i * 2 + 2], 16).unwrap_or(0);
-                *b = (hi << 4) | lo;
-            }
-            return out;
+        if let Some(key) = parse_hex_key(&hex) {
+            return key;
         }
-        eprintln!("KERNEL_MGMT_KEY must be 32 hex chars");
-    } else {
-        eprintln!("KERNEL_MGMT_KEY not set");
+        eprintln!("[gui] KERNEL_MGMT_KEY must be 32 hex chars");
     }
 
-    // The kernel's build.rs refuses release builds without KERNEL_MGMT_KEY;
-    // mirror that here so a release-built GUI can't silently sign packets
-    // with the hard-coded dev key and have every mgmt command rejected
-    // by the kernel at the kind of subtle distance that wastes an hour
-    // of debugging.
-    #[cfg(not(debug_assertions))]
-    {
-        eprintln!(
-            "[gui] release build requires KERNEL_MGMT_KEY — refusing to use the dev-only fallback"
-        );
-        std::process::exit(1);
+    if let Some(key) = read_dev_key_file() {
+        return key;
     }
-    #[cfg(debug_assertions)]
-    {
-        eprintln!("[gui] debug build — falling back to DEV-KEY-DEV-KEY!");
-        *b"DEV-KEY-DEV-KEY!"
+
+    eprintln!(
+        "[gui] no mgmt key: set KERNEL_MGMT_KEY=<32 hex> or run `make dev-key` \
+         to materialise .mgmt-key.local (shared with the kernel build)"
+    );
+    std::process::exit(1);
+}
+
+fn parse_hex_key(hex: &str) -> Option<[u8; 16]> {
+    if hex.len() != 32 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return None;
     }
+    let mut out = [0u8; 16];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+fn read_dev_key_file() -> Option<[u8; 16]> {
+    // Walk up from cwd looking for `.mgmt-key.local`. `make run` sets
+    // KERNEL_MGMT_KEY directly, so this fallback only fires when the
+    // dev runs `cargo run -p security-dashboard` from somewhere inside
+    // the workspace.
+    let mut dir = std::env::current_dir().ok()?;
+    for _ in 0..5 {
+        let candidate = dir.join(".mgmt-key.local");
+        if candidate.exists() {
+            let raw = std::fs::read_to_string(&candidate).ok()?;
+            return parse_hex_key(raw.trim());
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
 }
 
 /// Last boot epoch seen in a kernel telemetry packet. Zero means we
