@@ -305,6 +305,14 @@ impl DynamicRules {
         if pattern.len() > 32 {
             return Err(DynRulesError::TooLong);
         }
+        // Dedup: without this an authenticated attacker can spam the
+        // same pattern 8 times and wedge the table against further
+        // legitimate signatures.
+        for i in 0..self.count {
+            if self.lengths[i] == pattern.len() && &self.patterns[i][..pattern.len()] == pattern {
+                return Ok(());
+            }
+        }
         if self.count >= 8 {
             return Err(DynRulesError::Full);
         }

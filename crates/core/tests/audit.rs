@@ -403,6 +403,30 @@ fn dynamic_rules_overflow_is_signalled() {
     );
 }
 
+/// `DynamicRules::add` had no dedup, so an authenticated attacker
+/// could send `AddDpiPattern(X)` 8 times and fill every slot with
+/// duplicates of the same signature, wedging the 8-slot table
+/// against further legitimate patterns. The fix treats a duplicate
+/// add as a no-op so one logical pattern consumes one slot.
+#[test]
+fn dynamic_rules_dedups_duplicate_patterns() {
+    let mut rules = DynamicRules::new();
+    for _ in 0..8 {
+        assert_eq!(rules.add(b"EICAR"), Ok(()));
+    }
+    // One slot consumed by EICAR — 7 more distinct patterns still fit.
+    for i in 0..7u8 {
+        let pat = [b'a' + i; 4];
+        assert_eq!(
+            rules.add(&pat),
+            Ok(()),
+            "distinct pattern {i} must still fit after duplicates"
+        );
+    }
+    assert_eq!(rules.add(b"overflow"), Err(DynRulesError::Full));
+    assert!(rules.check(b"xxEICARxx"));
+}
+
 /// An empty pattern must be rejected at add-time. The check path calls
 /// `payload.windows(pat.len())`, and `slice::windows(0)` is defined to
 /// panic; storing a zero-length pattern turns the next data-plane
