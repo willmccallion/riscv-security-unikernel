@@ -151,6 +151,24 @@ static ENGINE: Singleton<SecurityEngine> = Singleton::new(SecurityEngine::empty(
 static MGMT_AUTH: Singleton<mgmt_auth::MgmtAuth> =
     Singleton::new(mgmt_auth::MgmtAuth::new(MGMT_KEY));
 
+/// Learned operator link-layer + IP address.
+///
+/// Populated on the first successful mgmt-auth. Alerts and telemetry
+/// are unicast to this address; before it is learned, they fall back
+/// to the broadcast destination so an operator-first-boot sequence
+/// still gets telemetry. Unicasting prevents every host on the L2
+/// segment from receiving every alert the kernel raises — a passive
+/// observer gets a probe-and-observe oracle ("did my crafted packet
+/// trip the heuristic?") without unicasting. L2 confidentiality
+/// against a promiscuous sniffer would additionally require
+/// encryption; unicast is the minimum operational hygiene.
+#[derive(Copy, Clone)]
+struct OperatorAddr {
+    mac: [u8; 6],
+    ip: [u8; 4],
+}
+static OPERATOR: Singleton<Option<OperatorAddr>> = Singleton::new(None);
+
 /// Kernel main entry point.
 ///
 /// Initializes all subsystems, prints boot information, and enters
@@ -423,6 +441,16 @@ pub extern "C" fn kmain() -> ! {
                 let protocol;
 
                 use sec_core::net::constants::{ethernet, ipv4};
+                // Snapshot the ethernet source MAC before `process_packet`
+                // takes a mutable borrow of `packet`; needed later to
+                // learn the operator's address on successful mgmt auth.
+                let mut src_mac = [0u8; 6];
+                if packet.len() >= ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE {
+                    src_mac.copy_from_slice(
+                        &packet[ethernet::SRC_MAC_OFFSET
+                            ..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
+                    );
+                }
                 if packet.len() >= ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE
                     && packet[ethernet::TYPE_OFFSET] == 0x08
                     && packet[ethernet::TYPE_OFFSET + 1] == 0x00
@@ -552,6 +580,10 @@ pub extern "C" fn kmain() -> ! {
                             if payload.len() > UDP_HEADER_LEN {
                                 let envelope = &payload[UDP_HEADER_LEN..];
                                 if let Some(body) = MGMT_AUTH.get().verify(envelope) {
+                                    *OPERATOR.get() = Some(OperatorAddr {
+                                        mac: src_mac,
+                                        ip: meta.src_ip,
+                                    });
                                     dispatch_mgmt(body, engine, now, &meta);
                                 } else {
                                     send_alert(&meta, AlertReason::MgmtAuthFail.as_u8());
@@ -721,8 +753,14 @@ fn send_udp_report(stats: &[u64; 10]) {
     /// Accommodates Ethernet header (14), IP header (20), UDP header (8),
     /// and statistics payload (64), with additional space for alignment.
     const TELEMETRY_PACKET_SIZE: usize = 150;
+    /// IPv4 broadcast fallback used before the operator address is learned.
+    const BROADCAST_IP: [u8; 4] = [192, 168, 100, 255];
+    let (dst_mac, dst_ip) = match *OPERATOR.get() {
+        Some(op) => (op.mac, op.ip),
+        None => (BROADCAST_MAC, BROADCAST_IP),
+    };
     let mut packet = [0u8; TELEMETRY_PACKET_SIZE];
-    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&BROADCAST_MAC);
+    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&dst_mac);
     packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
         .copy_from_slice(&MAC_ADDR);
     packet[ethernet::TYPE_OFFSET] = 0x08;
@@ -747,13 +785,8 @@ fn send_udp_report(stats: &[u64; 10]) {
     packet[IP_CHECKSUM_OFFSET] = 0x00;
     packet[IP_CHECKSUM_OFFSET + 1] = 0x00;
     packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR);
-    /// IPv4 broadcast address for the management network.
-    ///
-    /// Telemetry packets are broadcast to this address to ensure all
-    /// control plane instances receive the statistics data.
-    const BROADCAST_IP: [u8; 4] = [192, 168, 100, 255];
     packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-        .copy_from_slice(&BROADCAST_IP);
+        .copy_from_slice(&dst_ip);
 
     let csum = checksum(&packet[ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE]);
     packet[IP_CHECKSUM_OFFSET] = (csum >> 8) as u8;
@@ -818,18 +851,19 @@ fn send_alert(meta: &AlertMeta, reason: u8) {
     /// Accommodates Ethernet header (14), IP header (20), UDP header (8),
     /// and the fixed-size alert metadata body.
     const ALERT_PACKET_SIZE: usize = 64;
-    /// IPv4 broadcast address for the management network.
-    ///
-    /// Alert packets are broadcast to this address to ensure all
-    /// control plane instances receive security event notifications.
+    /// IPv4 broadcast fallback used before the operator address is learned.
     const BROADCAST_IP: [u8; 4] = [192, 168, 100, 255];
     /// Source port for alert UDP packets.
     ///
     /// Arbitrary port number used as the source port when sending
     /// security alerts. The destination port is `MANAGEMENT_PORT`.
     const UDP_SRC_PORT: u16 = 0x22B8;
+    let (dst_mac, dst_ip) = match *OPERATOR.get() {
+        Some(op) => (op.mac, op.ip),
+        None => (BROADCAST_MAC, BROADCAST_IP),
+    };
     let mut packet = [0u8; ALERT_PACKET_SIZE];
-    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&BROADCAST_MAC);
+    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&dst_mac);
     packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
         .copy_from_slice(&MAC_ADDR);
     packet[ethernet::TYPE_OFFSET] = 0x08;
@@ -852,7 +886,7 @@ fn send_alert(meta: &AlertMeta, reason: u8) {
     packet[IP_CHECKSUM_OFFSET + 1] = 0x00;
     packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR);
     packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-        .copy_from_slice(&BROADCAST_IP);
+        .copy_from_slice(&dst_ip);
 
     /// Offset to UDP header within the packet.
     ///
