@@ -109,7 +109,7 @@ fn bench_vm_execute(c: &mut Criterion) {
     let prog = udp_drop_program();
     c.bench_function("vm_execute_6_instructions", |b| {
         b.iter(|| {
-            black_box(vm_instance.execute(black_box(&prog), black_box(CLEAN_PAYLOAD)));
+            let _ = black_box(vm_instance.execute(black_box(&prog), black_box(CLEAN_PAYLOAD)));
         });
     });
 }

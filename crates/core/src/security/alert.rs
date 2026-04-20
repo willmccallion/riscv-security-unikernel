@@ -36,6 +36,16 @@ pub enum AlertReason {
     /// would believe their pattern was loaded when it was silently
     /// discarded.
     MgmtRejected = 10,
+    /// The installed BPF program burned its per-packet cycle budget
+    /// without reaching a Ret instruction. The packet is dropped; the
+    /// alert gives the operator a signal that the currently-loaded
+    /// program is likely adversarial or buggy.
+    BpfTimeout = 11,
+    /// The installed BPF program executed a `Ret` whose immediate was
+    /// neither 0 (drop) nor 1 (pass). The packet is dropped rather
+    /// than silently passed, so future action-code extensions cannot
+    /// be pre-poisoned by programs uploaded before the extension.
+    BpfInvalidAction = 12,
 }
 
 impl AlertReason {
@@ -68,6 +78,8 @@ impl AlertReason {
             8 => Some(Self::MgmtAuthFail),
             9 => Some(Self::BpfReject),
             10 => Some(Self::MgmtRejected),
+            11 => Some(Self::BpfTimeout),
+            12 => Some(Self::BpfInvalidAction),
             _ => None,
         }
     }

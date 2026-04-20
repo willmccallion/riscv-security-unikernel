@@ -27,7 +27,9 @@ use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::FlowTable;
 use sec_core::security::heuristic::HeuristicEngine;
 use sec_core::security::mgmt_auth::{MgmtAuth, seal};
-use sec_core::security::vm::{Instruction, VM, VmError, validate as validate_vm};
+use sec_core::security::vm::{
+    Instruction, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
+};
 
 /// Captures every frame the stack hands to its sink so tests can
 /// inspect what was actually sent.
@@ -514,7 +516,7 @@ fn vm_rejects_out_of_range_register_index() {
     let mut vm = VM::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        vm.execute(&prog, &[0u8; 64]);
+        let _ = vm.execute(&prog, &[0u8; 64]);
     }));
 
     assert!(
@@ -544,13 +546,51 @@ fn vm_rejects_out_of_range_jump_target() {
     let mut vm = VM::new();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        vm.execute(&prog, &[0u8; 64]);
+        let _ = vm.execute(&prog, &[0u8; 64]);
     }));
 
     assert!(
         result.is_ok(),
         "VM panicked on a jump with an out-of-range target"
     );
+}
+
+/// A one-instruction infinite loop (`Jmp 0`) passes `validate` but must
+/// trip the cycle budget and surface `Timeout` to the caller rather
+/// than silently returning pass. The old contract defaulted to `1`
+/// (pass) on cycle exhaustion, which let an authenticated attacker
+/// upload a program that taxed every packet ~1000× without any alert.
+#[test]
+fn vm_reports_timeout_on_infinite_loop() {
+    let prog = [Instruction::new(0x0A, 0, 0, 0)];
+    assert!(validate_vm(&prog).is_ok(), "Jmp 0 must pass validation");
+    let mut vm = VM::new();
+    assert_eq!(vm.execute(&prog, &[0u8; 64]), Err(VmRuntimeError::Timeout));
+}
+
+/// `Ret` with an immediate that is not 0 (drop) or 1 (pass) must
+/// surface as `InvalidAction` rather than being coerced to pass. The
+/// old caller treated every non-zero value as pass, so a program
+/// ending in `Ret 0xDEADBEEF` silently passed and any future action-
+/// code extension would silently mis-interpret it.
+#[test]
+fn vm_reports_invalid_action_on_unknown_ret_immediate() {
+    let prog = [Instruction::new(0x0D, 0, 0, 0xDEAD_BEEF)];
+    let mut vm = VM::new();
+    assert_eq!(
+        vm.execute(&prog, &[0u8; 64]),
+        Err(VmRuntimeError::InvalidAction(0xDEAD_BEEF))
+    );
+}
+
+/// Ret 0 → Drop, Ret 1 → Pass, round-trip both.
+#[test]
+fn vm_returns_typed_actions_for_valid_ret_immediates() {
+    let drop_prog = [Instruction::new(0x0D, 0, 0, 0)];
+    let pass_prog = [Instruction::new(0x0D, 0, 0, 1)];
+    let mut vm = VM::new();
+    assert_eq!(vm.execute(&drop_prog, &[0u8; 64]), Ok(VmAction::Drop));
+    assert_eq!(vm.execute(&pass_prog, &[0u8; 64]), Ok(VmAction::Pass));
 }
 
 /// Once the penalty box is full, every additional `ban` call must not

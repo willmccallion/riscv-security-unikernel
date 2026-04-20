@@ -509,6 +509,14 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[MGMT REJECT] Mgmt command dropped (table full) from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
         ),
+        Some(AlertReason::BpfTimeout) => (
+            format!("[BPF TIMEOUT] Installed program hit cycle budget from {ip}"),
+            egui::Color32::from_rgb(255, 80, 0),
+        ),
+        Some(AlertReason::BpfInvalidAction) => (
+            format!("[BPF INVALID] Installed program returned unknown action from {ip}"),
+            egui::Color32::from_rgb(255, 80, 0),
+        ),
         None => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };
 

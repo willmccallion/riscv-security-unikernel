@@ -501,10 +501,18 @@ pub extern "C" fn kmain() -> ! {
 
                 if engine.bpf_len > 0 {
                     let prog = &engine.bpf_prog[0..engine.bpf_len];
-                    let result = engine.vm.execute(prog, packet);
-                    if result == 0 {
+                    use sec_core::security::vm::{VmAction, VmRuntimeError};
+                    let drop_reason = match engine.vm.execute(prog, packet) {
+                        Ok(VmAction::Pass) => None,
+                        Ok(VmAction::Drop) => Some(AlertReason::Ebpf),
+                        Err(VmRuntimeError::Timeout) => Some(AlertReason::BpfTimeout),
+                        Err(VmRuntimeError::InvalidAction(_)) => {
+                            Some(AlertReason::BpfInvalidAction)
+                        }
+                    };
+                    if let Some(reason) = drop_reason {
                         stats[4] += 1;
-                        send_alert(&meta, AlertReason::Ebpf.as_u8());
+                        send_alert(&meta, reason.as_u8());
                         NetDevice::recycle_rx_buffer();
                         continue;
                     }

@@ -153,6 +153,46 @@ impl Instruction {
     }
 }
 
+/// What a program wants the caller to do with the current packet.
+///
+/// Exists so the caller is not matching on a raw integer. The old
+/// contract was "u64; 0 means drop, anything else means pass" — which
+/// meant (a) `Ret imm=0xDEADBEEF` was silently treated as pass, and
+/// (b) the caller had no way to distinguish "program said pass" from
+/// "program forgot to Ret and fell off the end". A two-variant enum
+/// makes both cases explicit, and anything outside those variants is
+/// a [`VmRuntimeError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmAction {
+    /// Drop the packet and raise the eBPF alert.
+    Drop,
+    /// Allow the packet to continue through the pipeline.
+    Pass,
+}
+
+/// Runtime failures raised by [`VM::execute`].
+///
+/// Distinct from [`VmError`], which covers upload-time validation.
+/// Returning a dedicated error type (rather than a sentinel `u64`)
+/// forces every caller to handle each failure mode explicitly, so an
+/// attacker who installs a one-instruction infinite loop (`Jmp 0`) or
+/// returns a garbage action code cannot rely on a forgotten branch
+/// silently degrading to "pass".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmRuntimeError {
+    /// The program burned through `MAX_CYCLES` without reaching a
+    /// `Ret`. The packet must be dropped and an alert raised.
+    Timeout,
+    /// The program executed a `Ret` with an immediate that did not
+    /// match any defined [`VmAction`]. Callers must drop-and-alert
+    /// rather than assuming pass; the doc-comment on `execute` used to
+    /// imply a richer protocol (the `imm` could carry a custom action
+    /// code), and any future extension that reads those codes would
+    /// silently mis-interpret programs uploaded before the extension
+    /// if this case were treated as pass today.
+    InvalidAction(u64),
+}
+
 /// Virtual machine for executing packet filter programs.
 ///
 /// Maintains 16 general-purpose registers, a program counter,
@@ -196,10 +236,20 @@ impl VM {
     ///
     /// # Returns
     ///
-    /// 0 if packet should be dropped, 1 if packet should pass,
-    /// or other action codes as specified by Ret instructions
+    /// `Ok(VmAction::Drop | Pass)` for the two valid outcomes of a
+    /// `Ret` instruction (immediate 0 or 1), or `Ok(VmAction::Pass)` if
+    /// the program fell off the end without returning (preserves the
+    /// historical default for well-formed but Ret-less programs).
+    /// `Err(VmRuntimeError::Timeout)` if the program burns through
+    /// `MAX_CYCLES`; `Err(VmRuntimeError::InvalidAction(n))` if a `Ret`
+    /// carried any other immediate. Callers must treat both errors as
+    /// drop + alert.
     #[inline(always)]
-    pub fn execute(&mut self, program: &[Instruction], packet: &[u8]) -> u64 {
+    pub fn execute(
+        &mut self,
+        program: &[Instruction],
+        packet: &[u8],
+    ) -> Result<VmAction, VmRuntimeError> {
         self.pc = 0;
         self.regs = [0; 16];
         self.flag = false;
@@ -273,11 +323,22 @@ impl VM {
                     self.pc = inst.imm as usize;
                 }
                 0x0D => {
-                    return inst.imm as u64;
+                    return match inst.imm as u64 {
+                        0 => Ok(VmAction::Drop),
+                        1 => Ok(VmAction::Pass),
+                        n => Err(VmRuntimeError::InvalidAction(n)),
+                    };
                 }
                 _ => {}
             }
         }
-        1
+        // Distinguish "program fell off the end without a Ret" (historically
+        // treated as pass) from "cycles exhausted" — the latter is the
+        // infinite-loop primitive an attacker wants, and must alert.
+        if cycles >= MAX_CYCLES {
+            Err(VmRuntimeError::Timeout)
+        } else {
+            Ok(VmAction::Pass)
+        }
     }
 }
