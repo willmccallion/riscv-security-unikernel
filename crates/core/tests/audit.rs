@@ -420,6 +420,38 @@ fn dynamic_rules_rejects_empty_pattern() {
     assert!(!rules.check(b"xxxxxx"));
 }
 
+/// `PenaltyBox::ban` used to allocate a fresh slot even when the IP
+/// was already banned, so an authenticated attacker sending
+/// `BanIp(X)` 16 times with the same X filled every slot with
+/// duplicates. The fix refreshes the existing entry in place so
+/// duplicates consume one slot regardless of how many times they
+/// arrive.
+#[test]
+fn penalty_box_dedups_duplicate_bans() {
+    let mut pbox = PenaltyBox::new();
+    let now = 1_000u64;
+    let dur = 10_000u64;
+    let target = [10, 0, 0, 1];
+
+    for _ in 0..16 {
+        pbox.ban(&target, dur, now);
+    }
+    assert!(pbox.is_banned(&target, now));
+
+    // With dedup, 15 slots are still free — 15 further distinct bans
+    // must all land without evicting `target`.
+    for i in 2..17u8 {
+        pbox.ban(&[10, 0, 0, i], dur, now);
+    }
+    assert!(
+        pbox.is_banned(&target, now),
+        "duplicate-ban dedup must not have evicted the first IP"
+    );
+    for i in 2..17u8 {
+        assert!(pbox.is_banned(&[10, 0, 0, i], now));
+    }
+}
+
 /// `FirewallState::block_port` used to return `()` and had no dedup,
 /// so an authenticated attacker could send `BlockPort(P)` 16 times
 /// and permanently wedge the table against further legitimate blocks

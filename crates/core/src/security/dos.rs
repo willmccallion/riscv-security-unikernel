@@ -68,22 +68,28 @@ impl PenaltyBox {
     /// * `now`      - Current time-source value.
     pub fn ban(&mut self, ip_bytes: &[u8], duration: u64, now: u64) {
         let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
+        let expiry = now + duration;
+
+        // Refresh an existing active ban for the same IP in place.
+        // Without this, an authenticated attacker could ban one IP
+        // 16 times and fill every slot with duplicates, diluting the
+        // table against CMS-driven bans on real heavy hitters.
+        for i in 0..16 {
+            if self.entries[i].ip == ip && self.entries[i].expiry >= now {
+                self.entries[i].expiry = expiry;
+                return;
+            }
+        }
 
         for i in 0..16 {
             if self.entries[i].expiry < now {
-                self.entries[i] = BanEntry {
-                    ip,
-                    expiry: now + duration,
-                };
+                self.entries[i] = BanEntry { ip, expiry };
                 return;
             }
         }
         let idx = self.next_evict;
         self.next_evict = (self.next_evict + 1) % 16;
-        self.entries[idx] = BanEntry {
-            ip,
-            expiry: now + duration,
-        };
+        self.entries[idx] = BanEntry { ip, expiry };
     }
 
     /// Checks if an IP address is currently banned.
