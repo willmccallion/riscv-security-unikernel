@@ -1,5 +1,6 @@
 //! Capturing from live interfaces.
 
+use super::command::Sandboxing;
 use super::net::{IpPrefix, LocalNetworks};
 use super::pipeline::{Monitor, Summary};
 use super::report;
@@ -15,7 +16,13 @@ const IDLE_WAIT_MS: i32 = 100;
 /// Captures on every interface in `interfaces`, receive-only and without
 /// privileges once the sockets are open, printing a summary every second.
 /// The interfaces' own networks, and `extra_local_networks`, are local.
-pub fn run(interfaces: &[String], duration: Option<Duration>, extra_local_networks: &[IpPrefix]) -> Result<()> {
+/// The process is confined as `sandboxing` says once everything is open.
+pub fn run(
+    interfaces: &[String],
+    duration: Option<Duration>,
+    extra_local_networks: &[IpPrefix],
+    sandboxing: Sandboxing,
+) -> Result<()> {
     let mut rings = interfaces
         .iter()
         .map(|name| RxRing::open(name, Outgoing::Include))
@@ -31,6 +38,7 @@ pub fn run(interfaces: &[String], duration: Option<Duration>, extra_local_networ
         println!("monitor: capturing on {name} ({:?}), receive-only, no privileges", ring.link_type());
     }
     report::print_local_networks(monitor.local_networks());
+    sandboxing.apply()?;
 
     let started = Instant::now();
     while duration.is_none_or(|d| started.elapsed() < d) {

@@ -4,6 +4,7 @@
 use super::config::MonitorConfig;
 use super::net::IpPrefix;
 use super::{live, replay};
+use crate::sandbox;
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,6 +30,37 @@ pub struct MonitorArgs {
     /// Stop live capture after this many seconds.
     #[arg(long, conflicts_with = "pcap")]
     pub duration_secs: Option<u64>,
+    /// Run without the Landlock and seccomp sandbox. Not recommended;
+    /// only for kernels without Landlock.
+    #[arg(long)]
+    pub no_sandbox: bool,
+}
+
+/// Whether the monitor confines itself before reading untrusted input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sandboxing {
+    /// Apply Landlock and seccomp after setup; refuse to run without them.
+    #[default]
+    Confine,
+    /// Run unconfined, as asked with `--no-sandbox`.
+    Unconfined,
+}
+
+impl Sandboxing {
+    /// Applies the sandbox, if asked, and says what is in force.
+    pub fn apply(self) -> Result<()> {
+        match self {
+            Self::Confine => {
+                let confinement = sandbox::confine()?;
+                println!(
+                    "monitor: sandboxed, no file, program or socket access (Landlock ABI v{}, seccomp)",
+                    confinement.landlock_abi
+                );
+            }
+            Self::Unconfined => println!("monitor: WARNING: running without the sandbox (--no-sandbox)"),
+        }
+        Ok(())
+    }
 }
 
 /// Where frames come from.
@@ -52,6 +84,8 @@ pub struct MonitorOptions {
     pub source: Source,
     /// Networks to treat as local besides a live interface's own.
     pub extra_local_networks: Vec<IpPrefix>,
+    /// Whether to confine the process before reading untrusted input.
+    pub sandboxing: Sandboxing,
 }
 
 impl MonitorOptions {
@@ -72,9 +106,11 @@ impl MonitorOptions {
         };
         let mut extra_local_networks = file.local_networks;
         extra_local_networks.extend(args.local_networks);
+        let sandboxing = if args.no_sandbox { Sandboxing::Unconfined } else { Sandboxing::Confine };
         Ok(Self {
             source,
             extra_local_networks,
+            sandboxing,
         })
     }
 }
@@ -87,8 +123,10 @@ pub fn run(args: MonitorArgs) -> Result<()> {
     };
     let options = MonitorOptions::resolve(args, file)?;
     match &options.source {
-        Source::Interfaces { names, duration } => live::run(names, *duration, &options.extra_local_networks),
-        Source::PcapFile(path) => replay::run(path, &options.extra_local_networks),
+        Source::Interfaces { names, duration } => {
+            live::run(names, *duration, &options.extra_local_networks, options.sandboxing)
+        }
+        Source::PcapFile(path) => replay::run(path, &options.extra_local_networks, options.sandboxing),
     }
 }
 

@@ -1,5 +1,6 @@
 //! Replaying a pcap capture file through the monitor.
 
+use super::command::Sandboxing;
 use super::net::{IpPrefix, LocalNetworks};
 use super::pcap::PcapReader;
 use super::pipeline::Monitor;
@@ -11,8 +12,9 @@ use std::io::BufReader;
 use std::path::Path;
 
 /// Replays `path` as fast as it can be read, using the file's timestamps,
-/// and prints a summary for every second of capture time.
-pub fn run(path: &Path, local_networks: &[IpPrefix]) -> Result<()> {
+/// and prints a summary for every second of capture time. The process is
+/// confined as `sandboxing` says once the file is open.
+pub fn run(path: &Path, local_networks: &[IpPrefix], sandboxing: Sandboxing) -> Result<()> {
     privileges::drop_all()?;
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut reader = PcapReader::new(BufReader::new(file)).with_context(|| format!("in {}", path.display()))?;
@@ -22,6 +24,7 @@ pub fn run(path: &Path, local_networks: &[IpPrefix]) -> Result<()> {
     let link = reader.link_type();
     let mut monitor = Monitor::new(LocalNetworks::new(local_networks.to_vec()), report::INTERVAL);
     report::print_local_networks(monitor.local_networks());
+    sandboxing.apply()?;
 
     let mut frame = Vec::new();
     while let Some(record) = reader.next_record(&mut frame).with_context(|| format!("in {}", path.display()))? {
