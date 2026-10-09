@@ -10,7 +10,7 @@ pub mod frame;
 pub mod mgmt;
 
 use anyhow::{Context, Result, bail};
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -213,14 +213,13 @@ fn spawn_serial_reader(
     serial: Arc<Mutex<String>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut line = Vec::new();
-        while reader.read_until(b'\n', &mut line).is_ok_and(|n| n > 0) {
-            let text = String::from_utf8_lossy(&line);
+        let mut stdout = stdout;
+        let mut chunk = [0u8; 4096];
+        while let Ok(n @ 1..) = stdout.read(&mut chunk) {
+            let text = String::from_utf8_lossy(&chunk[..n]);
             if let Ok(mut s) = serial.lock() {
                 s.push_str(&text);
             }
-            line.clear();
         }
     })
 }
