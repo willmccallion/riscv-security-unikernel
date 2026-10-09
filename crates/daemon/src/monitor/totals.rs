@@ -126,6 +126,7 @@ impl fmt::Display for Rates<'_> {
 }
 
 /// A bit rate with an SI prefix, e.g. `12.4 Mb`.
+#[derive(Debug, Clone, Copy)]
 pub struct SiBits(pub f64);
 
 impl fmt::Display for SiBits {

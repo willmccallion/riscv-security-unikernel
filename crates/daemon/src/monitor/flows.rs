@@ -267,7 +267,7 @@ impl FlowTable {
     }
 
     /// Flows currently tracked.
-    pub fn len(&self) -> usize {
+    pub fn active_count(&self) -> usize {
         self.flows.len()
     }
 
@@ -333,7 +333,7 @@ mod tests {
         assert!(!reply.opened && !reply.from_client);
         assert_eq!(reply.client.addr, ip("192.168.1.86"));
         assert_eq!((reply.server.port, reply.opening), (443, Opening::Seen));
-        assert_eq!(table.len(), 1);
+        assert_eq!(table.active_count(), 1);
     }
 
     #[test]
@@ -368,9 +368,9 @@ mod tests {
         let _ = table.observe(&udp("10.0.0.3", 40000, "9.9.9.9", 53), 60, at(0));
 
         table.expire(at(11));
-        let after_closed_timeout = table.len();
+        let after_closed_timeout = table.active_count();
         table.expire(at(121));
-        let after_udp_timeout = table.len();
+        let after_udp_timeout = table.active_count();
 
         assert_eq!(after_closed_timeout, 2);
         assert_eq!(after_udp_timeout, 1);
@@ -385,7 +385,7 @@ mod tests {
         let again = table.observe(&tcp("10.0.0.1", 40000, "1.1.1.1", 443, SYN), 60, at(2)).unwrap();
 
         assert!(again.opened);
-        assert_eq!(table.len(), 1);
+        assert_eq!(table.active_count(), 1);
     }
 
     #[test]

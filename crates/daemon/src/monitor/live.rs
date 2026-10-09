@@ -13,10 +13,12 @@ use std::time::{Duration, Instant};
 /// How long to wait for frames when every interface is quiet.
 const IDLE_WAIT_MS: i32 = 100;
 
-/// Captures on every interface in `interfaces`, receive-only and without
-/// privileges once the sockets are open, printing a summary every second.
-/// The interfaces' own networks, and `extra_local_networks`, are local.
-/// The process is confined as `sandboxing` says once everything is open.
+/// Captures on every interface in `interfaces`, printing a summary every
+/// second.
+///
+/// Capture is receive-only, and once the sockets are open the process
+/// drops its privileges and is confined as `sandboxing` says. The
+/// interfaces' own networks, and `extra_local_networks`, are local.
 pub fn run(
     interfaces: &[String],
     duration: Option<Duration>,

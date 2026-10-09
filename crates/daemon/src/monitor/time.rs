@@ -27,12 +27,14 @@ impl UnixNanos {
 
     /// The start of the `period`-long slot containing this moment, with
     /// slots aligned to the epoch.
+    #[must_use]
     pub const fn floor_to(self, period: Duration) -> Self {
         let period = period.as_nanos() as u64;
         if period == 0 { self } else { Self(self.0 - self.0 % period) }
     }
 
     /// This moment plus `duration`, saturating at the far future.
+    #[must_use]
     pub const fn saturating_add(self, duration: Duration) -> Self {
         Self(self.0.saturating_add(duration.as_nanos() as u64))
     }

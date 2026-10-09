@@ -8,14 +8,9 @@
 //! - `flood` sends synthetic traffic out of an interface, to load-test
 //!   `run` on the other end of a veth pair.
 
-mod af_packet;
 mod bench;
 mod clock;
 mod key;
-mod monitor;
-mod netif;
-mod privileges;
-mod sandbox;
 mod synth;
 
 /// The daemon's engine: a 65536 x 4 per-source sketch (512 KB), which
@@ -23,7 +18,8 @@ mod synth;
 /// sketch-lab study, and a 16384 x 4 per-subnet one (128 KB).
 pub type DaemonEngine = sec_core::engine::Engine<65_536, 4, 16_384, 4>;
 
-use af_packet::{Outgoing, RxRing, TxSocket};
+use security_daemon::af_packet::{Outgoing, RxRing, TxSocket};
+use security_daemon::{monitor, sandbox};
 use anyhow::{Context, Result};
 use bench::VerdictCounts;
 use clap::{Parser, Subcommand};

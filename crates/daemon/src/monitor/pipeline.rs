@@ -205,7 +205,7 @@ impl Monitor {
             totals: open.totals,
             hosts,
             hosts_omitted,
-            active_flows: self.flows.len(),
+            active_flows: self.flows.active_count(),
             untracked: self.flows.take_untracked() + self.hosts.take_untracked(),
         }
     }

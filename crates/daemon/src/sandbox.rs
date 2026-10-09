@@ -57,10 +57,11 @@ pub struct Confinement {
     pub landlock_abi: u32,
 }
 
-/// Confines this process for the rest of its life. Call once setup is
-/// done and before reading any untrusted input; the restrictions apply to
-/// the calling thread and anything it later starts, so call it before
-/// starting threads.
+/// Confines this process for the rest of its life.
+///
+/// Call once setup is done and before reading any untrusted input. The
+/// restrictions apply to the calling thread and anything it later starts,
+/// so call it before starting threads.
 pub fn confine() -> Result<Confinement> {
     // SAFETY: PR_SET_NO_NEW_PRIVS takes integer arguments only.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
@@ -263,11 +264,12 @@ const fn allow_unless_argument_has(call: libc::c_long, index: u32, bits: u32) ->
     ]
 }
 
-/// Confines this process one layer at a time, trying after each what it
-/// should prevent, so each layer is shown to work on its own: Landlock
-/// alone must refuse files and programs, and with seccomp added sockets
-/// and executable memory must be refused too. Fails if anything got
-/// through.
+/// Confines this process one layer at a time and tries what each layer
+/// should prevent.
+///
+/// Landlock alone must refuse files and programs; with seccomp added,
+/// sockets and executable memory must be refused too. Fails if anything
+/// got through.
 pub fn check() -> Result<()> {
     // SAFETY: PR_SET_NO_NEW_PRIVS takes integer arguments only.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
