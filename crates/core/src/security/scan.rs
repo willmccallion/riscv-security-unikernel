@@ -164,22 +164,23 @@ mod tests {
 
     #[test]
     fn a_new_window_forgets_progress() {
+        let per_window = PORT_SCAN_CONFIRM_PORTS as u16;
         let mut detector = PortScanDetector::new([3; 16]);
         let source = [10, 0, 0, 9];
-        assert_eq!(scan(&mut detector, source, 1..60), None);
+        assert_eq!(scan(&mut detector, source, 0..per_window), None);
 
         for _ in 0..PORT_SCAN_WINDOW_INTERVALS {
             detector.end_interval();
         }
 
-        assert_eq!(scan(&mut detector, source, 60..120), None, "60 + 60 ports split across windows");
+        assert_eq!(scan(&mut detector, source, per_window..2 * per_window), None);
     }
 
     #[test]
     fn eviction_spares_the_suspect_closest_to_confirmation() {
         let mut detector = PortScanDetector::new([3; 16]);
         detector.suspects[0] = Some(Suspect {
-            seen: 50,
+            seen: PORT_SCAN_CONFIRM_PORTS - 1,
             ..Suspect::new([9, 9, 9, 9], 1)
         });
         for i in 1..PORT_SCAN_CANDIDATES {

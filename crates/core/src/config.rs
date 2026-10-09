@@ -53,10 +53,11 @@ pub const PORT_SCAN_REGISTERS_PER_SOURCE: usize = 32;
 pub const PORT_SCAN_NOMINATE_PORTS: f64 = 24.0;
 
 /// Distinct ports a suspect must try after its nomination, counted
-/// exactly, to be banned as a scanner.
-pub const PORT_SCAN_CONFIRM_PORTS: usize = 64;
+/// exactly, to be banned as a scanner; with the ports before nomination,
+/// a scan is caught at about 64 ports in all.
+pub const PORT_SCAN_CONFIRM_PORTS: usize = 40;
 
-/// Suspects tracked exactly at once (128 bytes each).
+/// Suspects tracked exactly at once (two bytes per confirming port each).
 pub const PORT_SCAN_CANDIDATES: usize = 8;
 
 /// Detection intervals per port-scan window (five seconds).
