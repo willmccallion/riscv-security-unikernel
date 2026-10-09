@@ -46,6 +46,11 @@ pub struct Kernel {
 impl Kernel {
     /// Boots `kernel_elf` and waits until its packet loop is running.
     pub fn boot(kernel_elf: &Path) -> Result<Self> {
+        Self::boot_with(kernel_elf, &[])
+    }
+
+    /// Like [`Self::boot`], passing `extra_args` through to QEMU.
+    pub fn boot_with(kernel_elf: &Path, extra_args: &[&str]) -> Result<Self> {
         let workdir = unique_workdir()?;
         let qemu_endpoint = workdir.join("qemu.sock");
         let host_endpoint = workdir.join("host.sock");
@@ -66,6 +71,7 @@ impl Kernel {
             .args(["-netdev", &netdev, "-device", "virtio-net-device,netdev=n0"])
             .args(["-object", "rng-random,id=rng0,filename=/dev/urandom"])
             .args(["-device", "virtio-rng-device,rng=rng0"])
+            .args(extra_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
