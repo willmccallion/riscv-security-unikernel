@@ -660,8 +660,9 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, meta: &Aler
                 if body.len() >= upload_bpf::INSTR_OFFSET + (count * upload_bpf::INSTR_SIZE)
                     && count <= upload_bpf::MAX_INSTR_COUNT
                 {
+                    let mut staged = [vm::Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE];
                     let mut cursor = upload_bpf::INSTR_OFFSET;
-                    for i in 0..count {
+                    for slot in staged.iter_mut().take(count) {
                         let op = body[cursor];
                         let ra = body[cursor + 1];
                         let rb = body[cursor + 2];
@@ -669,14 +670,13 @@ fn dispatch_mgmt(body: &[u8], engine: &mut SecurityEngine, now: u64, meta: &Aler
                             | (body[cursor + 4] as u32) << 16
                             | (body[cursor + 5] as u32) << 8
                             | (body[cursor + 6] as u32);
-                        engine.bpf_prog[i] = vm::Instruction::new(op, ra, rb, imm);
+                        *slot = vm::Instruction::new(op, ra, rb, imm);
                         cursor += upload_bpf::INSTR_SIZE;
                     }
-                    // Reject programs with out-of-range register indices or
-                    // jump targets before they can run on a real packet. The
-                    // previous program (if any) stays active, since `bpf_len`
-                    // and the slots beyond `count` are untouched.
-                    if vm::validate(&engine.bpf_prog[..count]).is_ok() {
+                    // Decode into a staging buffer so a rejected upload
+                    // leaves the running program untouched.
+                    if vm::validate(&staged[..count]).is_ok() {
+                        engine.bpf_prog[..count].copy_from_slice(&staged[..count]);
                         engine.bpf_len = count;
                     } else {
                         send_alert(meta, AlertReason::BpfReject.as_u8());
