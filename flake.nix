@@ -54,6 +54,7 @@
             iproute2
             libcap
             tcpdump
+            (python3.withPackages (ps: [ ps.matplotlib ]))
           ];
 
           CARGO_NIGHTLY = "cargo-nightly";
