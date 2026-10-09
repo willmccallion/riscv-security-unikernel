@@ -36,18 +36,6 @@ pub const MGMT_TOKEN_COST_CYCLES: u64 = 10_000_000;
 /// UDP port number for telemetry broadcasts.
 pub const TELEMETRY_PORT: u16 = 8888;
 
-/// Starting address of the heap memory region.
-#[allow(dead_code)]
-pub const HEAP_START: usize = 0x8000_0000;
-
-/// Size of the heap memory region in bytes (64 KB).
-///
-/// This defines the total allocatable memory for dynamic allocations.
-/// The heap starts at `HEAP_START` and extends for this many bytes.
-/// Exceeding this limit will cause allocation failures.
-#[allow(dead_code)]
-pub const HEAP_SIZE: usize = 64 * 1024;
-
 /// Total system memory size in bytes (64 KB).
 ///
 /// Used for memory usage calculations and reporting.

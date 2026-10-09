@@ -11,8 +11,6 @@
 #![no_std]
 #![no_main]
 
-/// Slab allocator used during init only; the packet loop is heap-free.
-mod allocator;
 /// Hardware device drivers for network interfaces and peripherals.
 mod drivers;
 
@@ -30,7 +28,6 @@ mod time_riscv;
 /// M-mode trap handler: prints the cause and halts.
 mod trap;
 
-use crate::allocator::ALLOCATOR;
 use crate::drivers::net_device::NetDevice;
 use crate::drivers::virtio_rng::VirtioRng;
 use crate::net_sink::VirtioNetSink;
@@ -99,9 +96,6 @@ pub extern "C" fn kmain() -> ! {
     pmp::init();
     stack_guard::arm();
 
-    // SAFETY: ALLOCATOR is a mutable static only accessed here during single-threaded kernel
-    // init, before the packet loop begins.
-    unsafe { (*::core::ptr::addr_of_mut!(ALLOCATOR)).init() };
     NetDevice::init();
     let rng_present = VirtioRng::init();
 
