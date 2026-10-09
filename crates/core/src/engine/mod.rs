@@ -9,7 +9,7 @@
 mod report;
 
 use crate::config::{
-    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES,
+    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH,
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
     IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
     MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_TOKEN_COST_CYCLES, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
@@ -100,7 +100,7 @@ pub struct Engine {
     ac: dpi::AhoCorasick,
     dyn_rules: dpi::DynamicRules,
     fw: firewall::FirewallState,
-    cms: sketch::CountMinSketch,
+    cms: sketch::CountMinSketch<CMS_WIDTH, CMS_DEPTH>,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
     mgmt_limiter: dos::TokenBucket,

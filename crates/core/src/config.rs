@@ -16,6 +16,12 @@ pub const IP_ADDR: [u8; 4] = [192, 168, 100, 2];
 /// 100k packets per second on a 1 GHz cycle counter.
 pub const RATE_LIMIT_TOKEN_COST_CYCLES: u64 = 10_000;
 
+/// Columns per row of the heavy-hitter Count-Min Sketch.
+pub const CMS_WIDTH: usize = 128;
+
+/// Rows (independent hashes) of the heavy-hitter Count-Min Sketch.
+pub const CMS_DEPTH: usize = 4;
+
 /// Threshold for heavy hitter detection in the Count-Min Sketch.
 ///
 /// IPs exceeding this packet count within a measurement window

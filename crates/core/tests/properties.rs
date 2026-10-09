@@ -102,7 +102,7 @@ proptest! {
         ),
         repeats in 1u16..200,
     ) {
-        let mut cms = CountMinSketch::new([0; 16]);
+        let mut cms = CountMinSketch::<128, 4>::new([0; 16]);
         // Interleave the target inserts with noise inserts in a fixed
         // pattern. The order can change the *exact* counter values but
         // never the lower bound.
