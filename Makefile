@@ -11,6 +11,10 @@ NS_COUNT ?= 200
 
 RAM_LIMIT := 65536
 
+# rustup users get nightly via `+nightly`; the Nix dev shell sets
+# CARGO_NIGHTLY=cargo-nightly since it has no rustup proxy.
+CARGO_NIGHTLY ?= cargo +nightly
+
 .PHONY: all kernel gui daemon run setup_net setup_net_many teardown_net_many \
         bench check-size clean miri dev-key \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build
@@ -190,7 +194,7 @@ check-size: kernel
 # every unsafe block we ship.
 miri:
 	@echo "[*] Running Miri on sec-core..."
-	@MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test -p sec-core
+	@MIRIFLAGS=-Zmiri-disable-isolation $(CARGO_NIGHTLY) miri test -p sec-core
 
 # cargo-fuzz harnesses for the parsers and stateful primitives that take
 # attacker-controlled bytes. Each target runs until interrupted; pass
@@ -201,19 +205,19 @@ ARGS ?=
 
 fuzz-build:
 	@echo "[*] Compiling all fuzz targets..."
-	@cd $(FUZZ_DIR) && cargo +nightly fuzz build
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz build
 
 fuzz-process-packet:
-	@cd $(FUZZ_DIR) && cargo +nightly fuzz run process_packet $(ARGS)
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run process_packet $(ARGS)
 
 fuzz-mgmt-auth:
-	@cd $(FUZZ_DIR) && cargo +nightly fuzz run mgmt_auth_verify $(ARGS)
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run mgmt_auth_verify $(ARGS)
 
 fuzz-vm:
-	@cd $(FUZZ_DIR) && cargo +nightly fuzz run vm_execute $(ARGS)
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run vm_execute $(ARGS)
 
 fuzz-ahocorasick:
-	@cd $(FUZZ_DIR) && cargo +nightly fuzz run ahocorasick_scan $(ARGS)
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run ahocorasick_scan $(ARGS)
 
 clean:
 	@cargo clean
