@@ -508,6 +508,12 @@ impl AegisApp {
                             ui.label(format!("{} bytes", log.packet_len));
                             ui.end_row();
 
+                            if let Some(measured) = log.measured {
+                                ui.label("Measured:");
+                                ui.label(format!("{measured}"));
+                                ui.end_row();
+                            }
+
                             ui.label("Reason:");
                             ui.colored_label(log.color, &log.msg);
                             ui.end_row();
@@ -739,6 +745,7 @@ impl AegisApp {
                             dst_port: 0,
                             protocol: 0,
                             packet_len: 0,
+                            measured: None,
                             msg: "eBPF: Compilation Failed".to_string(),
                             color: egui::Color32::RED,
                         };

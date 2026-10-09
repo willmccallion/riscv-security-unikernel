@@ -113,8 +113,14 @@ pub mod alert_packet {
     pub const PROTOCOL_OFFSET: usize = 14;
     /// Offset to packet length (big-endian u16, saturated).
     pub const PACKET_LEN_OFFSET: usize = 15;
+    /// Offset to the prefix length of `SRC_IP`: 32 for a single address,
+    /// shorter when the alert concerns a whole subnet.
+    pub const PREFIX_LEN_OFFSET: usize = 17;
+    /// Offset to a detector's measurement (big-endian u32), such as a
+    /// subnet's packet rate or a source's distinct ports; 0 if none.
+    pub const VALUE_OFFSET: usize = 18;
     /// Total bytes of alert body on the wire.
-    pub const ALERT_BODY_LEN: usize = 17;
+    pub const ALERT_BODY_LEN: usize = 22;
 }
 
 /// Fixed-size metadata included in every security alert.
@@ -136,6 +142,10 @@ pub struct AlertMeta {
     pub protocol: u8,
     /// Total packet length in bytes, saturated to `u16::MAX`.
     pub packet_len: u16,
+    /// Prefix length of `src_ip`: 32 for a single address.
+    pub prefix_len: u8,
+    /// A detector's measurement backing the alert; 0 if none.
+    pub value: u32,
 }
 
 impl AlertMeta {
@@ -149,6 +159,8 @@ impl AlertMeta {
             dst_port: 0,
             protocol: 0,
             packet_len: 0,
+            prefix_len: 32,
+            value: 0,
         }
     }
 }

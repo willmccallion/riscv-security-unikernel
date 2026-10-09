@@ -437,6 +437,7 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             dst_port: 0,
             protocol: 0,
             packet_len: data.len().min(u16::MAX as usize) as u16,
+            measured: None,
             msg: format!("[MALFORMED] short alert packet ({} bytes)", data.len()),
             color: egui::Color32::from_rgb(255, 80, 0),
         };
@@ -444,10 +445,18 @@ fn parse_alert(data: &[u8]) -> LogEntry {
     let reason_byte = data[alert_packet::REASON_OFFSET];
     let src_ip_bytes = &data[alert_packet::SRC_IP_OFFSET
         ..alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE];
-    let ip = format!(
-        "{}.{}.{}.{}",
-        src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
-    );
+    let prefix_len = data[alert_packet::PREFIX_LEN_OFFSET];
+    let ip = if prefix_len < 32 {
+        format!(
+            "{}.{}.{}.{}/{prefix_len}",
+            src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
+        )
+    } else {
+        format!(
+            "{}.{}.{}.{}",
+            src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
+        )
+    };
     let dst_ip_bytes = &data[alert_packet::DST_IP_OFFSET
         ..alert_packet::DST_IP_OFFSET + alert_packet::SRC_IP_SIZE];
     let dst_ip = format!(
@@ -467,6 +476,8 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         data[alert_packet::PACKET_LEN_OFFSET],
         data[alert_packet::PACKET_LEN_OFFSET + 1],
     ]);
+    let value = &data[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4];
+    let measured = Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]])).filter(|&v| v != 0);
 
     let (msg, color) = match AlertReason::from_u8(reason_byte) {
         Some(AlertReason::Ddos) => (
@@ -520,6 +531,7 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         dst_port,
         protocol,
         packet_len,
+        measured,
         msg,
         color,
     }
@@ -569,6 +581,7 @@ fn ack_entry(ack: Ack) -> LogEntry {
         dst_port: 0,
         protocol: 0,
         packet_len: 0,
+        measured: None,
         msg: format!("[MGMT] #{} {command}: {outcome}", ack.seq),
         color,
     }
@@ -609,6 +622,7 @@ fn manual_ban_entry(ip: std::net::Ipv4Addr) -> LogEntry {
         dst_port: 0,
         protocol: 0,
         packet_len: 0,
+        measured: None,
         msg: format!("MANUAL BAN: {ip}"),
         color: egui::Color32::from_rgb(255, 0, 255),
     }
@@ -790,7 +804,21 @@ mod tests {
         data[alert_packet::PROTOCOL_OFFSET] = 6;
         data[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
             .copy_from_slice(&512u16.to_be_bytes());
+        data[alert_packet::PREFIX_LEN_OFFSET] = 32;
         data
+    }
+
+    #[test]
+    fn alert_parser_shows_subnet_prefixes_and_measurements() {
+        let mut data = make_alert(AlertReason::Ddos.as_u8());
+        data[alert_packet::PREFIX_LEN_OFFSET] = 24;
+        data[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4]
+            .copy_from_slice(&4_200u32.to_be_bytes());
+
+        let entry = parse_alert(&data);
+
+        assert_eq!(entry.src_ip, "192.168.1.50/24");
+        assert_eq!(entry.measured, Some(4_200));
     }
 
     #[test]

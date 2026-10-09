@@ -36,6 +36,8 @@ pub struct LogEntry {
     pub protocol: u8,
     /// Total observed packet length in bytes (saturated to `u16::MAX`).
     pub packet_len: u16,
+    /// A detector's measurement behind the alert, if it carried one.
+    pub measured: Option<u32>,
     /// Human-readable description of the security event.
     pub msg: String,
     /// Color code for UI display based on event severity.

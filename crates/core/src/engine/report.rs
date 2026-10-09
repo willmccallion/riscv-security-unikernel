@@ -55,6 +55,8 @@ pub fn alert_body(meta: &AlertMeta, reason: AlertReason) -> [u8; alert_packet::A
     body[alert_packet::PROTOCOL_OFFSET] = meta.protocol;
     body[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
         .copy_from_slice(&meta.packet_len.to_be_bytes());
+    body[alert_packet::PREFIX_LEN_OFFSET] = meta.prefix_len;
+    body[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4].copy_from_slice(&meta.value.to_be_bytes());
     body
 }
 
