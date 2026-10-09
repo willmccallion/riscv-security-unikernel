@@ -3119,6 +3119,7 @@ dependencies = [
  "clap",
  "hkdf",
  "libc",
+ "monitor-proto",
  "rand 0.8.5",
  "sec-core",
  "serde",

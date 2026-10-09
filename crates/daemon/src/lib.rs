@@ -6,3 +6,4 @@ pub mod monitor;
 mod netif;
 mod privileges;
 pub mod sandbox;
+mod viewer_socket;

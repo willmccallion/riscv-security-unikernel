@@ -7,6 +7,7 @@ pub mod decode;
 pub mod dns;
 pub mod flows;
 pub mod hosts;
+pub mod link;
 pub mod live;
 pub mod names;
 pub mod net;
