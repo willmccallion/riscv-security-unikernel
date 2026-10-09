@@ -57,19 +57,34 @@ pub struct Confinement {
     pub landlock_abi: u32,
 }
 
+/// Which descriptors a confined process may write to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteAccess {
+    /// Only stdout and stderr.
+    StdioOnly,
+    /// Stdout, stderr, and every descriptor numbered `fds_from` or above,
+    /// where viewers' connections are; accepting connections is allowed
+    /// too. Everything below must be safe to leave unwritable, in
+    /// particular every capture socket, where a write would transmit.
+    StdioAndViewers {
+        /// The lowest descriptor number writes are allowed to.
+        fds_from: u32,
+    },
+}
+
 /// Confines this process for the rest of its life.
 ///
 /// Call once setup is done and before reading any untrusted input. The
 /// restrictions apply to the calling thread and anything it later starts,
 /// so call it before starting threads.
-pub fn confine() -> Result<Confinement> {
+pub fn confine(writes: WriteAccess) -> Result<Confinement> {
     // SAFETY: PR_SET_NO_NEW_PRIVS takes integer arguments only.
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         bail!("prctl(PR_SET_NO_NEW_PRIVS): {}", io::Error::last_os_error());
     }
     let landlock_abi = landlock_abi()?;
     restrict_with_landlock(landlock_abi)?;
-    install_seccomp_filter(&seccomp_filter())?;
+    install_seccomp_filter(&seccomp_filter(writes))?;
     Ok(Confinement { landlock_abi })
 }
 
@@ -177,9 +192,9 @@ fn unrestricted_syscalls() -> Vec<libc::c_long> {
 }
 
 /// The seccomp program: refuse other architectures outright, allow the
-/// unrestricted calls, allow `write` and `writev` only to stdout and
-/// stderr, allow `mmap` only without `PROT_EXEC`, refuse everything else.
-fn seccomp_filter() -> Vec<libc::sock_filter> {
+/// unrestricted calls, allow `write` and `writev` only where `writes`
+/// says, allow `mmap` only without `PROT_EXEC`, refuse everything else.
+fn seccomp_filter(writes: WriteAccess) -> Vec<libc::sock_filter> {
     let mut filter = vec![
         load(ARCH_OFFSET),
         jump_if_equal(AUDIT_ARCH, 1, 0),
@@ -189,8 +204,15 @@ fn seccomp_filter() -> Vec<libc::sock_filter> {
     for call in unrestricted_syscalls() {
         filter.extend(allow(call));
     }
-    filter.extend(allow_if_argument_in(libc::SYS_write, 0, &[STDOUT, STDERR]));
-    filter.extend(allow_if_argument_in(libc::SYS_writev, 0, &[STDOUT, STDERR]));
+    for call in [libc::SYS_write, libc::SYS_writev] {
+        match writes {
+            WriteAccess::StdioOnly => filter.extend(allow_if_argument_in(call, 0, &[STDOUT, STDERR])),
+            WriteAccess::StdioAndViewers { fds_from } => filter.extend(allow_stdio_or_from(call, fds_from)),
+        }
+    }
+    if let WriteAccess::StdioAndViewers { .. } = writes {
+        filter.extend(allow(libc::SYS_accept4));
+    }
     filter.extend(allow_unless_argument_has(libc::SYS_mmap, 2, PROT_EXEC));
     filter.push(ret(DENY));
     filter
@@ -215,6 +237,15 @@ const fn statement(code: u16, k: u32) -> libc::sock_filter {
 const fn jump_if_equal(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
     libc::sock_filter {
         code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+        jt,
+        jf,
+        k,
+    }
+}
+
+const fn jump_if_at_least(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
+    libc::sock_filter {
+        code: (libc::BPF_JMP | libc::BPF_JGE | libc::BPF_K) as u16,
         jt,
         jf,
         k,
@@ -253,6 +284,20 @@ fn allow_if_argument_in(call: libc::c_long, index: u32, values: &[u32]) -> Vec<l
     block
 }
 
+/// Allows `call` when its first argument, a descriptor, is stdout,
+/// stderr, or numbered `fds_from` or above; refuses it otherwise.
+const fn allow_stdio_or_from(call: libc::c_long, fds_from: u32) -> [libc::sock_filter; 7] {
+    [
+        jump_if_equal(syscall_number(call), 0, 6),
+        load(argument_offset(0)),
+        jump_if_equal(STDOUT, 3, 0),
+        jump_if_equal(STDERR, 2, 0),
+        jump_if_at_least(fds_from, 1, 0),
+        ret(DENY),
+        ret(ALLOW),
+    ]
+}
+
 /// Allows `call` unless argument `index` has any of `bits` set.
 const fn allow_unless_argument_has(call: libc::c_long, index: u32, bits: u32) -> [libc::sock_filter; 5] {
     [
@@ -282,7 +327,7 @@ pub fn check() -> Result<()> {
         ("read /etc/passwd", std::fs::read("/etc/passwd").map(drop)),
         ("run a program", std::process::Command::new("true").status().map(drop)),
     ]);
-    install_seccomp_filter(&seccomp_filter())?;
+    install_seccomp_filter(&seccomp_filter(WriteAccess::StdioOnly))?;
     println!("sandbox-check: seccomp filter added");
     allowed.extend(attempt(&[
         ("read /etc/passwd", std::fs::read("/etc/passwd").map(drop)),
@@ -375,6 +420,8 @@ mod tests {
                     accumulator == instruction.k
                 } else if code == libc::BPF_JMP | libc::BPF_JSET | libc::BPF_K {
                     accumulator & instruction.k != 0
+                } else if code == libc::BPF_JMP | libc::BPF_JGE | libc::BPF_K {
+                    accumulator >= instruction.k
                 } else {
                     panic!("unexpected instruction {code:#x}");
                 };
@@ -384,7 +431,12 @@ mod tests {
     }
 
     fn verdict(nr: libc::c_long, args: [u64; 6]) -> u32 {
-        evaluate(&seccomp_filter(), nr, AUDIT_ARCH, args)
+        evaluate(&seccomp_filter(WriteAccess::StdioOnly), nr, AUDIT_ARCH, args)
+    }
+
+    fn verdict_serving(nr: libc::c_long, args: [u64; 6]) -> u32 {
+        let writes = WriteAccess::StdioAndViewers { fds_from: 7 };
+        evaluate(&seccomp_filter(writes), nr, AUDIT_ARCH, args)
     }
 
     #[test]
@@ -400,6 +452,22 @@ mod tests {
         assert_eq!(verdict(libc::SYS_writev, [2, 0, 0, 0, 0, 0]), ALLOW);
         assert_eq!(verdict(libc::SYS_write, [3, 0, 0, 0, 0, 0]), DENY, "the capture socket");
         assert_eq!(verdict(libc::SYS_write, [0, 0, 0, 0, 0, 0]), DENY);
+    }
+
+    #[test]
+    fn serving_viewers_allows_writes_only_above_the_capture_sockets() {
+        assert_eq!(verdict_serving(libc::SYS_write, [1, 0, 0, 0, 0, 0]), ALLOW);
+        assert_eq!(verdict_serving(libc::SYS_write, [7, 0, 0, 0, 0, 0]), ALLOW);
+        assert_eq!(verdict_serving(libc::SYS_writev, [9, 0, 0, 0, 0, 0]), ALLOW);
+        assert_eq!(verdict_serving(libc::SYS_write, [3, 0, 0, 0, 0, 0]), DENY, "a capture socket");
+        assert_eq!(verdict_serving(libc::SYS_write, [6, 0, 0, 0, 0, 0]), DENY, "the highest capture socket");
+        assert_eq!(verdict_serving(libc::SYS_accept4, [8, 0, 0, 0, 0, 0]), ALLOW);
+        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 0, 0, 0, 0]), DENY);
+    }
+
+    #[test]
+    fn only_a_serving_monitor_may_accept_connections() {
+        assert_eq!(verdict(libc::SYS_accept4, [3, 0, 0, 0, 0, 0]), DENY);
     }
 
     #[test]
@@ -430,12 +498,12 @@ mod tests {
 
     #[test]
     fn another_architecture_is_killed() {
-        assert_eq!(evaluate(&seccomp_filter(), libc::SYS_read, AUDIT_ARCH ^ 1, [0; 6]), KILL);
+        assert_eq!(evaluate(&seccomp_filter(WriteAccess::StdioOnly), libc::SYS_read, AUDIT_ARCH ^ 1, [0; 6]), KILL);
     }
 
     #[test]
     fn every_jump_lands_inside_the_filter() {
-        let filter = seccomp_filter();
+        let filter = seccomp_filter(WriteAccess::StdioAndViewers { fds_from: 7 });
         let jumps = filter
             .iter()
             .enumerate()

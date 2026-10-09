@@ -1,6 +1,7 @@
 //! Replaying a pcap capture file through the monitor.
 
 use super::command::Sandboxing;
+use crate::sandbox::WriteAccess;
 use super::net::{IpPrefix, LocalNetworks};
 use super::pcap::PcapReader;
 use super::pipeline::Monitor;
@@ -24,7 +25,7 @@ pub fn run(path: &Path, local_networks: &[IpPrefix], sandboxing: Sandboxing, det
     let link = reader.link_type();
     let mut monitor = Monitor::new(LocalNetworks::new(local_networks.to_vec()), report::INTERVAL);
     report::print_local_networks(monitor.local_networks());
-    sandboxing.apply()?;
+    sandboxing.apply(WriteAccess::StdioOnly)?;
 
     let mut frame = Vec::new();
     while let Some(record) = reader.next_record(&mut frame).with_context(|| format!("in {}", path.display()))? {

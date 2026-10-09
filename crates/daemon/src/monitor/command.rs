@@ -5,7 +5,7 @@ use super::config::MonitorConfig;
 use super::net::IpPrefix;
 use super::report::Detail;
 use super::{live, replay};
-use crate::sandbox;
+use crate::sandbox::{self, WriteAccess};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -51,11 +51,12 @@ pub enum Sandboxing {
 }
 
 impl Sandboxing {
-    /// Applies the sandbox, if asked, and says what is in force.
-    pub fn apply(self) -> Result<()> {
+    /// Applies the sandbox, if asked, with `writes` as the descriptors it
+    /// may still write to, and says what is in force.
+    pub fn apply(self, writes: WriteAccess) -> Result<()> {
         match self {
             Self::Confine => {
-                let confinement = sandbox::confine()?;
+                let confinement = sandbox::confine(writes)?;
                 println!(
                     "monitor: sandboxed, no file, program or socket access (Landlock ABI v{}, seccomp)",
                     confinement.landlock_abi

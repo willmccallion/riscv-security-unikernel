@@ -1,6 +1,7 @@
 //! Capturing from live interfaces.
 
 use super::command::Sandboxing;
+use crate::sandbox::WriteAccess;
 use super::net::{IpPrefix, LocalNetworks};
 use super::pipeline::{Monitor, Summary};
 use super::report::{self, Detail};
@@ -41,7 +42,7 @@ pub fn run(
         println!("monitor: capturing on {name} ({:?}), receive-only, no privileges", ring.link_type());
     }
     report::print_local_networks(monitor.local_networks());
-    sandboxing.apply()?;
+    sandboxing.apply(WriteAccess::StdioOnly)?;
 
     let started = Instant::now();
     while duration.is_none_or(|d| started.elapsed() < d) {
