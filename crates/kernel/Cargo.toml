@@ -13,11 +13,10 @@ sec-core = { workspace = true }
 
 [features]
 # Enable the Zkr (RISC-V K extension) entropy source. Reads CSR `seed`
-# (0x015), which traps to the illegal-instruction handler on CPUs that
-# do not implement Zkr. The kernel currently has no trap handler, so
-# enabling this on a CPU without Zkr means a boot-time crash. Leave
-# off for QEMU `virt` (which traps Zkr) and turn on for SiFive U7/P
-# series, T-Head C9xx with the K option, etc.
+# (0x015), which raises an illegal-instruction trap on CPUs without Zkr;
+# the kernel then reports the trap and halts at boot. Leave off for QEMU
+# `virt` and turn on for SiFive U7/P series, T-Head C9xx with the K
+# option, etc.
 zkr = []
 
 [lints]

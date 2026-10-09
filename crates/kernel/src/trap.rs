@@ -1,12 +1,9 @@
 //! Machine-mode trap handler.
 //!
-//! The kernel runs in M-mode and previously had no `mtvec` installed,
-//! so any synchronous fault — illegal instruction, misaligned access,
-//! PMP violation — would jump to whatever value `mtvec` powered up to
-//! and execute random memory as code. That made every latent bug a
-//! potential RCE.
-//!
-//! This module installs a minimal direct-mode handler that prints the
+//! Without an `mtvec`, any synchronous M-mode fault — illegal
+//! instruction, misaligned access, PMP violation — would jump to
+//! whatever address `mtvec` powered up with and execute it. This module
+//! installs a minimal direct-mode handler that prints the
 //! three CSRs an operator needs to localise the fault (`mcause`,
 //! `mepc`, `mtval`) and then halts the core in `wfi`. There is no
 //! recovery path: an unexpected M-mode trap means the kernel's own

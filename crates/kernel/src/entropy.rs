@@ -52,11 +52,9 @@ impl EntropySource for VirtioRngSource {
 /// 3=DEAD). We accept only `OPST = ES16`, retry on WAIT, and bail on
 /// DEAD or repeated WAIT.
 ///
-/// Reading the CSR on a CPU without Zkr raises an
-/// illegal-instruction exception. Since the kernel currently installs
-/// no `mtvec` handler, that means a hard crash — so this source is
-/// gated behind the `zkr` Cargo feature, which the operator must
-/// explicitly enable when building for known-Zkr silicon.
+/// Reading the CSR on a CPU without Zkr raises an illegal-instruction
+/// exception, which the trap handler reports before halting, so this
+/// source is gated behind the `zkr` Cargo feature for known-Zkr silicon.
 #[cfg(feature = "zkr")]
 pub struct ZkrSource;
 
@@ -71,9 +69,8 @@ impl EntropySource for ZkrSource {
             // CSR (and clears the side-effect bits the spec marks as
             // write-1-to-clear). The `zkr` feature is the operator's
             // assertion that this CPU implements the K extension; on
-            // non-Zkr hardware this instruction traps, which without a
-            // trap handler means a hard crash. That risk is documented
-            // on the feature flag itself.
+            // non-Zkr hardware this instruction traps and the kernel
+            // halts, as documented on the feature flag.
             unsafe { core::arch::asm!("csrrw {0}, 0x015, x0", out(reg) raw) };
             let opst = (raw >> 30) & 0b11;
             match opst {

@@ -173,9 +173,8 @@ pub async fn start_background_task(
     events: UnboundedSender<UiEvent>,
     mut cmd_rx: UnboundedReceiver<GuiCommand>,
 ) -> anyhow::Result<()> {
-    // Fail loudly on bind errors — the alternative was `.unwrap()`,
-    // which tips the whole dashboard over on something as common as
-    // :1337 already being held by a previous GUI instance.
+    // Report bind failures (e.g. a previous GUI still holding the port)
+    // instead of panicking.
     let socket = UdpSocket::bind(LISTEN_ADDR)
         .await
         .map_err(|e| anyhow::anyhow!("bind {LISTEN_ADDR}: {e}"))?;
@@ -837,9 +836,8 @@ mod tests {
 
     #[test]
     fn alert_parser_rejects_every_short_packet_length() {
-        // H3 regression: the GUI binds 0.0.0.0:1337, so a one-byte UDP
-        // `\x02` from anywhere on the segment would panic parse_alert
-        // before the length guard. Walk every short length.
+        // Every length short of a full alert body must be rejected
+        // without indexing past the end.
         for n in 0..alert_packet::ALERT_BODY_LEN {
             let data = vec![0x02u8; n];
             let entry = parse_alert(&data);

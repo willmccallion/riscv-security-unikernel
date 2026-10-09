@@ -297,15 +297,8 @@ fn handle_tcp<S: PacketSink>(
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) {
-    // The TCP header lives at an offset of `14 + IHL` from the packet
-    // start, where IHL is variable. Casting `packet.as_ptr().add(offset)`
-    // to `&TcpHeader` would be sound under `#[repr(C, packed)]` (the
-    // resulting reference is alignment-1), but on real RV64GC silicon
-    // without hardware misaligned-access support the struct-assignment
-    // store the reply path used to do would trap to an absent `mtvec`
-    // handler and jump to garbage. Read field-by-field via byte slices
-    // so the compiler always emits per-byte loads, matching what the
-    // rest of this file does for IPv4 / Ethernet / ARP.
+    // The header sits at `14 + IHL`, which need not be aligned; byte-wise
+    // reads avoid misaligned-access traps on RV64GC parts that lack it.
     let tcp = &packet[offset..offset + tcp::MIN_HEADER_SIZE];
     let flags = u16::from_be_bytes([tcp[12], tcp[13]]) & 0x003F;
 

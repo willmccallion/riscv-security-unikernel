@@ -47,18 +47,8 @@ use sec_core::types::Singleton;
 
 include!(concat!(env!("OUT_DIR"), "/mgmt_key.rs"));
 
-// Linker symbol marking the end of the BSS (uninitialized data) section.
-//
-// This symbol is provided by the linker script and represents the boundary
-// between initialized and uninitialized data sections in memory. The kernel
-// uses this address to calculate available RAM by subtracting the current
-// stack pointer from `_ebss`. This calculation provides the amount of free
-// memory available for dynamic allocation, which is reported in telemetry
-// packets to the control plane.
-//
-// Safety: This symbol is declared as unsafe because it references memory
-// layout defined by the linker script. The address is guaranteed to be
-// valid only after the linker has processed the memory layout.
+// End of BSS, from the linker script; `used_ram` measures from here up to
+// the stack pointer.
 unsafe extern "C" {
     static _ebss: u8;
 }
@@ -99,10 +89,8 @@ static ENGINE: Singleton<Engine> = Singleton::new(Engine::new(MGMT_KEY));
 /// Initializes all subsystems, prints boot information, and enters
 /// the main packet processing loop. This function never returns.
 ///
-/// # Safety
-///
-/// This function is marked as unsafe because it's called from assembly
-/// code and assumes a valid stack has been set up.
+/// Called only by `_start`, on hart 0, once the stack is set up and BSS
+/// is zeroed.
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
     // Trap handler first so a misconfigured PMP write (or any other
