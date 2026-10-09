@@ -28,6 +28,8 @@ pub mod mgmt;
 pub mod mgmt_auth;
 /// Authenticated wire format for kernel-to-operator reports.
 pub mod report_auth;
+/// Port-scan detection.
+pub mod scan;
 /// Probabilistic stream summaries used for heavy-hitter detection.
 pub mod sketch;
 /// Virtual machine for executing eBPF-like packet filter programs.

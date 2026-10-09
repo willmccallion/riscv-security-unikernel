@@ -39,6 +39,27 @@ pub const SUBNET_24_THRESHOLD: u16 = 1_000;
 /// Estimated packets per second above which a /16 is banned.
 pub const SUBNET_16_THRESHOLD: u16 = 5_000;
 
+/// Registers in the virtual HyperLogLog pool that estimates each source's
+/// distinct destination ports (one byte each).
+pub const PORT_SCAN_POOL_REGISTERS: usize = 1024;
+
+/// Registers of that pool each source reads its estimate from.
+pub const PORT_SCAN_REGISTERS_PER_SOURCE: usize = 32;
+
+/// Estimated distinct ports per window above which a source becomes a
+/// port-scan suspect.
+pub const PORT_SCAN_NOMINATE_PORTS: f64 = 24.0;
+
+/// Distinct ports a suspect must try after its nomination, counted
+/// exactly, to be banned as a scanner.
+pub const PORT_SCAN_CONFIRM_PORTS: usize = 64;
+
+/// Suspects tracked exactly at once (128 bytes each).
+pub const PORT_SCAN_CANDIDATES: usize = 8;
+
+/// Detection intervals per port-scan window (five seconds).
+pub const PORT_SCAN_WINDOW_INTERVALS: u32 = 10;
+
 /// HyperLogLog registers counting distinct sources per detection interval
 /// (one byte each; about 6.5% error at 256).
 pub const SOURCE_COUNTER_REGISTERS: usize = 256;
