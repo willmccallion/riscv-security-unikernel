@@ -95,12 +95,15 @@ struct BpfSlot {
 
 /// Every security subsystem, plus the state the pipeline carries between
 /// packets.
+///
+/// The heavy-hitter sketch's dimensions are type parameters so the kernel
+/// can use a small one (the defaults) and the Linux daemon a large one.
 #[derive(Debug)]
-pub struct Engine {
+pub struct Engine<const SKETCH_WIDTH: usize = { CMS_WIDTH }, const SKETCH_DEPTH: usize = { CMS_DEPTH }> {
     ac: dpi::AhoCorasick,
     dyn_rules: dpi::DynamicRules,
     fw: firewall::FirewallState,
-    cms: sketch::CountMinSketch<CMS_WIDTH, CMS_DEPTH>,
+    cms: sketch::CountMinSketch<SKETCH_WIDTH, SKETCH_DEPTH>,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
     mgmt_limiter: dos::TokenBucket,
@@ -116,7 +119,7 @@ pub struct Engine {
     stats: IntervalStats,
 }
 
-impl Engine {
+impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, SKETCH_DEPTH> {
     /// Creates an engine whose mgmt plane verifies with `mgmt_key`.
     ///
     /// [`Self::init`] must run before the first packet.

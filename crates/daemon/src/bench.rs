@@ -9,12 +9,13 @@
 //! Periodic maintenance (sketch resets, flow pruning) runs on the same
 //! simulated schedule as in the kernel.
 
+use crate::DaemonEngine;
 use crate::synth::{self, Mix};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, TELEMETRY_INTERVAL_CYCLES};
 use sec_core::security::alert::AlertReason;
-use sec_core::engine::{BootSecrets, Engine, Verdict};
+use sec_core::engine::{BootSecrets, Verdict};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use std::thread;
@@ -113,19 +114,29 @@ const BENCH_KEY: [u8; 16] = [0; 16];
 
 /// Runs the configured engines and returns what every thread measured.
 pub fn run(config: BenchConfig) -> Vec<ThreadResult> {
+    /// Room for building a [`DaemonEngine`] on the thread's stack.
+    const THREAD_STACK: usize = 16 << 20;
+
     // Collect first so every thread starts before any is joined.
     #[allow(clippy::needless_collect)]
     let workers: Vec<_> = (0..config.threads)
-        .map(|id| thread::spawn(move || run_thread(config, id)))
+        .filter_map(|id| {
+            thread::Builder::new()
+                .stack_size(THREAD_STACK)
+                .spawn(move || run_thread(config, id))
+                .ok()
+        })
         .collect();
     workers.into_iter().filter_map(|w| w.join().ok()).collect()
 }
 
+// The engine is built once per thread, which `run` gives a large stack.
+#[allow(clippy::large_stack_frames)]
 fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     let mut rng = StdRng::seed_from_u64(id);
     let corpus = synth::frames(config.mix, CORPUS_SIZE, &mut rng);
     let step = 1_000_000_000 / config.offered_pps.max(1);
-    let mut engine = Box::new(Engine::new(BENCH_KEY));
+    let mut engine = Box::new(DaemonEngine::new(BENCH_KEY));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
         cms_key: rand::random(),

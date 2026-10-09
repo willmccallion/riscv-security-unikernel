@@ -47,7 +47,7 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_FRAME {
         return;
     }
-    let mut engine = Engine::new([0x5A; 16]);
+    let mut engine: Engine = Engine::new([0x5A; 16]);
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
         cms_key: [1; 16],

@@ -101,7 +101,7 @@ fn udp_frame(src_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> V
 }
 
 fuzz_target!(|steps: Vec<Step>| {
-    let mut engine = Engine::new(KEY);
+    let mut engine: Engine = Engine::new(KEY);
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
         cms_key: [1; 16],

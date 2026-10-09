@@ -14,6 +14,11 @@ mod clock;
 mod key;
 mod synth;
 
+/// The daemon's engine: a 65536 x 4 heavy-hitter sketch (512 KB), which
+/// flags no legitimate source past 500k packets per second in the
+/// sketch-lab study.
+pub type DaemonEngine = sec_core::engine::Engine<65_536, 4>;
+
 use af_packet::{RxRing, TxSocket};
 use anyhow::{Context, Result};
 use bench::VerdictCounts;
@@ -21,7 +26,7 @@ use clap::{Parser, Subcommand};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES};
-use sec_core::engine::{BootSecrets, Engine};
+use sec_core::engine::BootSecrets;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::time::TimeSource;
 use std::sync::Arc;
@@ -102,8 +107,10 @@ fn main() -> Result<()> {
     }
 }
 
-fn new_engine(key: [u8; 16]) -> Box<Engine> {
-    let mut engine = Box::new(Engine::new(key));
+// Built once at startup on the main thread's 8 MB stack.
+#[allow(clippy::large_stack_frames)]
+fn new_engine(key: [u8; 16]) -> Box<DaemonEngine> {
+    let mut engine = Box::new(DaemonEngine::new(key));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
         cms_key: rand::random(),
