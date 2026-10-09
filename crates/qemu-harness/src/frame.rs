@@ -81,8 +81,10 @@ pub fn is_udp_from_kernel_to_port(frame: &[u8], dst_port: u16) -> bool {
 /// see [`crate::mgmt::MgmtClient::verify_report`] for that.
 pub fn report_body(frame: &[u8]) -> Option<&[u8]> {
     use sec_core::security::report_auth::{HEADER_LEN, MAC_LEN};
-    let from_kernel =
-        frame.len() > 42 && frame[12..14] == ETHERTYPE_IPV4 && frame[23] == 17 && frame[26..30] == KERNEL_IP;
+    let from_kernel = frame.len() > 42
+        && frame[12..14] == ETHERTYPE_IPV4
+        && frame[23] == 17
+        && frame[26..30] == KERNEL_IP;
     if !from_kernel {
         return None;
     }
@@ -123,7 +125,10 @@ pub fn telemetry_slots(frame: &[u8]) -> Option<[u64; 10]> {
         return None;
     }
     let mut slots = [0u64; 10];
-    for (slot, bytes) in slots.iter_mut().zip(body[SLOTS_OFFSET..].as_chunks::<8>().0) {
+    for (slot, bytes) in slots
+        .iter_mut()
+        .zip(body[SLOTS_OFFSET..].as_chunks::<8>().0)
+    {
         *slot = u64::from_be_bytes(*bytes);
     }
     Some(slots)

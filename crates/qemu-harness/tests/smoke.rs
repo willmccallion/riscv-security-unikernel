@@ -44,11 +44,16 @@ fn telemetry_is_signed_with_the_report_key() {
     let mgmt = qemu_harness::mgmt::MgmtClient::connect(&kernel).unwrap();
 
     let telemetry = kernel
-        .recv_matching(Duration::from_secs(5), |f| frame::telemetry_slots(f).is_some())
+        .recv_matching(Duration::from_secs(5), |f| {
+            frame::telemetry_slots(f).is_some()
+        })
         .unwrap()
         .expect("telemetry frame within 5s");
 
-    assert!(mgmt.verify_report(&telemetry).is_some(), "telemetry MAC does not verify");
+    assert!(
+        mgmt.verify_report(&telemetry).is_some(),
+        "telemetry MAC does not verify"
+    );
 }
 
 #[test]
@@ -59,6 +64,9 @@ fn kernel_runs_on_one_hart_when_the_machine_has_four() {
     let alive = kernel.is_alive().unwrap();
 
     assert!(alive, "serial:\n{}", kernel.serial_snapshot());
-    let banners = kernel.serial_snapshot().matches("[ RISC-V Security Unikernel").count();
+    let banners = kernel
+        .serial_snapshot()
+        .matches("[ RISC-V Security Unikernel")
+        .count();
     assert_eq!(banners, 1, "more than one hart ran kmain");
 }
