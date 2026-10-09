@@ -12,15 +12,8 @@ use crate::net::constants::{
 use crate::net::tcp::{TCP_ACK, TCP_SYN};
 use crate::security::hash::siphash24;
 
-/// Per-boot secret keying the SYN-cookie PRF.
-///
-/// The kernel constructs one of these once at init time from the
-/// `mcycle` CSR XORed with the MAC address; the daemon will eventually
-/// derive its own from `getrandom`. Distinct secrets per reboot mean an
-/// attacker cannot reuse a cookie value seen before a restart, and a
-/// secret-keyed cookie cannot be derived from packet headers and a
-/// known compile-time constant the way the old `+ SYN_COOKIE_MAGIC`
-/// formula could.
+/// Per-boot secret keying the SYN-cookie PRF, so a cookie cannot be
+/// derived from packet headers or reused across reboots.
 #[derive(Debug)]
 pub struct SynCookieSecret([u8; 16]);
 

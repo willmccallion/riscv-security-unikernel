@@ -180,9 +180,3 @@ pub mod udp {
 
 /// Broadcast MAC address (all ones).
 pub const BROADCAST_MAC: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
-
-/// Magic cookie value used in SYN cookie generation.
-///
-/// This constant is combined with source IP and port to create
-/// stateless SYN cookies for SYN flood protection.
-pub const SYN_COOKIE_MAGIC: u32 = 0xCAFE_BABE;

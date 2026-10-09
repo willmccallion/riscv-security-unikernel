@@ -17,7 +17,7 @@
 )]
 
 use sec_core::net::PacketSink;
-use sec_core::net::constants::{SYN_COOKIE_MAGIC, arp, ethernet, ipv4, tcp};
+use sec_core::net::constants::{arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
 use sec_core::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
 use sec_core::security::alert::should_emit_ddos_alert;
@@ -176,6 +176,7 @@ fn syn_cookie_depends_on_destination_port() {
 /// constant; it has to incorporate a per-boot secret.
 #[test]
 fn syn_cookie_is_not_derivable_from_public_inputs() {
+    const PUBLIC_MAGIC: u32 = 0xCAFE_BABE;
     let mut sink = CaptureSink::default();
     let src = [10, 0, 0, 9];
     let src_port: u16 = 51_234;
@@ -188,7 +189,7 @@ fn syn_cookie_is_not_derivable_from_public_inputs() {
 
     let trivial = (src[3] as u32)
         .wrapping_add(src_port as u32)
-        .wrapping_add(SYN_COOKIE_MAGIC);
+        .wrapping_add(PUBLIC_MAGIC);
     assert_ne!(
         seq, trivial,
         "cookie equals src_ip[3] + src_port + magic; needs a per-boot secret"
