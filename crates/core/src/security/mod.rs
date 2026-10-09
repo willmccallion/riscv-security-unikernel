@@ -24,5 +24,7 @@ pub mod heuristic_constants;
 pub mod mgmt;
 /// Authenticated wire format for management-plane commands.
 pub mod mgmt_auth;
+/// Authenticated wire format for kernel-to-operator reports.
+pub mod report_auth;
 /// Virtual machine for executing eBPF-like packet filter programs.
 pub mod vm;
