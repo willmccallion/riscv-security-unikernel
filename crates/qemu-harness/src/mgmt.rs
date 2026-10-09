@@ -4,6 +4,7 @@ use crate::{Kernel, frame};
 use anyhow::{Context, Result, bail};
 use sec_core::config::MANAGEMENT_PORT;
 use sec_core::security::mgmt_auth::{COUNTER_LEN, MAC_LEN, seal};
+use sec_core::security::mgmt_auth::parse_hex_key;
 use sec_core::security::report_auth::{ReportVerifier, report_key};
 use std::path::Path;
 use std::time::Duration;
@@ -89,12 +90,5 @@ fn load_key() -> Result<[u8; 16]> {
             .trim()
             .to_string()
     };
-    if hex.len() != 32 {
-        bail!("mgmt key must be 32 hex chars, got {}", hex.len());
-    }
-    let mut key = [0u8; 16];
-    for (i, byte) in key.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).context("mgmt key is not hex")?;
-    }
-    Ok(key)
+    parse_hex_key(&hex).context("mgmt key must be 32 hex characters")
 }

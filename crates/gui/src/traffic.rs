@@ -13,7 +13,7 @@ use crate::types::{
 use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
-use sec_core::security::mgmt_auth::seal;
+use sec_core::security::mgmt_auth::{parse_hex_key, seal};
 use sec_core::security::report_auth::{Report, ReportVerifier, report_key, telemetry_packet};
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
@@ -78,17 +78,6 @@ fn load_mgmt_key() -> [u8; 16] {
          to materialise .mgmt-key.local (shared with the kernel build)"
     );
     std::process::exit(1);
-}
-
-fn parse_hex_key(hex: &str) -> Option<[u8; 16]> {
-    if hex.len() != 32 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
-        return None;
-    }
-    let mut out = [0u8; 16];
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
-    }
-    Some(out)
 }
 
 fn read_dev_key_file() -> Option<[u8; 16]> {

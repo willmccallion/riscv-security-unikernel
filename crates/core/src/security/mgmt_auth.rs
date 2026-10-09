@@ -144,6 +144,29 @@ impl MgmtAuth {
     }
 }
 
+/// Parses a mgmt key written as 32 hex characters, as in
+/// `KERNEL_MGMT_KEY` and `.mgmt-key.local`.
+pub fn parse_hex_key(hex: &str) -> Option<[u8; 16]> {
+    let hex = hex.as_bytes();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut key = [0u8; 16];
+    for (byte, pair) in key.iter_mut().zip(hex.as_chunks::<2>().0) {
+        *byte = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
+    }
+    Some(key)
+}
+
+const fn hex_digit(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Helper for senders: stamps `body` with `counter` and an authentic
 /// MAC, returning the wire-format byte length written into `out`.
 ///
@@ -181,6 +204,25 @@ mod tests {
         let mut auth = MgmtAuth::new(key);
         auth.set_epoch(TEST_EPOCH);
         (key, auth)
+    }
+
+    #[test]
+    fn parse_hex_key_accepts_32_hex_characters_in_either_case() {
+        let key = parse_hex_key("00112233445566778899AaBbCcDdEeFf");
+
+        assert_eq!(
+            key,
+            Some([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+                0xEE, 0xFF,
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_hex_key_rejects_wrong_length_or_non_hex() {
+        assert_eq!(parse_hex_key("0011"), None);
+        assert_eq!(parse_hex_key("0011223344556677889900aabbccddeg"), None);
     }
 
     #[test]
