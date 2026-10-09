@@ -2994,7 +2994,9 @@ dependencies = [
 name = "security-daemon"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
+ "libc",
  "rand 0.8.5",
  "sec-core",
 ]

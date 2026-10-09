@@ -6,12 +6,14 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Linux userspace daemon running the sec-core pipeline; in-memory benchmark for now."
+description = "Linux userspace daemon running the sec-core pipeline on live traffic (AF_PACKET) or in-memory benchmarks."
 
 [lints]
 workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 clap = { workspace = true }
+libc = "0.2.180"
 rand = { workspace = true }
 sec-core = { workspace = true }
