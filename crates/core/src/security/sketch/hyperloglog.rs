@@ -77,7 +77,7 @@ fn rank(remaining: u64, bits: u32) -> u8 {
 
 /// The HyperLogLog estimate over `registers`, with the linear-counting
 /// correction for small counts (Flajolet et al., 2007).
-fn estimate(registers: &[u8]) -> f64 {
+pub(super) fn estimate(registers: &[u8]) -> f64 {
     let m = registers.len() as f64;
     let mut inverse_sum = 0.0;
     let mut zeros = 0usize;
@@ -94,7 +94,7 @@ fn estimate(registers: &[u8]) -> f64 {
 }
 
 /// The bias correction constant for `m` registers.
-fn alpha(m: usize) -> f64 {
+pub(super) fn alpha(m: usize) -> f64 {
     match m {
         16 => 0.673,
         32 => 0.697,
@@ -114,7 +114,7 @@ fn pow2_neg(exponent: u8) -> f64 {
 /// `mantissa · 2^exponent` with the mantissa in `[1, 2)`, then sums the
 /// `atanh` series `ln(m) = 2·(z + z³/3 + z⁵/5 + …)` with `z = (m-1)/(m+1)`,
 /// which converges quickly because `z <= 1/3`.
-fn ln(x: f64) -> f64 {
+pub(super) fn ln(x: f64) -> f64 {
     const LN_2: f64 = core::f64::consts::LN_2;
     let bits = x.to_bits();
     let exponent = ((bits >> 52) & 0x7FF) as i64 - 1023;

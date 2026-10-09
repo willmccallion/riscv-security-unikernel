@@ -3,6 +3,8 @@
 
 mod count_min;
 mod hyperloglog;
+mod virtual_hll;
 
 pub use count_min::CountMinSketch;
 pub use hyperloglog::HyperLogLog;
+pub use virtual_hll::VirtualHyperLogLog;
