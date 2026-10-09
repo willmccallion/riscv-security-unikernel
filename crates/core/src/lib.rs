@@ -8,6 +8,7 @@
 //!
 //! ## Modules
 //!
+//! - [`engine`] — the per-packet pipeline tying every subsystem together.
 //! - [`security`] — DDoS mitigation, DPI, firewall, flow tracking,
 //!   heuristics, eBPF VM, and mgmt-protocol constants.
 //! - [`net`] — Ethernet/IPv4/ARP/ICMP/TCP packet processing. The stack
@@ -22,6 +23,7 @@
 #![no_std]
 
 pub mod config;
+pub mod engine;
 pub mod net;
 pub mod security;
 pub mod time;
