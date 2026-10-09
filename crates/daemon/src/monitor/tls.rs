@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 //! Reading the server name from a TLS ClientHello.
 //!
 //! A browser names the site it is connecting to in the clear, in the
@@ -69,13 +70,13 @@ pub fn parse_client_hello(stream: &[u8]) -> Hello {
 /// as QUIC carries it in CRYPTO frames, without TLS records.
 pub fn parse_handshake(stream: &[u8]) -> Hello {
     const MESSAGE_HEADER: usize = 4;
-    let Some(header) = stream.get(..MESSAGE_HEADER) else {
+    let Some(&[message_type, len_high, len_mid, len_low]) = stream.first_chunk::<MESSAGE_HEADER>() else {
         return Hello::Incomplete { needed: MESSAGE_HEADER };
     };
-    if header[0] != HANDSHAKE_CLIENT_HELLO {
+    if message_type != HANDSHAKE_CLIENT_HELLO {
         return Hello::NotTls;
     }
-    let body_len = usize::from(header[1]) << 16 | usize::from(header[2]) << 8 | usize::from(header[3]);
+    let body_len = usize::from(len_high) << 16 | usize::from(len_mid) << 8 | usize::from(len_low);
     let needed = MESSAGE_HEADER + body_len;
     let Some(body) = stream.get(MESSAGE_HEADER..needed) else {
         return Hello::Incomplete { needed };
@@ -106,7 +107,10 @@ fn server_name(mut extensions: &[u8]) -> Hello {
             EXTENSION_ENCRYPTED_CLIENT_HELLO => encrypted_hello = true,
             _ => {}
         }
-        extensions = &extensions[4 + usize::from(len)..];
+        let Some(rest) = extensions.get(4 + usize::from(len)..) else {
+            return Hello::NotTls;
+        };
+        extensions = rest;
     }
     name.map_or(Hello::Unnamed, |name| Hello::Named(ServerName { name, encrypted_hello }))
 }
@@ -126,7 +130,7 @@ fn host_name(data: &[u8]) -> Option<String> {
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    bytes.get(offset..offset.checked_add(2)?).map(|b| u16::from_be_bytes([b[0], b[1]]))
+    bytes.get(offset..)?.first_chunk().copied().map(u16::from_be_bytes)
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 //! Reading DNS and mDNS responses for the names they give addresses.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -87,11 +88,12 @@ pub fn parse_response(message: &[u8]) -> Option<DnsResponse> {
         let data_len = usize::from(read_u16(message, next + 8)?);
         let data = message.get(next + 10..next + 10 + data_len)?;
         offset = next + 10 + data_len;
-        let addr = match (record_type, class, data.len()) {
-            (TYPE_A, CLASS_IN, 4) => IpAddr::V4(Ipv4Addr::new(data[0], data[1], data[2], data[3])),
-            (TYPE_AAAA, CLASS_IN, 16) => IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(data).ok()?)),
-            _ => continue,
+        let addr = match (record_type, class) {
+            (TYPE_A, CLASS_IN) => <[u8; 4]>::try_from(data).ok().map(|a| IpAddr::V4(Ipv4Addr::from(a))),
+            (TYPE_AAAA, CLASS_IN) => <[u8; 16]>::try_from(data).ok().map(|a| IpAddr::V6(Ipv6Addr::from(a))),
+            _ => None,
         };
+        let Some(addr) = addr else { continue };
         let name = question.clone().unwrap_or(owner);
         addresses.push(NamedAddress { name, addr, ttl });
     }
@@ -147,13 +149,11 @@ fn read_name(message: &[u8], offset: usize) -> Option<(String, usize)> {
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    bytes.get(offset..offset.checked_add(2)?).map(|b| u16::from_be_bytes([b[0], b[1]]))
+    bytes.get(offset..)?.first_chunk().copied().map(u16::from_be_bytes)
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    bytes
-        .get(offset..offset.checked_add(4)?)
-        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    bytes.get(offset..)?.first_chunk().copied().map(u32::from_be_bytes)
 }
 
 #[cfg(test)]

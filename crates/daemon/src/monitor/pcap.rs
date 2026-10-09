@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 //! Reading classic pcap capture files, as `tcpdump -w` writes them.
 
 use super::decode::LinkType;
@@ -67,7 +68,8 @@ impl<R: Read> PcapReader<R> {
             (PCAPNG_MAGIC, _) => bail!("pcapng is not supported; convert with `editcap -F pcap in.pcapng out.pcap`"),
             _ => bail!("not a pcap file"),
         };
-        let link = read_u32(byte_order, &header[20..24]) & 0x0FFF_FFFF;
+        let [.., l0, l1, l2, l3] = header;
+        let link = read_u32(byte_order, [l0, l1, l2, l3]) & 0x0FFF_FFFF;
         let link_type = match link {
             LINKTYPE_ETHERNET => LinkType::Ethernet,
             LINKTYPE_RAW | LINKTYPE_IPV4 | LINKTYPE_IPV6 | DLT_RAW_BSD | DLT_RAW_OPENBSD => LinkType::RawIp,
@@ -95,8 +97,12 @@ impl<R: Read> PcapReader<R> {
         if !read_unless_at_end(&mut self.reader, &mut header)? {
             return Ok(None);
         }
-        let field = |i: usize| read_u32(self.byte_order, &header[i * 4..i * 4 + 4]);
-        let (seconds, fraction, captured_len, wire_len) = (field(0), field(1), field(2), field(3));
+        let [s0, s1, s2, s3, f0, f1, f2, f3, c0, c1, c2, c3, w0, w1, w2, w3] = header;
+        let order = self.byte_order;
+        let seconds = read_u32(order, [s0, s1, s2, s3]);
+        let fraction = read_u32(order, [f0, f1, f2, f3]);
+        let captured_len = read_u32(order, [c0, c1, c2, c3]);
+        let wire_len = read_u32(order, [w0, w1, w2, w3]);
         if captured_len > MAX_RECORD_LEN {
             bail!("pcap record of {captured_len} bytes is implausibly large; the file is corrupt");
         }
@@ -117,8 +123,8 @@ impl<R: Read> PcapReader<R> {
 /// Running out partway is an error: the file was cut short.
 fn read_unless_at_end(reader: &mut impl Read, buf: &mut [u8]) -> Result<bool> {
     let mut filled = 0;
-    while filled < buf.len() {
-        match reader.read(&mut buf[filled..]) {
+    while let Some(unfilled) = buf.get_mut(filled..).filter(|rest| !rest.is_empty()) {
+        match reader.read(unfilled) {
             Ok(0) if filled == 0 => return Ok(false),
             Ok(0) => bail!("pcap record header is truncated"),
             Ok(n) => filled += n,
@@ -129,11 +135,10 @@ fn read_unless_at_end(reader: &mut impl Read, buf: &mut [u8]) -> Result<bool> {
     Ok(true)
 }
 
-const fn read_u32(order: ByteOrder, bytes: &[u8]) -> u32 {
-    let array = [bytes[0], bytes[1], bytes[2], bytes[3]];
+const fn read_u32(order: ByteOrder, bytes: [u8; 4]) -> u32 {
     match order {
-        ByteOrder::Little => u32::from_le_bytes(array),
-        ByteOrder::Big => u32::from_be_bytes(array),
+        ByteOrder::Little => u32::from_le_bytes(bytes),
+        ByteOrder::Big => u32::from_be_bytes(bytes),
     }
 }
 

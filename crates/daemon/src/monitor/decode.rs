@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 //! Decoding captured frames into the fields the monitor analyses.
 //!
 //! Every function here is pure and bounds-checked: frames come straight
@@ -182,7 +183,7 @@ fn decode_ipv4(packet: &[u8]) -> Option<Packet<'_>> {
     let src = Ipv4Addr::from(read_array::<4>(packet, 12)?);
     let dst = Ipv4Addr::from(read_array::<4>(packet, 16)?);
     let transport = if fragment_offset == 0 {
-        decode_transport(packet[9], &packet[header_len..])
+        decode_transport(*packet.get(9)?, packet.get(header_len..)?)
     } else {
         Transport::Fragment
     };
@@ -204,7 +205,8 @@ fn decode_ipv6(packet: &[u8]) -> Option<Packet<'_>> {
     let jumbo = payload_len == 0 && packet.get(6) == Some(&IPV6_HOP_BY_HOP);
     let end = if jumbo { packet.len() } else { (HEADER_LEN + payload_len).min(packet.len()) };
     let payload = packet.get(HEADER_LEN..end)?;
-    let transport = ipv6_transport(packet[6], payload).unwrap_or(Transport::Other(packet[6]));
+    let next_header = *packet.get(6)?;
+    let transport = ipv6_transport(next_header, payload).unwrap_or(Transport::Other(next_header));
     Some(Packet {
         src: IpAddr::V6(src),
         dst: IpAddr::V6(dst),

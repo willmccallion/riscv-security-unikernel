@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 //! Reading the TLS handshake from QUIC Initial packets.
 //!
 //! A QUIC client's first packets carry its TLS ClientHello encrypted with
@@ -105,7 +106,8 @@ impl InitialKeys {
         let cipher = Aes128::new(GenericArray::from_slice(&self.hp));
         let mut block = GenericArray::clone_from_slice(sample);
         cipher.encrypt_block(&mut block);
-        [block[0], block[1], block[2], block[3], block[4]]
+        let [m0, m1, m2, m3, m4, ..]: [u8; SAMPLE_LEN] = block.into();
+        [m0, m1, m2, m3, m4]
     }
 }
 
@@ -134,7 +136,8 @@ pub fn client_initial_crypto(datagram: &[u8]) -> Vec<CryptoData> {
         {
             found.extend(crypto_frames(&plaintext));
         }
-        rest = &rest[packet.len..];
+        let Some(next) = rest.get(packet.len..) else { break };
+        rest = next;
     }
     found
 }
@@ -199,13 +202,14 @@ impl<'a> LongHeaderPacket<'a> {
         let sample: &[u8; SAMPLE_LEN] = self.bytes.get(sample_start..sample_start + SAMPLE_LEN)?.try_into().ok()?;
         let mask = keys.mask(sample);
 
-        let first = self.bytes[0] ^ (mask[0] & 0x0F);
+        let [first_mask, packet_number_mask @ ..] = mask;
+        let first = self.bytes.first()? ^ (first_mask & 0x0F);
         let packet_number_len = usize::from(first & 0x03) + 1;
         let mut header = self.bytes.get(..pn_offset + packet_number_len)?.to_vec();
-        header[0] = first;
+        *header.first_mut()? = first;
         let mut packet_number: u64 = 0;
-        for (i, byte) in header[pn_offset..].iter_mut().enumerate() {
-            *byte ^= mask[1 + i];
+        for (byte, mask_byte) in header.get_mut(pn_offset..)?.iter_mut().zip(packet_number_mask) {
+            *byte ^= mask_byte;
             packet_number = packet_number << 8 | u64::from(*byte);
         }
 
@@ -213,7 +217,7 @@ impl<'a> LongHeaderPacket<'a> {
         for (n, p) in nonce[4..].iter_mut().zip(packet_number.to_be_bytes()) {
             *n ^= p;
         }
-        let ciphertext = &self.bytes[header.len()..];
+        let ciphertext = self.bytes.get(header.len()..)?;
         if ciphertext.len() < TAG_LEN {
             return None;
         }
@@ -238,7 +242,8 @@ fn crypto_frames(mut payload: &[u8]) -> Vec<CryptoData> {
 
     let mut found = Vec::new();
     while let Some((frame_type, used)) = read_varint(payload) {
-        payload = &payload[used..];
+        let Some(after_type) = payload.get(used..) else { break };
+        payload = after_type;
         let rest = match frame_type {
             PADDING | PING => Some(payload),
             ACK | ACK_ECN => skip_ack(payload, frame_type == ACK_ECN),
@@ -261,13 +266,13 @@ fn read_crypto(payload: &[u8]) -> Option<(CryptoData, &[u8])> {
     let start = a + b;
     let end = start.checked_add(usize::try_from(len).ok()?)?;
     let bytes = payload.get(start..end)?.to_vec();
-    Some((CryptoData { offset, bytes }, &payload[end..]))
+    Some((CryptoData { offset, bytes }, payload.get(end..)?))
 }
 
 fn skip_ack(mut payload: &[u8], with_ecn: bool) -> Option<&[u8]> {
     skip_varints(2, &mut payload)?;
     let (ranges, used) = read_varint(payload)?;
-    payload = &payload[used..];
+    payload = payload.get(used..)?;
     if ranges > payload.len() as u64 {
         return None;
     }
@@ -282,7 +287,7 @@ fn skip_ack(mut payload: &[u8], with_ecn: bool) -> Option<&[u8]> {
 fn skip_varints(count: u64, payload: &mut &[u8]) -> Option<()> {
     for _ in 0..count {
         let (_, used) = read_varint(payload)?;
-        *payload = &payload[used..];
+        *payload = payload.get(used..)?;
     }
     Some(())
 }
@@ -299,7 +304,8 @@ fn read_varint(bytes: &[u8]) -> Option<(u64, usize)> {
     let first = *bytes.first()?;
     let len = 1usize << (first >> 6);
     let encoded = bytes.get(..len)?;
-    let value = encoded[1..]
+    let value = encoded
+        .get(1..)?
         .iter()
         .fold(u64::from(first & 0x3F), |value, &byte| value << 8 | u64::from(byte));
     Some((value, len))

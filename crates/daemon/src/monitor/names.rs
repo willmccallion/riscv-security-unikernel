@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 //! Naming hosts from what their traffic reveals: TLS server names, DNS
 //! answers and mDNS announcements.
 
@@ -148,13 +149,19 @@ impl PendingHello {
             self.bytes.resize(end, 0);
             self.received.resize(end, false);
         }
-        self.bytes[offset..end].copy_from_slice(&data[..end - offset]);
-        self.received[offset..end].fill(true);
+        if let (Some(destination), Some(source), Some(received)) = (
+            self.bytes.get_mut(offset..end),
+            data.get(..end - offset),
+            self.received.get_mut(offset..end),
+        ) {
+            destination.copy_from_slice(source);
+            received.fill(true);
+        }
     }
 
     fn contiguous(&self) -> &[u8] {
         let len = self.received.iter().take_while(|&&r| r).count();
-        &self.bytes[..len]
+        self.bytes.get(..len).unwrap_or_default()
     }
 
     fn read(&self, carrier: Carrier) -> Hello {
