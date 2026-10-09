@@ -24,7 +24,7 @@
 use proptest::prelude::*;
 use sec_core::security::dos::{CountMinSketch, PenaltyBox, TokenBucket};
 use sec_core::security::dpi::AhoCorasick;
-use sec_core::security::flow::FlowTable;
+use sec_core::security::flow::{FlowKey, FlowTable};
 
 // ---------------------------------------------------------------- PenaltyBox
 
@@ -135,8 +135,9 @@ proptest! {
         now in 0u64..1_000_000,
     ) {
         let mut ft = FlowTable::new();
-        let new1 = ft.update(&src_ip, &dst_ip, src_port, dst_port, proto, len, now);
-        let new2 = ft.update(&src_ip, &dst_ip, src_port, dst_port, proto, len, now);
+        let key = FlowKey { src_ip, dst_ip, src_port, dst_port, protocol: proto };
+        let new1 = ft.update(&key, len, now);
+        let new2 = ft.update(&key, len, now);
         prop_assert!(new1, "first insert of a fresh tuple must be a new flow");
         prop_assert!(!new2, "second insert of the same tuple must reuse the slot");
     }
@@ -155,7 +156,8 @@ proptest! {
     ) {
         let mut ft = FlowTable::new();
         for src_port in 0..n {
-            let new = ft.update(&src_ip, &dst_ip, src_port, dst_port, proto, 0, 0);
+            let key = FlowKey { src_ip, dst_ip, src_port, dst_port, protocol: proto };
+            let new = ft.update(&key, 0, 0);
             prop_assert!(new, "tuple #{src_port} should be a new flow under capacity");
         }
     }

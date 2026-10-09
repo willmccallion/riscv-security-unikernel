@@ -7,6 +7,7 @@
 // `criterion_group!` expands to an undocumented generated function.
 #![allow(missing_docs)]
 
+use benches::flow::FlowKey;
 use benches::{dos, dpi, flow, heuristic, vm};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
@@ -118,6 +119,16 @@ fn bench_vm_execute(c: &mut Criterion) {
 // Flow table — 5-tuple lookup and update
 // ---------------------------------------------------------------------------
 
+const fn key(src_ip: [u8; 4], src_port: u16) -> FlowKey {
+    FlowKey {
+        src_ip,
+        dst_ip: [192, 168, 100, 2],
+        src_port,
+        dst_port: 80,
+        protocol: 6,
+    }
+}
+
 fn bench_flow_update_new(c: &mut Criterion) {
     c.bench_function("flow_update_new_flow", |b| {
         b.iter_batched(
@@ -127,11 +138,7 @@ fn bench_flow_update_new(c: &mut Criterion) {
             },
             |mut table| {
                 black_box(table.update(
-                    black_box(&[10, 0, 0, 1]),
-                    black_box(&[192, 168, 100, 2]),
-                    black_box(54321),
-                    black_box(80),
-                    black_box(6),
+                    black_box(&key([10, 0, 0, 1], 54321)),
                     black_box(1460),
                     black_box(1_000_000u64),
                 ));
@@ -144,15 +151,11 @@ fn bench_flow_update_new(c: &mut Criterion) {
 fn bench_flow_update_existing(c: &mut Criterion) {
     let mut table = flow::FlowTable::new();
     // Pre-insert the flow
-    table.update(&[10, 0, 0, 1], &[192, 168, 100, 2], 54321, 80, 6, 1460, 0);
+    let _ = table.update(&key([10, 0, 0, 1], 54321), 1460, 0);
     c.bench_function("flow_update_existing_flow", |b| {
         b.iter(|| {
             black_box(table.update(
-                black_box(&[10, 0, 0, 1]),
-                black_box(&[192, 168, 100, 2]),
-                black_box(54321),
-                black_box(80),
-                black_box(6),
+                black_box(&key([10, 0, 0, 1], 54321)),
                 black_box(1460),
                 black_box(2_000_000u64),
             ));
@@ -164,24 +167,12 @@ fn bench_flow_full_table(c: &mut Criterion) {
     // Fill the table with 74 distinct flows, then benchmark lookup on the last one
     let mut table = flow::FlowTable::new();
     for i in 0u8..74 {
-        table.update(
-            &[10, 0, 0, i],
-            &[192, 168, 100, 2],
-            i as u16 + 1024,
-            80,
-            6,
-            64,
-            0,
-        );
+        let _ = table.update(&key([10, 0, 0, i], u16::from(i) + 1024), 64, 0);
     }
     c.bench_function("flow_update_full_table_74_flows", |b| {
         b.iter(|| {
             black_box(table.update(
-                black_box(&[10, 0, 0, 73]),
-                black_box(&[192, 168, 100, 2]),
-                black_box(1097u16),
-                black_box(80),
-                black_box(6),
+                black_box(&key([10, 0, 0, 73], 1097)),
                 black_box(64),
                 black_box(3_000_000u64),
             ));

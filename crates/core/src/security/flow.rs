@@ -16,6 +16,22 @@ const MAX_FLOWS: usize = 74;
 /// `FLOW_TIMEOUT_CYCLES` so genuinely stale entries are still recyclable.
 const MIN_EVICTION_AGE: u64 = 1_000_000;
 
+/// The 5-tuple identifying a flow. Addresses are in network byte order,
+/// ports in host byte order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowKey {
+    /// Source IPv4 address.
+    pub src_ip: [u8; 4],
+    /// Destination IPv4 address.
+    pub dst_ip: [u8; 4],
+    /// Source port, or 0 for protocols without ports.
+    pub src_port: u16,
+    /// Destination port, or 0 for protocols without ports.
+    pub dst_port: u16,
+    /// IP protocol number.
+    pub protocol: u8,
+}
+
 /// Entry in the flow table representing a single network flow.
 ///
 /// A flow is identified by the 5-tuple: source IP, destination IP,
@@ -91,51 +107,26 @@ impl FlowTable {
         }
     }
 
-    /// Updates the flow table with a new packet.
+    /// Records a packet of `len` bytes against the flow `key`.
     ///
-    /// If a matching flow exists, updates its statistics. Otherwise,
-    /// creates a new flow entry or reuses an expired/old entry.
-    ///
-    /// # Arguments
-    ///
-    /// * `src_ip` - Source IP address as 4 bytes
-    /// * `dst_ip` - Destination IP address as 4 bytes
-    /// * `src_port` - Source port number
-    /// * `dst_port` - Destination port number
-    /// * `proto` - IP protocol number
-    /// * `len` - Packet length in bytes
-    /// * `now` - Current cycle count
-    ///
-    /// # Returns
-    ///
-    /// True if a new flow was created, false if an existing flow was updated
-    #[allow(clippy::too_many_arguments)]
-    pub fn update(
-        &mut self,
-        src_ip: &[u8],
-        dst_ip: &[u8],
-        src_port: u16,
-        dst_port: u16,
-        proto: u8,
-        len: usize,
-        now: u64,
-    ) -> bool {
-        let s_ip = u32::from_be_bytes([src_ip[0], src_ip[1], src_ip[2], src_ip[3]]);
-        let d_ip = u32::from_be_bytes([dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3]]);
+    /// Returns `true` if a new flow was created, `false` if an existing
+    /// one was updated or the table refused to evict a recent flow.
+    pub fn update(&mut self, key: &FlowKey, len: usize, now: u64) -> bool {
+        let s_ip = u32::from_be_bytes(key.src_ip);
+        let d_ip = u32::from_be_bytes(key.dst_ip);
 
         let mut found_idx = None;
         let mut empty_idx = None;
         let mut oldest_idx = 0;
         let mut oldest_time = u64::MAX;
 
-        for i in 0..MAX_FLOWS {
-            let e = &self.entries[i];
+        for (i, e) in self.entries.iter().enumerate() {
             if e.is_active {
                 if e.src_ip == s_ip
                     && e.dst_ip == d_ip
-                    && e.src_port == src_port
-                    && e.dst_port == dst_port
-                    && e.protocol == proto
+                    && e.src_port == key.src_port
+                    && e.dst_port == key.dst_port
+                    && e.protocol == key.protocol
                 {
                     found_idx = Some(i);
                     break;
@@ -150,39 +141,38 @@ impl FlowTable {
         }
 
         if let Some(idx) = found_idx {
-            self.entries[idx].packet_count += 1;
-            self.entries[idx].byte_count += len as u64;
-            self.entries[idx].last_seen = now;
-            false
-        } else {
-            let idx = if let Some(e_idx) = empty_idx {
-                self.active_count += 1;
-                e_idx
-            } else {
-                // Table is full and every entry is active. Refuse to
-                // evict if the oldest flow is still recent — otherwise
-                // a unique-5-tuple flood can churn out long-lived
-                // legitimate flows simply by being newer.
-                let age = now.wrapping_sub(oldest_time);
-                if age < MIN_EVICTION_AGE {
-                    return false;
-                }
-                oldest_idx
-            };
-
-            self.entries[idx] = FlowEntry {
-                packet_count: 1,
-                byte_count: len as u64,
-                last_seen: now,
-                src_ip: s_ip,
-                dst_ip: d_ip,
-                src_port,
-                dst_port,
-                protocol: proto,
-                is_active: true,
-            };
-            true
+            let entry = &mut self.entries[idx];
+            entry.packet_count += 1;
+            entry.byte_count += len as u64;
+            entry.last_seen = now;
+            return false;
         }
+
+        let idx = if let Some(e_idx) = empty_idx {
+            self.active_count += 1;
+            e_idx
+        } else {
+            // Table is full and every entry is active. Refuse to evict a
+            // recent flow, or a unique-5-tuple flood could churn out
+            // long-lived legitimate flows simply by being newer.
+            if now.wrapping_sub(oldest_time) < MIN_EVICTION_AGE {
+                return false;
+            }
+            oldest_idx
+        };
+
+        self.entries[idx] = FlowEntry {
+            packet_count: 1,
+            byte_count: len as u64,
+            last_seen: now,
+            src_ip: s_ip,
+            dst_ip: d_ip,
+            src_port: key.src_port,
+            dst_port: key.dst_port,
+            protocol: key.protocol,
+            is_active: true,
+        };
+        true
     }
 
     /// Removes expired flows from the table.

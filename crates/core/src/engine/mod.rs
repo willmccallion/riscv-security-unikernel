@@ -360,15 +360,14 @@ impl Engine {
     /// Records the packet against its flow, alerting on a sample of new
     /// flows.
     fn track_flow<S: PacketSink>(&mut self, meta: &AlertMeta, len: usize, now: u64, sink: &mut S) {
-        let is_new = self.flows.update(
-            &meta.src_ip,
-            &meta.dst_ip,
-            meta.src_port,
-            meta.dst_port,
-            meta.protocol,
-            len,
-            now,
-        );
+        let key = flow::FlowKey {
+            src_ip: meta.src_ip,
+            dst_ip: meta.dst_ip,
+            src_port: meta.src_port,
+            dst_port: meta.dst_port,
+            protocol: meta.protocol,
+        };
+        let is_new = self.flows.update(&key, len, now);
         if is_new && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0 {
             self.alert(meta, AlertReason::Flow, now, sink);
         }

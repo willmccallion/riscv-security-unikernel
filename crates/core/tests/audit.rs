@@ -24,7 +24,7 @@ use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
 use sec_core::security::firewall::{FirewallError, FirewallState};
-use sec_core::security::flow::FlowTable;
+use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::heuristic::HeuristicEngine;
 use sec_core::security::mgmt_auth::{MgmtAuth, seal};
 use sec_core::security::vm::{
@@ -687,27 +687,29 @@ fn flow_table_protects_existing_flow_from_unique_tuple_flood() {
     let mut ft = FlowTable::new();
     let now = 1_000u64;
 
-    let real_seen = ft.update(&[10, 0, 0, 1], &KERNEL_IP, 1234, 80, 6, 100, now);
+    let real = FlowKey {
+        src_ip: [10, 0, 0, 1],
+        dst_ip: KERNEL_IP,
+        src_port: 1234,
+        dst_port: 80,
+        protocol: 6,
+    };
+    let real_seen = ft.update(&real, 100, now);
     assert!(real_seen, "real flow should be created on first sighting");
 
     for i in 0..100u16 {
-        let _ = ft.update(
-            &[10, 0, 0, 99],
-            &KERNEL_IP,
-            10_000 + i,
-            12_345,
-            6,
-            100,
-            now + i as u64 + 1,
-        );
+        let flood = FlowKey {
+            src_ip: [10, 0, 0, 99],
+            dst_ip: KERNEL_IP,
+            src_port: 10_000 + i,
+            dst_port: 12_345,
+            protocol: 6,
+        };
+        let _ = ft.update(&flood, 100, now + i as u64 + 1);
     }
 
     let still_known = !ft.update(
-        &[10, 0, 0, 1],
-        &KERNEL_IP,
-        1234,
-        80,
-        6,
+        &real,
         100,
         now + 200,
     );
