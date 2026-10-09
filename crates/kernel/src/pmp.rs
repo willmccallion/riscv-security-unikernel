@@ -57,10 +57,9 @@ const RAM_START: usize = 0x8000_0000;
 /// Exclusive end of RAM (64 KB total).
 const RAM_END: usize = RAM_START + 64 * 1024;
 
-/// Installs the PMP layout described in the module docstring. Must
-/// run after [`crate::trap::init`] so any misconfiguration that
-/// faults the very next access lands in the trap handler instead of
-/// jumping to garbage.
+/// Installs the PMP layout described in the module docstring. `_start`
+/// has already installed the trap vector, so a misconfiguration that
+/// faults the very next access lands in the trap handler.
 pub fn init() {
     unsafe extern "C" {
         static _etext: u8;

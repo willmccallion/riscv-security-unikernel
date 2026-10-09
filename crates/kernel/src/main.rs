@@ -55,7 +55,10 @@ unsafe extern "C" {
 }
 
 // Only hart 0 runs the kernel; every statics access assumes a single
-// thread. BSS is zeroed here rather than trusting the loader to.
+// thread. BSS is zeroed here rather than trusting the loader to. The trap
+// vector goes in before any Rust code runs, and the FPU is switched on
+// (mstatus.FS = Initial): the compiler may emit floating-point
+// instructions anywhere, and they trap while FS is Off.
 global_asm!(
     r#"
     .section .text.entry
@@ -63,6 +66,10 @@ global_asm!(
     _start:
         csrr t0, mhartid
         bnez t0, park
+        la t0, _trap_entry
+        csrw mtvec, t0
+        li t0, 0x2000
+        csrs mstatus, t0
         la sp, _stack_top
         la t0, _sbss
         la t1, _ebss
@@ -94,12 +101,7 @@ static ENGINE: Singleton<Engine> = Singleton::new(Engine::new(MGMT_KEY));
 /// is zeroed.
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain() -> ! {
-    // Trap handler first so a misconfigured PMP write (or any other
-    // synchronous fault from this point on) prints diagnostics and
-    // halts instead of jumping to whatever value `mtvec` powered up
-    // to. PMP runs immediately after to lock W^X before any driver
-    // touches MMIO.
-    trap::init();
+    // Lock W^X before any driver touches MMIO.
     pmp::init();
     stack_guard::arm();
 

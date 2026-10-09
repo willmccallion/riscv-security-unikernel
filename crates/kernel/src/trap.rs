@@ -3,7 +3,8 @@
 //! Without an `mtvec`, any synchronous M-mode fault — illegal
 //! instruction, misaligned access, PMP violation — would jump to
 //! whatever address `mtvec` powered up with and execute it. This module
-//! installs a minimal direct-mode handler that prints the
+//! provides a minimal direct-mode handler, which `_start` installs before
+//! any Rust code runs, that prints the
 //! three CSRs an operator needs to localise the fault (`mcause`,
 //! `mepc`, `mtval`) and then halts the core in `wfi`. There is no
 //! recovery path: an unexpected M-mode trap means the kernel's own
@@ -11,7 +12,7 @@
 //! state. Halting and waiting for a power-cycle is the safest action
 //! a single-core, no-watchdog system can take.
 
-use core::arch::{asm, global_asm};
+use core::arch::global_asm;
 
 global_asm!(
     r#"
@@ -59,20 +60,4 @@ extern "C" fn trap_report(mcause: usize, mepc: usize, mtval: usize) {
         mepc,
         mtval
     );
-}
-
-/// Installs `_trap_entry` as the M-mode trap vector. Call once, early
-/// in boot, before any code that could fault.
-pub fn init() {
-    unsafe extern "C" {
-        fn _trap_entry();
-    }
-    let addr = _trap_entry as *const () as usize;
-    // SAFETY: `mtvec` is a standard M-mode CSR. Bottom two bits are
-    // mode (0 = Direct), and `_trap_entry` is `.align 2` so they're
-    // already zero. Writing this CSR has no effect until a trap
-    // actually fires.
-    unsafe {
-        asm!("csrw mtvec, {0}", in(reg) addr);
-    }
 }
