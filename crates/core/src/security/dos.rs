@@ -25,6 +25,13 @@ struct BanEntry {
     expiry: u64,
 }
 
+impl BanEntry {
+    /// A ban is active until, but not including, its expiry time.
+    const fn is_active(&self, now: u64) -> bool {
+        self.expiry > now
+    }
+}
+
 /// Penalty box for tracking banned IP addresses.
 ///
 /// Maintains a fixed-size table of banned IPs with expiration times.
@@ -57,9 +64,9 @@ impl PenaltyBox {
 
     /// Bans an IP address until `now + duration`.
     ///
-    /// If the penalty box is full, the oldest expired entry is
-    /// overwritten; if none are expired, the entry at index 0 is
-    /// replaced.
+    /// Refreshes the IP's existing ban if it has one; otherwise takes a
+    /// slot whose ban has ended, and only when every slot holds an active
+    /// ban evicts one in round-robin order.
     ///
     /// # Arguments
     ///
@@ -70,22 +77,13 @@ impl PenaltyBox {
         let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
         let expiry = now.saturating_add(duration);
 
-        // Refresh an existing active ban for the same IP in place.
-        // Without this, an authenticated attacker could ban one IP
-        // 16 times and fill every slot with duplicates, diluting the
-        // table against CMS-driven bans on real heavy hitters.
-        for i in 0..16 {
-            if self.entries[i].ip == ip && self.entries[i].expiry >= now {
-                self.entries[i].expiry = expiry;
-                return;
-            }
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.ip == ip && e.is_active(now)) {
+            entry.expiry = expiry;
+            return;
         }
-
-        for i in 0..16 {
-            if self.entries[i].expiry < now {
-                self.entries[i] = BanEntry { ip, expiry };
-                return;
-            }
+        if let Some(entry) = self.entries.iter_mut().find(|e| !e.is_active(now)) {
+            *entry = BanEntry { ip, expiry };
+            return;
         }
         let idx = self.next_evict;
         self.next_evict = (self.next_evict + 1) % 16;
@@ -116,12 +114,7 @@ impl PenaltyBox {
     pub fn is_banned(&self, ip_bytes: &[u8], now: u64) -> bool {
         let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
 
-        for i in 0..16 {
-            if self.entries[i].ip == ip && self.entries[i].expiry > now {
-                return true;
-            }
-        }
-        false
+        self.entries.iter().any(|e| e.ip == ip && e.is_active(now))
     }
 }
 

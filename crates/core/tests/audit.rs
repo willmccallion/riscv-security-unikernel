@@ -887,3 +887,15 @@ fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
     assert!(pbox.is_banned(&[10, 0, 0, 1], u64::MAX - 1));
 }
 
+#[test]
+fn penalty_box_reuses_a_ban_ending_now_before_evicting_an_active_one() {
+    let mut pbox = PenaltyBox::new();
+    for i in 0..15u8 {
+        pbox.ban(&[10, 0, 0, i], 1_000, 0);
+    }
+    pbox.ban(&[10, 0, 0, 15], 100, 0);
+
+    pbox.ban(&[10, 0, 1, 1], 100, 100);
+
+    assert!(pbox.is_banned(&[10, 0, 0, 0], 100), "an active ban was evicted");
+}
