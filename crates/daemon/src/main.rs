@@ -75,20 +75,9 @@ enum Command {
         #[arg(long)]
         duration_secs: Option<u64>,
     },
-    /// Watch real traffic on an interface, receive-only (needs
-    /// `CAP_NET_RAW`, which is dropped once capture starts).
-    Monitor {
-        /// Interface to capture on.
-        #[arg(long)]
-        iface: String,
-        /// Another network to treat as local, such as the rest of a home
-        /// network; may be repeated. The interface's own are always local.
-        #[arg(long = "local-network", value_name = "PREFIX")]
-        local_networks: Vec<monitor::net::IpPrefix>,
-        /// Stop after this many seconds; run until killed if omitted.
-        #[arg(long)]
-        duration_secs: Option<u64>,
-    },
+    /// Watch real traffic, receive-only, live from an interface or from
+    /// a pcap file.
+    Monitor(monitor::command::MonitorArgs),
     /// Send synthetic traffic out of an interface (needs `CAP_NET_RAW`).
     Flood {
         /// Interface to send on.
@@ -118,11 +107,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Run { iface, duration_secs } => run_live(&iface, duration_secs.map(Duration::from_secs)),
-        Command::Monitor {
-            iface,
-            local_networks,
-            duration_secs,
-        } => monitor::live::run(&iface, duration_secs.map(Duration::from_secs), &local_networks),
+        Command::Monitor(args) => monitor::command::run(args),
         Command::Flood { iface, mix, duration_secs, threads } => {
             run_flood(&iface, mix, Duration::from_secs(duration_secs), threads)
         }

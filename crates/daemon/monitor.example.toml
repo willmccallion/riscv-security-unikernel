@@ -1,0 +1,9 @@
+# Example configuration for `security-daemon monitor --config FILE`.
+# Command-line options override these settings.
+
+# Interface to capture on. Omit to give --iface or --pcap instead.
+interface = "enp4s0"
+
+# Networks to treat as local besides the interface's own addresses, such
+# as the rest of a home network seen from a router or mirror port.
+local_networks = ["192.168.1.0/24"]

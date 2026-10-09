@@ -17,3 +17,5 @@ clap = { workspace = true }
 libc = "0.2.180"
 rand = { workspace = true }
 sec-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
