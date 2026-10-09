@@ -15,6 +15,10 @@ pub enum LinkType {
     Ethernet,
     /// A bare IPv4 or IPv6 packet, as on tun and WireGuard interfaces.
     RawIp,
+    /// Linux "cooked" capture (SLL), as `tcpdump -i any` records.
+    LinuxSll,
+    /// Linux cooked capture, version 2 (SLL2).
+    LinuxSll2,
 }
 
 /// An IP packet's addresses and transport, borrowing its payload.
@@ -70,6 +74,10 @@ const ETHERTYPE_IPV6: u16 = 0x86DD;
 const ETHERTYPE_VLAN: u16 = 0x8100;
 const ETHERTYPE_QINQ: u16 = 0x88A8;
 const ETHERNET_HEADER_LEN: usize = 14;
+const SLL_HEADER_LEN: usize = 16;
+const SLL_PROTOCOL_OFFSET: usize = 14;
+const SLL2_HEADER_LEN: usize = 20;
+const SLL2_PROTOCOL_OFFSET: usize = 0;
 const VLAN_TAG_LEN: usize = 4;
 const MAX_VLAN_TAGS: usize = 2;
 
@@ -91,25 +99,26 @@ const MAX_IPV6_EXTENSIONS: usize = 8;
 /// packet or is too short to be one.
 pub fn decode(link: LinkType, frame: &[u8]) -> Option<Packet<'_>> {
     match link {
-        LinkType::Ethernet => decode_ethernet(frame),
+        LinkType::Ethernet => decode_ethertype(read_u16(frame, 12)?, frame.get(ETHERNET_HEADER_LEN..)?),
         LinkType::RawIp => decode_ip(frame),
+        LinkType::LinuxSll => decode_ethertype(read_u16(frame, SLL_PROTOCOL_OFFSET)?, frame.get(SLL_HEADER_LEN..)?),
+        LinkType::LinuxSll2 => decode_ethertype(read_u16(frame, SLL2_PROTOCOL_OFFSET)?, frame.get(SLL2_HEADER_LEN..)?),
     }
 }
 
-fn decode_ethernet(frame: &[u8]) -> Option<Packet<'_>> {
-    let mut ethertype = read_u16(frame, 12)?;
-    let mut offset = ETHERNET_HEADER_LEN;
+/// Decodes what follows a link header that named `ethertype`, stepping
+/// over VLAN tags.
+fn decode_ethertype(mut ethertype: u16, mut rest: &[u8]) -> Option<Packet<'_>> {
     for _ in 0..MAX_VLAN_TAGS {
         if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
             break;
         }
-        ethertype = read_u16(frame, offset + 2)?;
-        offset += VLAN_TAG_LEN;
+        ethertype = read_u16(rest, 2)?;
+        rest = rest.get(VLAN_TAG_LEN..)?;
     }
-    let ip = frame.get(offset..)?;
     match ethertype {
-        ETHERTYPE_IPV4 => decode_ipv4(ip),
-        ETHERTYPE_IPV6 => decode_ipv6(ip),
+        ETHERTYPE_IPV4 => decode_ipv4(rest),
+        ETHERTYPE_IPV6 => decode_ipv6(rest),
         _ => None,
     }
 }
@@ -308,6 +317,18 @@ mod tests {
         let frame = ethernet(ETHERTYPE_QINQ, &[&[0x00, 0x14][..], &inner].concat());
 
         assert!(matches!(decode(LinkType::Ethernet, &frame).unwrap().transport, Transport::Udp(_)));
+    }
+
+    #[test]
+    fn decodes_linux_cooked_captures() {
+        let ip = ipv4(PROTO_UDP, &udp(53, 40000, b"x"));
+        let mut sll = vec![0, 4, 0, 1, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0, 0x08, 0x00];
+        sll.extend_from_slice(&ip);
+        let mut sll2 = vec![0x08, 0x00, 0, 0, 0, 0, 0, 2, 0, 1, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0];
+        sll2.extend_from_slice(&ip);
+
+        assert!(matches!(decode(LinkType::LinuxSll, &sll).unwrap().transport, Transport::Udp(_)));
+        assert!(matches!(decode(LinkType::LinuxSll2, &sll2).unwrap().transport, Transport::Udp(_)));
     }
 
     #[test]
