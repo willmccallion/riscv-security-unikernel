@@ -101,9 +101,16 @@ pub struct LocalNetworks {
 }
 
 impl LocalNetworks {
-    /// Local networks made of `prefixes`.
-    pub const fn new(prefixes: Vec<IpPrefix>) -> Self {
-        Self { prefixes }
+    /// Local networks made of `prefixes`, each listed once; an interface
+    /// with several addresses in one network yields it several times.
+    pub fn new(prefixes: Vec<IpPrefix>) -> Self {
+        let mut unique: Vec<IpPrefix> = Vec::with_capacity(prefixes.len());
+        for prefix in prefixes {
+            if !unique.contains(&prefix) {
+                unique.push(prefix);
+            }
+        }
+        Self { prefixes: unique }
     }
 
     /// The prefixes, in the order given.
@@ -176,6 +183,16 @@ mod tests {
         assert_eq!(local.direction(ip("fd00::5"), ip("2606:4700::1")), Direction::Outbound);
         assert_eq!(local.direction(ip("192.168.1.2"), ip("192.168.1.86")), Direction::Internal);
         assert_eq!(local.direction(ip("8.8.8.8"), ip("1.1.1.1")), Direction::Transit);
+    }
+
+    #[test]
+    fn repeated_prefixes_are_listed_once() {
+        let stable: IpPrefix = "2001:db8:1::5/64".parse().unwrap();
+        let temporary: IpPrefix = "2001:db8:1::abcd/64".parse().unwrap();
+
+        let local = LocalNetworks::new(vec![stable, temporary, stable]);
+
+        assert_eq!(local.prefixes(), [stable]);
     }
 
     #[test]
