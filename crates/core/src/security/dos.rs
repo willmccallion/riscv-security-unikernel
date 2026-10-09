@@ -12,11 +12,62 @@
 //! nanoseconds on the Linux daemon) alongside the duration/cost constants,
 //! which must share the same unit.
 
-/// Entry in the penalty box tracking a banned IP address.
+/// An IPv4 network: an address with only its first `len` bits kept.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Ipv4Prefix {
+    network: u32,
+    len: u8,
+}
+
+impl Ipv4Prefix {
+    /// The `len`-bit prefix containing `addr`, or `None` if `len > 32`.
+    pub const fn new(addr: [u8; 4], len: u8) -> Option<Self> {
+        if len > 32 {
+            return None;
+        }
+        Some(Self {
+            network: u32::from_be_bytes(addr) & mask(len),
+            len,
+        })
+    }
+
+    /// The single-address prefix for `addr`.
+    pub const fn host(addr: [u8; 4]) -> Self {
+        Self {
+            network: u32::from_be_bytes(addr),
+            len: 32,
+        }
+    }
+
+    /// The network address, with the bits past the prefix cleared.
+    pub const fn network(&self) -> [u8; 4] {
+        self.network.to_be_bytes()
+    }
+
+    /// The prefix length in bits.
+    pub const fn prefix_len(&self) -> u8 {
+        self.len
+    }
+
+    /// Whether `addr` lies inside this prefix.
+    pub const fn contains(&self, addr: [u8; 4]) -> bool {
+        u32::from_be_bytes(addr) & mask(self.len) == self.network
+    }
+}
+
+/// The netmask with the top `len` bits set.
+const fn mask(len: u8) -> u32 {
+    match u32::MAX.checked_shl(32 - len as u32) {
+        Some(m) => m,
+        None => 0,
+    }
+}
+
+/// Entry in the penalty box tracking a banned network.
 #[derive(Copy, Clone, Debug)]
 struct BanEntry {
-    /// Banned IP address in network byte order.
-    ip: u32,
+    /// Banned network; a single address is a /32.
+    prefix: Ipv4Prefix,
     /// Time-source value at which the ban expires.
     expiry: u64,
 }
@@ -28,9 +79,9 @@ impl BanEntry {
     }
 }
 
-/// Penalty box for tracking banned IP addresses.
+/// Penalty box for tracking banned addresses and subnets.
 ///
-/// Maintains a fixed-size table of banned IPs with expiration times.
+/// Maintains a fixed-size table of banned prefixes with expiration times.
 /// When the table is full, new bans overwrite the oldest entries.
 #[derive(Debug)]
 pub struct PenaltyBox {
@@ -53,63 +104,61 @@ impl PenaltyBox {
     /// Creates a new empty penalty box.
     pub const fn new() -> Self {
         Self {
-            entries: [BanEntry { ip: 0, expiry: 0 }; 16],
+            entries: [BanEntry {
+                prefix: Ipv4Prefix::host([0; 4]),
+                expiry: 0,
+            }; 16],
             next_evict: 0,
         }
     }
 
-    /// Bans an IP address until `now + duration`.
+    /// Bans a single address until `now + duration`.
+    pub fn ban(&mut self, ip_bytes: &[u8; 4], duration: u64, now: u64) {
+        self.ban_prefix(Ipv4Prefix::host(*ip_bytes), duration, now);
+    }
+
+    /// Bans every address in `prefix` until `now + duration`.
     ///
-    /// Refreshes the IP's existing ban if it has one; otherwise takes a
+    /// Refreshes the prefix's existing ban if it has one; otherwise takes a
     /// slot whose ban has ended, and only when every slot holds an active
     /// ban evicts one in round-robin order.
-    ///
-    /// # Arguments
-    ///
-    /// * `ip_bytes` - IP address as 4 bytes in network byte order.
-    /// * `duration` - Ban duration in time-source units.
-    /// * `now`      - Current time-source value.
-    pub fn ban(&mut self, ip_bytes: &[u8; 4], duration: u64, now: u64) {
-        let ip = u32::from_be_bytes(*ip_bytes);
+    pub fn ban_prefix(&mut self, prefix: Ipv4Prefix, duration: u64, now: u64) {
         let expiry = now.saturating_add(duration);
 
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.ip == ip && e.is_active(now)) {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.prefix == prefix && e.is_active(now)) {
             entry.expiry = expiry;
             return;
         }
         if let Some(entry) = self.entries.iter_mut().find(|e| !e.is_active(now)) {
-            *entry = BanEntry { ip, expiry };
+            *entry = BanEntry { prefix, expiry };
             return;
         }
         let idx = self.next_evict;
         self.next_evict = (self.next_evict + 1) % 16;
-        self.entries[idx] = BanEntry { ip, expiry };
+        self.entries[idx] = BanEntry { prefix, expiry };
     }
 
-    /// Lifts any ban on `ip_bytes` (network byte order).
+    /// Lifts every ban covering `ip_bytes`, whether on the address itself
+    /// or on a subnet containing it.
     pub fn unban(&mut self, ip_bytes: &[u8; 4]) {
-        let ip = u32::from_be_bytes(*ip_bytes);
         for entry in &mut self.entries {
-            if entry.ip == ip {
+            if entry.prefix.contains(*ip_bytes) {
                 entry.expiry = 0;
             }
         }
     }
 
-    /// Checks if an IP address is currently banned.
+    /// Whether an active ban covers `ip_bytes`.
     ///
     /// # Arguments
     ///
     /// * `ip_bytes` - IP address as 4 bytes in network byte order.
     /// * `now` - Current time-source value; bans with `expiry > now` are
     ///   considered active.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the IP is banned and the ban has not expired.
     pub fn is_banned(&self, ip_bytes: &[u8; 4], now: u64) -> bool {
-        let ip = u32::from_be_bytes(*ip_bytes);
-        self.entries.iter().any(|e| e.ip == ip && e.is_active(now))
+        self.entries
+            .iter()
+            .any(|e| e.is_active(now) && e.prefix.contains(*ip_bytes))
     }
 }
 
@@ -177,6 +226,46 @@ impl TokenBucket {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::{Ipv4Prefix, PenaltyBox};
+
+    #[test]
+    fn prefix_keeps_only_the_network_bits() {
+        let prefix = Ipv4Prefix::new([10, 1, 2, 99], 24).unwrap();
+
+        assert_eq!(prefix.network(), [10, 1, 2, 0]);
+        assert!(prefix.contains([10, 1, 2, 200]));
+        assert!(!prefix.contains([10, 1, 3, 1]));
+    }
+
+    #[test]
+    fn zero_length_prefix_covers_everything_and_long_ones_are_rejected() {
+        assert!(Ipv4Prefix::new([1, 2, 3, 4], 0).unwrap().contains([200, 0, 0, 1]));
+        assert_eq!(Ipv4Prefix::new([1, 2, 3, 4], 33), None);
+    }
+
+    #[test]
+    fn a_subnet_ban_covers_its_hosts_only() {
+        let mut pbox = PenaltyBox::new();
+
+        pbox.ban_prefix(Ipv4Prefix::new([10, 1, 2, 0], 24).unwrap(), 1_000, 0);
+
+        assert!(pbox.is_banned(&[10, 1, 2, 77], 1));
+        assert!(!pbox.is_banned(&[10, 1, 3, 77], 1));
+    }
+
+    #[test]
+    fn unbanning_a_host_lifts_the_subnet_ban_covering_it() {
+        let mut pbox = PenaltyBox::new();
+        pbox.ban_prefix(Ipv4Prefix::new([10, 1, 0, 0], 16).unwrap(), 1_000, 0);
+
+        pbox.unban(&[10, 1, 200, 3]);
+
+        assert!(!pbox.is_banned(&[10, 1, 9, 9], 1));
     }
 }
 
