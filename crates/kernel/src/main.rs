@@ -60,7 +60,8 @@ unsafe extern "C" {
     static _ebss: u8;
 }
 
-// Only hart 0 runs the kernel; every statics access assumes a single thread.
+// Only hart 0 runs the kernel; every statics access assumes a single
+// thread. BSS is zeroed here rather than trusting the loader to.
 global_asm!(
     r#"
     .section .text.entry
@@ -69,6 +70,14 @@ global_asm!(
         csrr t0, mhartid
         bnez t0, park
         la sp, _stack_top
+        la t0, _sbss
+        la t1, _ebss
+    zero_bss:
+        bgeu t0, t1, bss_done
+        sd zero, 0(t0)
+        addi t0, t0, 8
+        j zero_bss
+    bss_done:
         call kmain
     park:
         wfi

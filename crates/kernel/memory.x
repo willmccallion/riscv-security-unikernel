@@ -32,10 +32,11 @@ SECTIONS
     } > RAM
 
     .bss : {
+        . = ALIGN(8);
         _sbss = .;
         *(.bss .bss.*)
         *(COMMON)
-        . = ALIGN(4);
+        . = ALIGN(8);
         _ebss = .;
     } > RAM
 

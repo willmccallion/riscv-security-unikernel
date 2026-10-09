@@ -41,10 +41,8 @@ fn region() -> (*mut u8, usize) {
     (start, len)
 }
 
-/// Fills the guard region with the sentinel byte. Call once at boot,
-/// after the BSS clear (which on this kernel happens implicitly via
-/// the linker's `NOLOAD` defaults, since `.stack_guard` reserves
-/// space without a load image).
+/// Fills the guard region with the sentinel byte. Call once at boot;
+/// `_start` has already zeroed BSS, which ends below the guard.
 pub fn arm() {
     let (start, len) = region();
     // SAFETY: `_stack_guard_start` and `_stack_guard_end` are linker
