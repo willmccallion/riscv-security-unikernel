@@ -101,28 +101,40 @@ struct VirtqUsed {
     event: u16,
 }
 
-/// Complete virtqueue structure.
+/// Guest page size and used-ring alignment programmed into the device.
 ///
-/// Contains the descriptor table, available ring, packet buffers,
-/// and used ring all in a single aligned structure for efficient
-/// memory layout.
-#[repr(C, align(4096))]
+/// Legacy VirtIO places the used ring at the next `QUEUE_ALIGN` boundary
+/// after the available ring and addresses the queue by `addr / page`.
+/// With two descriptors everything before the used ring fits in 64
+/// bytes, so a 64-byte page keeps each queue to 128 bytes instead of the
+/// two 4 KB pages a 4096-byte page would cost.
+const GUEST_PAGE: u32 = 64;
+
+/// Legacy virtqueue: descriptor table and available ring, then the used
+/// ring at the next `GUEST_PAGE` boundary.
+#[repr(C, align(64))]
 struct Queue {
     desc: [VirtqDesc; QUEUE_SIZE],
     avail: VirtqAvail,
-    _pad_align: [u8; 6],
-    buffers: [[u8; BUF_SIZE]; QUEUE_SIZE],
-    _pad_rest: [u8; 4096 - 48 - (BUF_SIZE * QUEUE_SIZE)],
+    _pad: [u8; GUEST_PAGE as usize - 32 - 10],
     used: VirtqUsed,
 }
 
+const _: () = assert!(core::mem::offset_of!(Queue, used) == GUEST_PAGE as usize);
+
 /// Receive queue for incoming packets.
-// SAFETY: Queue consists entirely of integer types and pointers; zeroing all bytes produces a valid initial state.
+// SAFETY: Queue consists entirely of integer types; zeroing all bytes produces a valid initial state.
 static mut RX_QUEUE: Queue = unsafe { core::mem::zeroed() };
 
 /// Transmit queue for outgoing packets.
-// SAFETY: Queue consists entirely of integer types and pointers; zeroing all bytes produces a valid initial state.
+// SAFETY: Queue consists entirely of integer types; zeroing all bytes produces a valid initial state.
 static mut TX_QUEUE: Queue = unsafe { core::mem::zeroed() };
+
+/// Packet buffers the RX descriptors point at.
+static mut RX_BUFFERS: [[u8; BUF_SIZE]; QUEUE_SIZE] = [[0; BUF_SIZE]; QUEUE_SIZE];
+
+/// Packet buffers the TX descriptors point at.
+static mut TX_BUFFERS: [[u8; BUF_SIZE]; QUEUE_SIZE] = [[0; BUF_SIZE]; QUEUE_SIZE];
 
 /// Current index in the receive used ring.
 static mut RX_IDX: u16 = 0;
@@ -180,7 +192,7 @@ impl VirtioNet {
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
             for i in 0..QUEUE_SIZE {
-                (*rx).desc[i].addr = addr_of_mut!((*rx).buffers[i]) as u64;
+                (*rx).desc[i].addr = addr_of_mut!(RX_BUFFERS[i]) as u64;
                 (*rx).desc[i].len = BUF_SIZE as u32;
                 (*rx).desc[i].flags = 2;
                 (*rx).avail.ring[i] = i as u16;
@@ -188,19 +200,19 @@ impl VirtioNet {
             (*rx).avail.idx = QUEUE_SIZE as u16;
         }
 
-        Self::reg_write(0x028, 4096);
+        Self::reg_write(0x028, GUEST_PAGE);
 
         Self::reg_write(QUEUE_SEL, 0);
         Self::reg_write(QUEUE_NUM, QUEUE_SIZE as u32);
-        Self::reg_write(QUEUE_ALIGN, 4096);
-        Self::reg_write(QUEUE_PFN, (addr_of_mut!(RX_QUEUE) as u32) >> 12);
+        Self::reg_write(QUEUE_ALIGN, GUEST_PAGE);
+        Self::reg_write(QUEUE_PFN, (addr_of_mut!(RX_QUEUE) as u32) / GUEST_PAGE);
 
         // SAFETY: ACTIVE_BASE is valid (asserted above). reg_write uses write_volatile to MMIO
         // addresses derived from it. All offsets are from the VirtIO 1.0 legacy spec.
         Self::reg_write(QUEUE_SEL, 1);
         Self::reg_write(QUEUE_NUM, QUEUE_SIZE as u32);
-        Self::reg_write(QUEUE_ALIGN, 4096);
-        Self::reg_write(QUEUE_PFN, (addr_of_mut!(TX_QUEUE) as u32) >> 12);
+        Self::reg_write(QUEUE_ALIGN, GUEST_PAGE);
+        Self::reg_write(QUEUE_PFN, (addr_of_mut!(TX_QUEUE) as u32) / GUEST_PAGE);
 
         Self::reg_write(STATUS, 0x01 | 0x02 | 0x08 | 0x04);
         kprintln!("[VirtIO] Driver OK");
@@ -256,7 +268,7 @@ impl VirtioNet {
                     return None;
                 }
 
-                let buf_ptr = addr_of_mut!((*rx).buffers[id]).cast::<u8>();
+                let buf_ptr = addr_of_mut!(RX_BUFFERS[id]).cast::<u8>();
                 let data_ptr = buf_ptr.add(NET_HDR_SIZE);
                 let data_len = len - NET_HDR_SIZE;
                 return Some(core::slice::from_raw_parts_mut(data_ptr, data_len));
@@ -308,7 +320,7 @@ impl VirtioNet {
             let tx = addr_of_mut!(TX_QUEUE);
             let idx = (*tx).avail.idx as usize % QUEUE_SIZE;
 
-            let buf_ptr = addr_of_mut!((*tx).buffers[idx]).cast::<u8>();
+            let buf_ptr = addr_of_mut!(TX_BUFFERS[idx]).cast::<u8>();
 
             core::ptr::write_bytes(buf_ptr, 0, NET_HDR_SIZE);
 
