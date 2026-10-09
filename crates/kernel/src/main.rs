@@ -467,7 +467,7 @@ pub extern "C" fn kmain() -> ! {
 
                     use sec_core::net::tcp::TcpHeader;
                     if let Some((sport, dport)) =
-                        TcpHeader::extract_ports(&packet[payload_offset..])
+                        packet.get(payload_offset..).and_then(TcpHeader::extract_ports)
                     {
                         meta.src_port = sport;
                         meta.dst_port = dport;
