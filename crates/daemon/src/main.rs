@@ -15,6 +15,7 @@ mod key;
 mod monitor;
 mod netif;
 mod privileges;
+mod sandbox;
 mod synth;
 
 /// The daemon's engine: a 65536 x 4 per-source sketch (512 KB), which
@@ -78,6 +79,10 @@ enum Command {
     /// Watch real traffic, receive-only, live from an interface or from
     /// a pcap file.
     Monitor(monitor::command::MonitorArgs),
+    /// Apply the monitor's sandbox, then try reading a file, running a
+    /// program, opening a socket and creating executable memory, and
+    /// report that each was refused.
+    SandboxCheck,
     /// Send synthetic traffic out of an interface (needs `CAP_NET_RAW`).
     Flood {
         /// Interface to send on.
@@ -108,6 +113,7 @@ fn main() -> Result<()> {
         }
         Command::Run { iface, duration_secs } => run_live(&iface, duration_secs.map(Duration::from_secs)),
         Command::Monitor(args) => monitor::command::run(args),
+        Command::SandboxCheck => sandbox::check(),
         Command::Flood { iface, mix, duration_secs, threads } => {
             run_flood(&iface, mix, Duration::from_secs(duration_secs), threads)
         }
