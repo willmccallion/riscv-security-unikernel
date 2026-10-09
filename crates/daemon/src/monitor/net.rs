@@ -111,11 +111,11 @@ impl LocalNetworks {
         &self.prefixes
     }
 
-    /// Whether `addr` is local: inside a local prefix, or link-local,
-    /// multicast, broadcast or unspecified (the source of DHCP and
-    /// neighbour discovery), none of which leave the local network.
+    /// Whether `addr` is local: inside a local prefix, or loopback,
+    /// link-local, multicast, broadcast or unspecified (the source of DHCP
+    /// and neighbour discovery), none of which leave the local network.
     pub fn contains(&self, addr: IpAddr) -> bool {
-        is_link_scoped(addr) || self.prefixes.iter().any(|p| p.contains(addr))
+        never_leaves_local_network(addr) || self.prefixes.iter().any(|p| p.contains(addr))
     }
 
     /// Which way a packet from `src` to `dst` goes.
@@ -129,11 +129,14 @@ impl LocalNetworks {
     }
 }
 
-const fn is_link_scoped(addr: IpAddr) -> bool {
-    match addr {
-        IpAddr::V4(v4) => v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified(),
-        IpAddr::V6(v6) => v6.is_unicast_link_local() || v6.is_multicast() || v6.is_unspecified(),
-    }
+const fn never_leaves_local_network(addr: IpAddr) -> bool {
+    addr.is_loopback()
+        || addr.is_multicast()
+        || addr.is_unspecified()
+        || match addr {
+            IpAddr::V4(v4) => v4.is_link_local() || v4.is_broadcast(),
+            IpAddr::V6(v6) => v6.is_unicast_link_local(),
+        }
 }
 
 #[cfg(test)]
@@ -184,5 +187,7 @@ mod tests {
         assert_eq!(local.direction(ip("fe80::1"), ip("ff02::fb")), Direction::Internal);
         assert_eq!(local.direction(ip("0.0.0.0"), ip("255.255.255.255")), Direction::Internal);
         assert_eq!(local.direction(ip("::"), ip("ff02::1:ff00:2")), Direction::Internal);
+        assert_eq!(local.direction(ip("::1"), ip("::1")), Direction::Internal);
+        assert_eq!(local.direction(ip("127.0.0.1"), ip("127.0.0.53")), Direction::Internal);
     }
 }
