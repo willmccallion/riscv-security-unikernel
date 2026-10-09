@@ -8,8 +8,8 @@ use std::path::Path;
 /// Settings read from a TOML file; command-line options override them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MonitorConfig {
-    /// Interface to capture on.
-    pub interface: Option<String>,
+    /// Interfaces to capture on.
+    pub interfaces: Vec<String>,
     /// Networks to treat as local besides the interface's own.
     pub local_networks: Vec<IpPrefix>,
 }
@@ -18,7 +18,8 @@ pub struct MonitorConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
-    interface: Option<String>,
+    #[serde(default)]
+    interfaces: Vec<String>,
     #[serde(default)]
     local_networks: Vec<String>,
 }
@@ -40,7 +41,7 @@ impl MonitorConfig {
             .map(|prefix| prefix.parse().context("in local_networks"))
             .collect::<Result<_>>()?;
         Ok(Self {
-            interface: file.interface,
+            interfaces: file.interfaces,
             local_networks,
         })
     }
@@ -51,16 +52,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_interface_and_local_networks() {
+    fn parses_interfaces_and_local_networks() {
         let config = MonitorConfig::parse(
             r#"
-            interface = "enp4s0"
+            interfaces = ["enp4s0", "tailscale0"]
             local_networks = ["192.168.1.0/24", "2001:db8:1::/48"]
             "#,
         )
         .unwrap();
 
-        assert_eq!(config.interface.as_deref(), Some("enp4s0"));
+        assert_eq!(config.interfaces, ["enp4s0", "tailscale0"]);
         assert_eq!(config.local_networks.len(), 2);
     }
 
@@ -68,7 +69,7 @@ mod tests {
     fn the_example_configuration_parses() {
         let example = include_str!("../../monitor.example.toml");
 
-        assert_eq!(MonitorConfig::parse(example).unwrap().interface.as_deref(), Some("enp4s0"));
+        assert_eq!(MonitorConfig::parse(example).unwrap().interfaces, ["enp4s0", "tailscale0"]);
     }
 
     #[test]
@@ -78,7 +79,8 @@ mod tests {
 
     #[test]
     fn misspelt_keys_and_bad_prefixes_are_errors() {
-        assert!(MonitorConfig::parse(r#"interfce = "eth0""#).is_err());
+        assert!(MonitorConfig::parse(r#"interfaces = ["eth0"]
+interfce = "eth1""#).is_err());
         let bad = MonitorConfig::parse(r#"local_networks = ["10.0.0.0/40"]"#).unwrap_err();
         assert!(format!("{bad:#}").contains("local_networks"), "{bad:#}");
     }

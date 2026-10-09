@@ -19,12 +19,13 @@ pub fn run(path: &Path, local_networks: &[IpPrefix]) -> Result<()> {
     if local_networks.is_empty() {
         println!("monitor: no local networks given (--local-network); all unicast traffic will count as transit");
     }
-    let mut monitor = Monitor::new(reader.link_type(), LocalNetworks::new(local_networks.to_vec()), report::INTERVAL);
+    let link = reader.link_type();
+    let mut monitor = Monitor::new(LocalNetworks::new(local_networks.to_vec()), report::INTERVAL);
     report::print_local_networks(monitor.local_networks());
 
     let mut frame = Vec::new();
     while let Some(record) = reader.next_record(&mut frame).with_context(|| format!("in {}", path.display()))? {
-        if let Some(summary) = monitor.observe(&frame, record.wire_len, record.at) {
+        if let Some(summary) = monitor.observe(link, &frame, record.wire_len, record.at) {
             report::print_summary(&summary);
         }
     }

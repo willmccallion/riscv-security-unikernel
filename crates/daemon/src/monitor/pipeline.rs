@@ -59,7 +59,6 @@ pub struct Summary {
 /// [`Monitor::tick`] so a quiet interval still closes on time.
 #[derive(Debug)]
 pub struct Monitor {
-    link: LinkType,
     local: LocalNetworks,
     interval: Duration,
     current: Option<OpenInterval>,
@@ -76,11 +75,10 @@ struct OpenInterval {
 }
 
 impl Monitor {
-    /// A monitor for frames of `link` type, judging direction against
-    /// `local`, summarising every `interval`.
-    pub fn new(link: LinkType, local: LocalNetworks, interval: Duration) -> Self {
+    /// A monitor judging direction against `local`, summarising every
+    /// `interval`.
+    pub fn new(local: LocalNetworks, interval: Duration) -> Self {
         Self {
-            link,
             local,
             interval,
             current: None,
@@ -96,17 +94,18 @@ impl Monitor {
         &self.local
     }
 
-    /// Counts a frame captured at `at` whose wire length was `wire_len`.
-    /// Returns the previous interval's summary if this frame begins a new
-    /// one. A frame stamped earlier than the open interval, as captures
-    /// from several queues can be, counts toward the open interval.
-    pub fn observe(&mut self, frame: &[u8], wire_len: u32, at: UnixNanos) -> Option<Summary> {
+    /// Counts a frame of `link` type captured at `at` whose wire length
+    /// was `wire_len`. Returns the previous interval's summary if this
+    /// frame begins a new one. A frame stamped earlier than the open
+    /// interval, as captures from several queues or interfaces can be,
+    /// counts toward the open interval.
+    pub fn observe(&mut self, link: LinkType, frame: &[u8], wire_len: u32, at: UnixNanos) -> Option<Summary> {
         let closed = self.tick(at);
         let open = self.current.get_or_insert_with(|| OpenInterval {
             start: at.floor_to(self.interval),
             totals: TrafficTotals::default(),
         });
-        match decode::decode(self.link, frame) {
+        match decode::decode(link, frame) {
             Some(packet) => {
                 let direction = self.local.direction(packet.src, packet.dst);
                 open.totals.record(&packet, direction, wire_len);
@@ -217,7 +216,7 @@ mod tests {
 
     fn monitor() -> Monitor {
         let local = LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap()]);
-        Monitor::new(LinkType::Ethernet, local, Duration::from_secs(1))
+        Monitor::new(local, Duration::from_secs(1))
     }
 
     #[test]
@@ -225,9 +224,9 @@ mod tests {
         let mut m = monitor();
         let frame = udp_frame();
 
-        let first = m.observe(&frame, 60, UnixNanos::new(10 * SECOND + 5));
-        let second = m.observe(&frame, 60, UnixNanos::new(10 * SECOND + 900));
-        let closed = m.observe(&frame, 60, UnixNanos::new(11 * SECOND)).unwrap();
+        let first = m.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(10 * SECOND + 5));
+        let second = m.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(10 * SECOND + 900));
+        let closed = m.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(11 * SECOND)).unwrap();
 
         assert_eq!((first, second), (None, None));
         assert_eq!(closed.start, UnixNanos::new(10 * SECOND));
@@ -237,7 +236,7 @@ mod tests {
     #[test]
     fn a_quiet_interval_closes_on_tick() {
         let mut m = monitor();
-        let _ = m.observe(&udp_frame(), 60, UnixNanos::new(3 * SECOND + 1));
+        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(3 * SECOND + 1));
 
         let early = m.tick(UnixNanos::new(3 * SECOND + SECOND / 2));
         let due = m.tick(UnixNanos::new(4 * SECOND));
@@ -250,9 +249,9 @@ mod tests {
     #[test]
     fn late_frames_count_toward_the_open_interval() {
         let mut m = monitor();
-        let _ = m.observe(&udp_frame(), 60, UnixNanos::new(5 * SECOND + 10));
+        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(5 * SECOND + 10));
 
-        let late = m.observe(&udp_frame(), 60, UnixNanos::new(4 * SECOND + 999));
+        let late = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(4 * SECOND + 999));
 
         assert_eq!(late, None);
         assert_eq!(m.finish().unwrap().totals.inbound.packets, 2);
@@ -265,7 +264,7 @@ mod tests {
         arp.extend_from_slice(&[0x08, 0x06]);
         arp.extend_from_slice(&[0; 28]);
 
-        let _ = m.observe(&arp, 42, UnixNanos::new(SECOND));
+        let _ = m.observe(LinkType::Ethernet, &arp, 42, UnixNanos::new(SECOND));
 
         let summary = m.finish().unwrap();
         assert_eq!(summary.totals.non_ip.packets, 1);
@@ -276,7 +275,7 @@ mod tests {
     fn summaries_list_active_hosts_and_flows() {
         let mut m = monitor();
 
-        let _ = m.observe(&udp_frame(), 60, UnixNanos::new(SECOND));
+        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(SECOND));
         let summary = m.finish().unwrap();
 
         let addrs: Vec<String> = summary.hosts.iter().map(|h| h.activity.addr.to_string()).collect();
@@ -303,7 +302,7 @@ mod tests {
         frame.extend_from_slice(&[0, 0]);
         frame.extend_from_slice(&answer);
 
-        let _ = m.observe(&frame, 90, UnixNanos::new(SECOND));
+        let _ = m.observe(LinkType::Ethernet, &frame, 90, UnixNanos::new(SECOND));
         let summary = m.finish().unwrap();
 
         let resolver = summary.hosts.iter().find(|h| h.activity.addr.to_string() == "1.1.1.1").unwrap();

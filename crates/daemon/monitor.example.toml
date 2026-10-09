@@ -1,9 +1,13 @@
 # Example configuration for `security-daemon monitor --config FILE`.
 # Command-line options override these settings.
 
-# Interface to capture on. Omit to give --iface or --pcap instead.
-interface = "enp4s0"
+# Interfaces to capture on. Omit to give --iface or --pcap instead. A
+# VPN's interface is worth adding: with Tailscale's MagicDNS, DNS replies
+# only appear on tailscale0, and they name the hosts seen on the LAN side.
+interfaces = ["enp4s0", "tailscale0"]
 
-# Networks to treat as local besides the interface's own addresses, such
-# as the rest of a home network seen from a router or mirror port.
-local_networks = ["192.168.1.0/24"]
+# Networks to treat as local besides the interfaces' own addresses: the
+# rest of a home network seen from a router or mirror port, or a
+# tailnet, so traffic to your own devices is not counted as internet
+# traffic.
+local_networks = ["192.168.1.0/24", "100.64.0.0/10", "fd7a:115c:a1e0::/48"]

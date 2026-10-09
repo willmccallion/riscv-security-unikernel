@@ -293,6 +293,28 @@ impl RxRing {
     }
 }
 
+/// Waits up to `timeout_ms` for any of `rings` to have frames ready.
+pub fn wait_for_any(rings: &[RxRing], timeout_ms: i32) -> Result<()> {
+    let mut fds: Vec<libc::pollfd> = rings
+        .iter()
+        .map(|ring| libc::pollfd {
+            fd: ring.fd.as_raw_fd(),
+            events: libc::POLLIN | libc::POLLERR,
+            revents: 0,
+        })
+        .collect();
+    let count = libc::nfds_t::try_from(fds.len()).context("too many rings")?;
+    // SAFETY: fds is a live array of `count` pollfds for the call.
+    let rc = unsafe { libc::poll(fds.as_mut_ptr(), count, timeout_ms) };
+    if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::Interrupted {
+            return Err(err).context("poll");
+        }
+    }
+    Ok(())
+}
+
 impl Drop for RxRing {
     fn drop(&mut self) {
         // SAFETY: unmaps exactly the region mapped in `open`; no references
