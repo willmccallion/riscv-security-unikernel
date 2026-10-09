@@ -174,7 +174,9 @@ Measures `.text + .rodata + .data + .bss` and fails the build if the total excee
 
 ## Running
 
-**Requirements:** Rust nightly · `qemu-system-riscv64` · `iproute2` · `make`
+**Requirements:** Rust (pinned in `rust-toolchain.toml`, nightly for fuzzing and Miri) · `qemu-system-riscv64` · `iproute2` · `make`
+
+On Nix, `nix develop` provides all of these.
 
 ```bash
 # Build kernel + configure TAP interface + launch QEMU
