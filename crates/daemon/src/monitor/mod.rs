@@ -14,4 +14,5 @@ pub mod pipeline;
 pub mod replay;
 pub mod report;
 pub mod time;
+pub mod tls;
 pub mod totals;
