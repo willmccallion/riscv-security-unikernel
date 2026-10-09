@@ -68,7 +68,7 @@ impl PenaltyBox {
     /// * `now`      - Current time-source value.
     pub fn ban(&mut self, ip_bytes: &[u8], duration: u64, now: u64) {
         let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
-        let expiry = now + duration;
+        let expiry = now.saturating_add(duration);
 
         // Refresh an existing active ban for the same IP in place.
         // Without this, an authenticated attacker could ban one IP

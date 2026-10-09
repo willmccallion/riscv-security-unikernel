@@ -877,3 +877,13 @@ fn vm_out_of_bounds_loads_all_clear_the_register() {
         assert_eq!(action, Ok(VmAction::Pass), "opcode {load:#x} left a stale register");
     }
 }
+
+#[test]
+fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
+    let mut pbox = PenaltyBox::new();
+
+    pbox.ban(&[10, 0, 0, 1], u64::MAX, u64::MAX - 5);
+
+    assert!(pbox.is_banned(&[10, 0, 0, 1], u64::MAX - 1));
+}
+
