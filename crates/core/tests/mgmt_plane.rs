@@ -180,3 +180,61 @@ fn full_firewall_table_is_reported_in_the_ack() {
     let outcome = common::acks(&sink).last().map(|&(_, _, o)| o);
     assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
 }
+
+fn command(kind: ManagementMessageType, operand: &[u8]) -> Vec<u8> {
+    let mut body = vec![kind as u8];
+    body.extend_from_slice(operand);
+    body
+}
+
+#[test]
+fn unblock_port_reopens_a_blocked_port() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let _ = e.process(&mut mgmt(1, &block_port(PROBE_PORT)), 1, &mut sink);
+    let unblock = command(ManagementMessageType::UnblockPort, &PROBE_PORT.to_be_bytes());
+    let _ = e.process(&mut mgmt(2, &unblock), 2, &mut sink);
+
+    let v = e.process(&mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"), 3, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}
+
+#[test]
+fn remove_dpi_pattern_stops_matching_it() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let operand = [&[6u8][..], b"needle"].concat();
+    let _ = e.process(&mut mgmt(1, &command(ManagementMessageType::AddDpiPattern, &operand)), 1, &mut sink);
+    let _ = e.process(&mut mgmt(2, &command(ManagementMessageType::RemoveDpiPattern, &operand)), 2, &mut sink);
+
+    let v = e.process(&mut udp([10, 9, 9, 9], 5000, 80, b"a needle here"), 3, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}
+
+#[test]
+fn unload_bpf_program_stops_filtering() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let drop_all = [ManagementMessageType::UploadBpfProgram as u8, 1, Opcode::Ret as u8, 0, 0, 0, 0, 0, 0];
+    let _ = e.process(&mut mgmt(1, &drop_all), 1, &mut sink);
+    let _ = e.process(&mut mgmt(2, &command(ManagementMessageType::UnloadBpfProgram, &[])), 2, &mut sink);
+
+    let v = e.process(&mut udp([10, 9, 9, 9], 5000, 80, b"hello"), 3, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}
+
+#[test]
+fn unban_ip_lets_the_source_back_in() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let target = [10, 9, 9, 9];
+    let _ = e.process(&mut mgmt(1, &command(ManagementMessageType::BanIp, &target)), 1, &mut sink);
+    let _ = e.process(&mut mgmt(2, &command(ManagementMessageType::UnbanIp, &target)), 2, &mut sink);
+
+    let v = e.process(&mut udp(target, 5000, 80, b"hello"), 3, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}

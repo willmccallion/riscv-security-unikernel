@@ -22,6 +22,14 @@ pub enum ManagementMessageType {
     UploadBpfProgram = 0x03,
     /// Manually ban an IP address.
     BanIp = 0x04,
+    /// Remove a destination port from the firewall.
+    UnblockPort = 0x05,
+    /// Remove a runtime-added DPI pattern.
+    RemoveDpiPattern = 0x06,
+    /// Uninstall the BPF program, so every packet skips the filter.
+    UnloadBpfProgram = 0x07,
+    /// Lift a ban on an IP address.
+    UnbanIp = 0x08,
 }
 
 impl ManagementMessageType {
@@ -43,6 +51,10 @@ impl ManagementMessageType {
             0x02 => Some(Self::AddDpiPattern),
             0x03 => Some(Self::UploadBpfProgram),
             0x04 => Some(Self::BanIp),
+            0x05 => Some(Self::UnblockPort),
+            0x06 => Some(Self::RemoveDpiPattern),
+            0x07 => Some(Self::UnloadBpfProgram),
+            0x08 => Some(Self::UnbanIp),
             _ => None,
         }
     }
@@ -100,17 +112,17 @@ pub mod mgmt_packet {
     /// Offset to message type field within the body.
     pub const MSG_TYPE_OFFSET: usize = 0;
 
-    /// BlockPort message format.
+    /// BlockPort and UnblockPort message format.
     pub mod block_port {
-        /// Minimum body length for BlockPort: type byte + u16 port.
+        /// Minimum body length: type byte + u16 port.
         pub const MIN_PAYLOAD_LEN: usize = 3;
         /// Offset to port number (bytes 1-2, big-endian).
         pub const PORT_OFFSET: usize = 1;
     }
 
-    /// AddDpiPattern message format.
+    /// AddDpiPattern and RemoveDpiPattern message format.
     pub mod add_dpi {
-        /// Minimum body length for AddDpiPattern: type byte + length byte.
+        /// Minimum body length: type byte + length byte.
         pub const MIN_PAYLOAD_LEN: usize = 2;
         /// Offset to pattern length field.
         pub const LEN_OFFSET: usize = 1;
@@ -134,9 +146,9 @@ pub mod mgmt_packet {
         pub const MAX_INSTR_COUNT: usize = 64;
     }
 
-    /// BanIp message format.
+    /// BanIp and UnbanIp message format.
     pub mod ban_ip {
-        /// Minimum body length for BanIp: type byte + 4-byte IP.
+        /// Minimum body length: type byte + 4-byte IP.
         pub const MIN_PAYLOAD_LEN: usize = 5;
         /// Offset to IP address (bytes 1-4).
         pub const IP_OFFSET: usize = 1;

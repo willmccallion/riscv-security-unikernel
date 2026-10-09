@@ -571,6 +571,10 @@ fn ack_entry(ack: Ack) -> LogEntry {
         Some(ManagementMessageType::AddDpiPattern) => "add DPI pattern",
         Some(ManagementMessageType::UploadBpfProgram) => "upload BPF program",
         Some(ManagementMessageType::BanIp) => "ban IP",
+        Some(ManagementMessageType::UnblockPort) => "unblock port",
+        Some(ManagementMessageType::RemoveDpiPattern) => "remove DPI pattern",
+        Some(ManagementMessageType::UnloadBpfProgram) => "unload BPF program",
+        Some(ManagementMessageType::UnbanIp) => "unban IP",
         None => "unknown command",
     };
     let (outcome, color) = match ack.outcome {

@@ -402,16 +402,21 @@ impl Engine {
             Some(ManagementMessageType::AddDpiPattern) => self.add_dpi_pattern(body),
             Some(ManagementMessageType::UploadBpfProgram) => self.upload_bpf(body),
             Some(ManagementMessageType::BanIp) => self.ban_ip(body, now),
+            Some(ManagementMessageType::UnblockPort) => self.unblock_port(body),
+            Some(ManagementMessageType::RemoveDpiPattern) => self.remove_dpi_pattern(body),
+            Some(ManagementMessageType::UnloadBpfProgram) => {
+                self.bpf.len = 0;
+                MgmtOutcome::Applied
+            }
+            Some(ManagementMessageType::UnbanIp) => self.unban_ip(body),
             None => MgmtOutcome::Invalid,
         }
     }
 
     fn block_port(&mut self, body: &[u8]) -> MgmtOutcome {
-        use mgmt_packet::block_port;
-        let Some(port) = body.get(block_port::PORT_OFFSET..block_port::PORT_OFFSET + 2) else {
+        let Some(port) = port_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        let port = u16::from_be_bytes([port[0], port[1]]);
         // Blocking the mgmt port would cut the operator off for good.
         if port == MANAGEMENT_PORT {
             return MgmtOutcome::Refused;
@@ -422,12 +427,16 @@ impl Engine {
         }
     }
 
-    fn add_dpi_pattern(&mut self, body: &[u8]) -> MgmtOutcome {
-        use mgmt_packet::add_dpi;
-        let Some(&len) = body.get(add_dpi::LEN_OFFSET) else {
+    fn unblock_port(&mut self, body: &[u8]) -> MgmtOutcome {
+        let Some(port) = port_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        let Some(pattern) = body.get(add_dpi::PATTERN_OFFSET..add_dpi::PATTERN_OFFSET + usize::from(len)) else {
+        self.fw.unblock_port(port);
+        MgmtOutcome::Applied
+    }
+
+    fn add_dpi_pattern(&mut self, body: &[u8]) -> MgmtOutcome {
+        let Some(pattern) = pattern_operand(body) else {
             return MgmtOutcome::Invalid;
         };
         match self.dyn_rules.add(pattern) {
@@ -437,12 +446,27 @@ impl Engine {
         }
     }
 
-    fn ban_ip(&mut self, body: &[u8], now: u64) -> MgmtOutcome {
-        use mgmt_packet::ban_ip;
-        let Some(ip) = body.get(ban_ip::IP_OFFSET..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE) else {
+    fn remove_dpi_pattern(&mut self, body: &[u8]) -> MgmtOutcome {
+        let Some(pattern) = pattern_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.pbox.ban(ip, IP_BAN_DURATION_CYCLES as u64, now);
+        self.dyn_rules.remove(pattern);
+        MgmtOutcome::Applied
+    }
+
+    fn ban_ip(&mut self, body: &[u8], now: u64) -> MgmtOutcome {
+        let Some(ip) = ip_operand(body) else {
+            return MgmtOutcome::Invalid;
+        };
+        self.pbox.ban(&ip, IP_BAN_DURATION_CYCLES as u64, now);
+        MgmtOutcome::Applied
+    }
+
+    fn unban_ip(&mut self, body: &[u8]) -> MgmtOutcome {
+        let Some(ip) = ip_operand(body) else {
+            return MgmtOutcome::Invalid;
+        };
+        self.pbox.unban(&ip);
         MgmtOutcome::Applied
     }
 
@@ -475,6 +499,26 @@ impl Engine {
         self.bpf.len = count;
         MgmtOutcome::Applied
     }
+}
+
+/// The big-endian port operand of a (Un)BlockPort body.
+fn port_operand(body: &[u8]) -> Option<u16> {
+    use mgmt_packet::block_port::PORT_OFFSET;
+    let port = body.get(PORT_OFFSET..PORT_OFFSET + 2)?;
+    Some(u16::from_be_bytes([port[0], port[1]]))
+}
+
+/// The length-prefixed pattern operand of an Add/RemoveDpiPattern body.
+fn pattern_operand(body: &[u8]) -> Option<&[u8]> {
+    use mgmt_packet::add_dpi::{LEN_OFFSET, PATTERN_OFFSET};
+    let len = usize::from(*body.get(LEN_OFFSET)?);
+    body.get(PATTERN_OFFSET..PATTERN_OFFSET + len)
+}
+
+/// The IPv4 operand of a (Un)BanIp body.
+fn ip_operand(body: &[u8]) -> Option<[u8; 4]> {
+    use mgmt_packet::ban_ip::IP_OFFSET;
+    body.get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?.try_into().ok()
 }
 
 /// The IPv4 header fields the pipeline acts on.
