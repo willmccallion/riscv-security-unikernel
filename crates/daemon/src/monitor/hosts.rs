@@ -92,12 +92,20 @@ impl HostTable {
         }
     }
 
-    /// Counts a packet of `wire_len` bytes from `sender` to `receiver`.
-    /// `role`, when the packet opened a flow, credits whichever host
-    /// started it.
-    pub fn record(&mut self, sender: PacketEnd, receiver: PacketEnd, wire_len: u32, role: Option<&PacketRole>, at: UnixNanos) {
+    /// Counts a packet of `wire_len` bytes from `sender` to `receiver`;
+    /// an end that is not a single host, such as a broadcast address, is
+    /// `None` and not tracked. `role`, when the packet opened a flow,
+    /// credits whichever host started it.
+    pub fn record(
+        &mut self,
+        sender: Option<PacketEnd>,
+        receiver: Option<PacketEnd>,
+        wire_len: u32,
+        role: Option<&PacketRole>,
+        at: UnixNanos,
+    ) {
         let opened_by_sender = role.filter(|r| r.opened).map(|r| r.from_client);
-        if let Some(host) = self.entry(sender, at) {
+        if let Some(host) = sender.and_then(|end| self.entry(end, at)) {
             host.sent.add(wire_len);
             match opened_by_sender {
                 Some(true) => host.flows_opened += 1,
@@ -105,7 +113,7 @@ impl HostTable {
                 None => {}
             }
         }
-        if let Some(host) = self.entry(receiver, at) {
+        if let Some(host) = receiver.and_then(|end| self.entry(end, at)) {
             host.received.add(wire_len);
             match opened_by_sender {
                 Some(true) => host.flows_accepted += 1,
@@ -189,9 +197,9 @@ mod tests {
         let cdn = end("1.1.1.1", Locality::Remote);
         let dns = end("9.9.9.9", Locality::Remote);
 
-        table.record(me, cdn, 100, Some(&opened_by_client(true)), UnixNanos::new(0));
-        table.record(cdn, me, 1500, None, UnixNanos::new(1));
-        table.record(me, dns, 80, None, UnixNanos::new(2));
+        table.record(Some(me), Some(cdn), 100, Some(&opened_by_client(true)), UnixNanos::new(0));
+        table.record(Some(cdn), Some(me), 1500, None, UnixNanos::new(1));
+        table.record(Some(me), Some(dns), 80, None, UnixNanos::new(2));
         let active = table.close_interval();
 
         let addrs: Vec<String> = active.iter().map(|h| h.addr.to_string()).collect();
@@ -205,11 +213,11 @@ mod tests {
     fn closing_an_interval_resets_activity_but_remembers_hosts() {
         let mut table = HostTable::new(1);
         let a = end("10.0.0.1", Locality::Local);
-        table.record(a, a, 10, None, UnixNanos::new(0));
+        table.record(Some(a), Some(a), 10, None, UnixNanos::new(0));
         let _ = table.close_interval();
 
         let quiet = table.close_interval();
-        table.record(end("10.0.0.2", Locality::Local), a, 10, None, UnixNanos::new(1));
+        table.record(Some(end("10.0.0.2", Locality::Local)), Some(a), 10, None, UnixNanos::new(1));
 
         assert!(quiet.is_empty());
         assert_eq!(table.take_untracked(), 1, "the table is full of the remembered host");
@@ -219,10 +227,11 @@ mod tests {
     fn hosts_idle_for_an_hour_are_forgotten() {
         let mut table = HostTable::new(1);
         let a = end("10.0.0.1", Locality::Local);
-        table.record(a, a, 10, None, UnixNanos::new(0));
+        table.record(Some(a), Some(a), 10, None, UnixNanos::new(0));
 
         table.expire(UnixNanos::new(3_600 * 1_000_000_000));
-        table.record(end("10.0.0.2", Locality::Local), end("10.0.0.2", Locality::Local), 10, None, UnixNanos::new(1));
+        let b = end("10.0.0.2", Locality::Local);
+        table.record(Some(b), Some(b), 10, None, UnixNanos::new(1));
 
         assert_eq!(table.take_untracked(), 0);
     }

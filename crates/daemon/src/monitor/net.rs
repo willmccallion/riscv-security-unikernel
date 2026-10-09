@@ -28,6 +28,17 @@ impl IpPrefix {
     pub fn contains(&self, addr: IpAddr) -> bool {
         Self::new(addr, self.len).is_some_and(|p| p.network == self.network)
     }
+
+    /// Whether `addr` is this IPv4 network's broadcast address: every
+    /// host bit set, in a network large enough to have one (/30 or
+    /// shorter).
+    pub fn is_broadcast(&self, addr: IpAddr) -> bool {
+        let (IpAddr::V4(network), IpAddr::V4(candidate)) = (self.network, addr) else {
+            return false;
+        };
+        let host_bits = mask_v4(u32::MAX, self.len).map_or(0, |mask| !mask);
+        self.len <= 30 && u32::from(candidate) == u32::from(network) | host_bits
+    }
 }
 
 impl fmt::Display for IpPrefix {
@@ -125,6 +136,17 @@ impl LocalNetworks {
         never_leaves_local_network(addr) || self.prefixes.iter().any(|p| p.contains(addr))
     }
 
+    /// Whether `addr` names one host, rather than being multicast,
+    /// broadcast (including a local network's broadcast address) or
+    /// unspecified.
+    pub fn is_host_address(&self, addr: IpAddr) -> bool {
+        let shared = match addr {
+            IpAddr::V4(v4) => v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified(),
+            IpAddr::V6(v6) => v6.is_multicast() || v6.is_unspecified(),
+        };
+        !shared && !self.prefixes.iter().any(|p| p.is_broadcast(addr))
+    }
+
     /// Which way a packet from `src` to `dst` goes.
     pub fn direction(&self, src: IpAddr, dst: IpAddr) -> Direction {
         match (self.contains(src), self.contains(dst)) {
@@ -193,6 +215,18 @@ mod tests {
         let local = LocalNetworks::new(vec![stable, temporary, stable]);
 
         assert_eq!(local.prefixes(), [stable]);
+    }
+
+    #[test]
+    fn multicast_broadcast_and_unspecified_addresses_are_not_hosts() {
+        let local = LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap(), "10.0.0.0/31".parse().unwrap()]);
+
+        for shared in ["0.0.0.0", "255.255.255.255", "192.168.1.255", "224.0.0.252", "ff12::8384", "::"] {
+            assert!(!local.is_host_address(ip(shared)), "{shared}");
+        }
+        for host in ["192.168.1.86", "192.168.1.0", "10.0.0.1", "8.8.8.8", "fe80::1"] {
+            assert!(local.is_host_address(ip(host)), "{host}");
+        }
     }
 
     #[test]

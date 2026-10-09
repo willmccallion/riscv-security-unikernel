@@ -200,9 +200,13 @@ impl Monitor {
         self.names.learn(server, &hello.name, source, at);
     }
 
-    fn end(&self, addr: IpAddr) -> PacketEnd {
+    /// The host at `addr`, or `None` if `addr` is not a single host.
+    fn end(&self, addr: IpAddr) -> Option<PacketEnd> {
+        if !self.local.is_host_address(addr) {
+            return None;
+        }
         let locality = if self.local.contains(addr) { Locality::Local } else { Locality::Remote };
-        PacketEnd { addr, locality }
+        Some(PacketEnd { addr, locality })
     }
 
     /// Closes the open interval if `now` is past its end.
