@@ -227,3 +227,17 @@ make gui
 4. Use the **eBPF STUDIO** tab to upload or unload a packet filter
 
 Press `Ctrl+B X` to exit QEMU.
+
+---
+
+## Limitations and Next Steps
+
+This is a demonstration of the techniques, not a production security appliance:
+
+- **Nothing is protected inline.** The kernel and the daemon inspect traffic addressed to their own address (192.168.100.2, compiled in) and report verdicts; they do not forward or filter traffic for other hosts.
+- **DPI is shallow.** Signatures are matched case-sensitively within single packets, with no TCP stream or IP fragment reassembly, so splitting or re-encoding a payload evades them, and encrypted traffic is opaque.
+- **Tables are sized for 64 KB.** 74 flows, 16 bans, and a heavy-hitter sketch that saturates (and bans every source) above about 12.8k packets per window.
+- **IPv4 only**, no VLANs, no runtime configuration; thresholds are in CPU cycles.
+- **One pre-shared key** authenticates the management plane, with no rotation.
+
+The natural next step is an L3/L4 DDoS scrubber: an XDP program doing the per-packet ban, rate-limit and port checks in the kernel driver at line rate, driven by the existing authenticated control plane and dashboard, with deeper inspection of surviving traffic over AF_XDP.
