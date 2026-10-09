@@ -464,14 +464,20 @@ impl AegisApp {
                     ui.horizontal(|ui| {
                         ui.heading("Alert Details");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
-                                .clicked()
+                            // BAN on a subnet alert would ban only its network address.
+                            let (address, is_subnet) = match log.src_ip.split_once('/') {
+                                Some((address, _)) => (address, true),
+                                None => (log.src_ip.as_str(), false),
+                            };
+                            if !is_subnet
+                                && ui
+                                    .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
+                                    .clicked()
                             {
-                                ban_target = log.src_ip.parse().ok().map(MgmtCommand::BanIp);
+                                ban_target = address.parse().ok().map(MgmtCommand::BanIp);
                             }
-                            if ui.button("UNBAN IP").clicked() {
-                                ban_target = log.src_ip.parse().ok().map(MgmtCommand::UnbanIp);
+                            if ui.button("UNBAN").clicked() {
+                                ban_target = address.parse().ok().map(MgmtCommand::UnbanIp);
                             }
                         });
                     });
