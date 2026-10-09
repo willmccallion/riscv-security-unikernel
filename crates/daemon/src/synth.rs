@@ -32,9 +32,12 @@ pub fn frames(mix: Mix, count: usize, rng: &mut StdRng) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// One of `SOURCES` fixed client addresses, scattered across the address
+/// space (Knuth's multiplicative hash of the index) the way real clients
+/// are, rather than packed into one subnet the engine would rightly ban.
 fn clean_source(rng: &mut StdRng) -> [u8; 4] {
-    let n = rng.gen_range(0..SOURCES);
-    [10, 1, (n >> 8) as u8, (n & 0xFF) as u8]
+    let n = u32::from(rng.gen_range(0..SOURCES));
+    n.wrapping_mul(2_654_435_761).to_be_bytes()
 }
 
 fn http_payload(rng: &mut StdRng) -> Vec<u8> {
