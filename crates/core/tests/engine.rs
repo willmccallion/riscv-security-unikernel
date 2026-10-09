@@ -105,3 +105,18 @@ fn alerts_go_to_the_operator_after_it_authenticates() {
     assert_eq!(&alert[0..6], &common::PEER_MAC);
     assert_eq!(&alert[30..34], &PEER_IP);
 }
+
+#[test]
+fn icmp_echo_is_answered_even_when_its_checksum_equals_a_blocked_port() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let v = e.process(
+        &mut common::icmp_echo(PEER_IP, DEFAULT_BLOCKED_PORT),
+        1,
+        &mut sink,
+    );
+
+    assert_eq!(v, Verdict::Consumed);
+    assert!(sink.alert_reasons().is_empty());
+}

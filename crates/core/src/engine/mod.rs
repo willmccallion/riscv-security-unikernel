@@ -232,20 +232,14 @@ impl Engine {
                 &packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
             );
         }
-        if packet.len() >= ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE
-            && packet[ethernet::TYPE_OFFSET] == 0x08
-            && packet[ethernet::TYPE_OFFSET + 1] == 0x00
-        {
-            meta.src_ip
-                .copy_from_slice(&packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE]);
-            meta.dst_ip
-                .copy_from_slice(&packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]);
-            meta.protocol = packet[ipv4::PROTOCOL_OFFSET];
-            let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
-            let payload_offset = ipv4::HEADER_OFFSET + ihl as usize;
-            if let Some((sport, dport)) = packet.get(payload_offset..).and_then(TcpHeader::extract_ports) {
-                meta.src_port = sport;
-                meta.dst_port = dport;
+        let ip = parse_ipv4(packet);
+        if let Some(ip) = &ip {
+            meta.src_ip = ip.src_ip;
+            meta.dst_ip = ip.dst_ip;
+            meta.protocol = ip.protocol;
+            if let Some((src_port, dst_port)) = transport_ports(packet, ip) {
+                meta.src_port = src_port;
+                meta.dst_port = dst_port;
             }
 
             if self.flows.update(
@@ -269,7 +263,6 @@ impl Engine {
             }
         }
         let dst_port = meta.dst_port;
-        let protocol = meta.protocol;
 
         if drop || !self.limiter.allow(now) {
             self.stats.ddos += 1;
@@ -279,16 +272,11 @@ impl Engine {
             return Verdict::Dropped(AlertReason::Ddos);
         }
 
-        if IpProtocol::from_u8(protocol) == Some(IpProtocol::Tcp) {
-            let ihl = (packet[ipv4::VERSION_IHL_OFFSET] & ipv4::IHL_MASK) * 4;
-            let tcp_offset = ipv4::HEADER_OFFSET + ihl as usize;
-            if packet.len() >= tcp_offset + tcp::MIN_HEADER_SIZE
-                && heuristic::HeuristicEngine::check_tcp_flags(packet[tcp_offset + tcp::FLAGS_OFFSET])
-                    .is_some()
-            {
-                self.stats.heuristic += 1;
-                return self.drop_with_alert(&meta, AlertReason::Heuristic, sink);
-            }
+        if let Some(flags) = ip.as_ref().and_then(|ip| tcp_flags(packet, ip))
+            && heuristic::HeuristicEngine::check_tcp_flags(flags).is_some()
+        {
+            self.stats.heuristic += 1;
+            return self.drop_with_alert(&meta, AlertReason::Heuristic, sink);
         }
 
         if self.bpf.len > 0 {
@@ -439,6 +427,54 @@ impl Engine {
             self.alert(meta, AlertReason::BpfReject, sink);
         }
     }
+}
+
+/// The IPv4 header fields the pipeline acts on.
+#[derive(Debug, Clone, Copy)]
+struct Ipv4Fields {
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    protocol: u8,
+    /// Offset of the transport header within the frame.
+    l4_offset: usize,
+}
+
+/// Reads the IPv4 header of an Ethernet frame, or `None` if the frame is
+/// not IPv4 or too short to hold a minimal header.
+fn parse_ipv4(packet: &[u8]) -> Option<Ipv4Fields> {
+    let header = packet.get(ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE)?;
+    if packet[ethernet::TYPE_OFFSET..ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE] != [0x08, 0x00] {
+        return None;
+    }
+    let ihl = usize::from(header[0] & ipv4::IHL_MASK) * 4;
+    Some(Ipv4Fields {
+        src_ip: [header[12], header[13], header[14], header[15]],
+        dst_ip: [header[16], header[17], header[18], header[19]],
+        protocol: header[9],
+        l4_offset: ipv4::HEADER_OFFSET + ihl,
+    })
+}
+
+/// Source and destination ports, for TCP and UDP only: other protocols
+/// have no ports, and reading their header bytes as ports would let an
+/// ICMP checksum match a firewall rule.
+fn transport_ports(packet: &[u8], ip: &Ipv4Fields) -> Option<(u16, u16)> {
+    match IpProtocol::from_u8(ip.protocol)? {
+        IpProtocol::Tcp | IpProtocol::Udp => {
+            packet.get(ip.l4_offset..).and_then(TcpHeader::extract_ports)
+        }
+        IpProtocol::Icmp => None,
+    }
+}
+
+/// The TCP flags byte, if this is a TCP segment with a full header.
+fn tcp_flags(packet: &[u8], ip: &Ipv4Fields) -> Option<u8> {
+    if IpProtocol::from_u8(ip.protocol) != Some(IpProtocol::Tcp)
+        || packet.len() < ip.l4_offset + tcp::MIN_HEADER_SIZE
+    {
+        return None;
+    }
+    Some(packet[ip.l4_offset + tcp::FLAGS_OFFSET])
 }
 
 /// True for IPv4 frames to our address and ARP frames asking about it.
