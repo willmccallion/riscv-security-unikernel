@@ -98,7 +98,7 @@ const fn sipround(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
 /// timing cannot learn how many leading bytes of a forgery are correct.
 /// Returns `false` immediately for differing lengths — that asymmetry
 /// is acceptable because length is public information.
-pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub const fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

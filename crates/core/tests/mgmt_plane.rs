@@ -126,7 +126,7 @@ fn unauthenticated_mgmt_flood_is_rate_limited() {
     let auth_failures = sink
         .alert_reasons()
         .iter()
-        .filter(|&&r| r == AlertReason::MgmtAuthFail.as_u8())
+        .filter(|&&r| r == AlertReason::MgmtAuthFail)
         .count();
     assert!(auth_failures <= 32, "{auth_failures} auth-failure alerts for one instant");
 }

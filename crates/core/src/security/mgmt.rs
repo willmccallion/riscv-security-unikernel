@@ -44,7 +44,7 @@ impl ManagementMessageType {
     ///
     /// # Returns
     ///
-    /// Some ManagementMessageType variant if recognized, None otherwise
+    /// Some `ManagementMessageType` variant if recognized, None otherwise
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(Self::BlockPort),
@@ -112,7 +112,7 @@ pub mod mgmt_packet {
     /// Offset to message type field within the body.
     pub const MSG_TYPE_OFFSET: usize = 0;
 
-    /// BlockPort and UnblockPort message format.
+    /// `BlockPort` and `UnblockPort` message format.
     pub mod block_port {
         /// Minimum body length: type byte + u16 port.
         pub const MIN_PAYLOAD_LEN: usize = 3;
@@ -120,7 +120,7 @@ pub mod mgmt_packet {
         pub const PORT_OFFSET: usize = 1;
     }
 
-    /// AddDpiPattern and RemoveDpiPattern message format.
+    /// `AddDpiPattern` and `RemoveDpiPattern` message format.
     pub mod add_dpi {
         /// Minimum body length: type byte + length byte.
         pub const MIN_PAYLOAD_LEN: usize = 2;
@@ -132,9 +132,9 @@ pub mod mgmt_packet {
         pub const MAX_PATTERN_LEN: usize = 32;
     }
 
-    /// UploadBpfProgram message format.
+    /// `UploadBpfProgram` message format.
     pub mod upload_bpf {
-        /// Minimum body length for UploadBpfProgram: type byte + count byte.
+        /// Minimum body length for `UploadBpfProgram`: type byte + count byte.
         pub const MIN_PAYLOAD_LEN: usize = 2;
         /// Offset to instruction count field.
         pub const COUNT_OFFSET: usize = 1;
@@ -146,7 +146,7 @@ pub mod mgmt_packet {
         pub const MAX_INSTR_COUNT: usize = 64;
     }
 
-    /// BanIp and UnbanIp message format.
+    /// `BanIp` and `UnbanIp` message format.
     pub mod ban_ip {
         /// Minimum body length: type byte + 4-byte IP.
         pub const MIN_PAYLOAD_LEN: usize = 5;

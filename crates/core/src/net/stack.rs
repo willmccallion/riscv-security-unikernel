@@ -55,7 +55,7 @@ impl SynCookieSecret {
 ///
 /// The packet buffer may be modified in-place for generating responses.
 /// Replies are sent via `sink` — the caller supplies a concrete
-/// [`PacketSink`] implementation tied to its underlying NIC or AF_XDP
+/// [`PacketSink`] implementation tied to its underlying NIC or `AF_XDP`
 /// TX ring.
 ///
 /// # Arguments
@@ -202,9 +202,9 @@ fn handle_ipv4<'a, S: PacketSink>(
     }
 
     if IpProtocol::from_u8(protocol) == Some(IpProtocol::Icmp) {
-        let offset = ipv4::HEADER_OFFSET + ihl as usize;
         // Type, code and checksum are rewritten in place.
         const ICMP_HEADER_MIN: usize = 4;
+        let offset = ipv4::HEADER_OFFSET + ihl as usize;
         if let Some(ip_end) = ipv4_end(packet, usize::from(ihl))
             && offset + ICMP_HEADER_MIN <= ip_end
             && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
@@ -255,7 +255,7 @@ fn handle_ipv4<'a, S: PacketSink>(
                 packet[ipv4::DST_IP_OFFSET + 2],
                 packet[ipv4::DST_IP_OFFSET + 3],
             ];
-            handle_tcp(packet, offset, &src_ip, &dst_ip, sink, syn_secret);
+            handle_tcp(packet, offset, src_ip, dst_ip, sink, syn_secret);
             return None;
         }
 
@@ -292,8 +292,8 @@ fn handle_ipv4<'a, S: PacketSink>(
 fn handle_tcp<S: PacketSink>(
     packet: &mut [u8],
     offset: usize,
-    src_ip: &[u8; 4],
-    dst_ip: &[u8; 4],
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) {
@@ -313,7 +313,7 @@ fn handle_tcp<S: PacketSink>(
         let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
         let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
         let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
-        let cookie = syn_secret.cookie(src_ip, dst_ip, src_port, dst_port);
+        let cookie = syn_secret.cookie(&src_ip, &dst_ip, src_port, dst_port);
 
         // TCP sequence numbers wrap (RFC 793 §3.3); a SYN with
         // seq=0xFFFFFFFF is legal, so the ACK must wrap to 0 instead
@@ -455,7 +455,7 @@ fn tcp_checksum(packet: &[u8], segment: core::ops::Range<usize>) -> u16 {
 /// # Returns
 ///
 /// 16-bit checksum value
-pub fn checksum(data: &[u8]) -> u16 {
+pub const fn checksum(data: &[u8]) -> u16 {
     // The loop condition uses `data.len() - 1`, which would underflow
     // to usize::MAX on an empty slice and run off into unmapped memory.
     // Empty input has no bytes to fold, so the one's complement of the

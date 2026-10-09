@@ -3,6 +3,8 @@
 //! Provides a Singleton pattern implementation for safely accessing
 //! global mutable state in a single-threaded kernel environment.
 
+#![allow(unsafe_code)]
+
 use core::cell::UnsafeCell;
 use core::fmt;
 
@@ -10,7 +12,7 @@ use core::fmt;
 ///
 /// This type provides interior mutability for global variables without
 /// requiring locks, making it safe for use in a single-threaded polling
-/// kernel environment. It uses UnsafeCell internally and implements Sync
+/// kernel environment. It uses `UnsafeCell` internally and implements Sync
 /// based on the assumption that the kernel is single-threaded.
 ///
 /// # Safety

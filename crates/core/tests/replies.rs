@@ -23,7 +23,7 @@ fn ip_header_len(frame: &[u8]) -> usize {
 }
 
 /// One's-complement sum over `data` folds to 0 when its checksum is right.
-fn sums_to_zero(data: &[u8]) -> bool {
+const fn sums_to_zero(data: &[u8]) -> bool {
     checksum(data) == 0
 }
 

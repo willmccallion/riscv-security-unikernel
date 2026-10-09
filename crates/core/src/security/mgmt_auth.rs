@@ -85,13 +85,13 @@ impl MgmtAuth {
     /// lifetime of this boot. Senders learn the current epoch via the
     /// telemetry stream and stamp it into outgoing packets; verifiers
     /// reject any packet whose epoch does not match.
-    pub fn set_epoch(&mut self, epoch: u32) {
+    pub const fn set_epoch(&mut self, epoch: u32) {
         self.epoch = epoch;
         self.last_seq = 0;
     }
 
     /// Returns the current boot epoch.
-    pub fn epoch(&self) -> u32 {
+    pub const fn epoch(&self) -> u32 {
         self.epoch
     }
 
@@ -167,7 +167,7 @@ pub fn seal(key: &[u8; 16], counter: u64, body: &[u8], out: &mut [u8]) -> Option
 mod tests {
     use super::*;
 
-    const TEST_EPOCH: u32 = 0xCAFEBABE;
+    const TEST_EPOCH: u32 = 0xCAFE_BABE;
 
     fn counter(epoch: u32, seq: u32) -> u64 {
         ((epoch as u64) << 32) | (seq as u64)

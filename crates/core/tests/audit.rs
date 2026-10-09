@@ -53,7 +53,7 @@ const KERNEL_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 /// the SYN-ACK reply path. Real kernels build one per boot from
 /// `mcycle` XOR MAC; tests need a fixed value so cookies are
 /// reproducible.
-fn test_syn_secret() -> SynCookieSecret {
+const fn test_syn_secret() -> SynCookieSecret {
     SynCookieSecret::new([
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
         0x10,
@@ -195,7 +195,7 @@ fn syn_cookie_is_not_derivable_from_public_inputs() {
     );
 }
 
-fn read_seq(frame: &[u8]) -> u32 {
+const fn read_seq(frame: &[u8]) -> u32 {
     let tcp_off = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
     u32::from_be_bytes([
         frame[tcp_off + 4],
@@ -205,7 +205,7 @@ fn read_seq(frame: &[u8]) -> u32 {
     ])
 }
 
-fn read_flags(frame: &[u8]) -> u16 {
+const fn read_flags(frame: &[u8]) -> u16 {
     let tcp_off = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
     let dof = ((frame[tcp_off + 12] as u16) << 8) | frame[tcp_off + 13] as u16;
     dof & 0x003F
@@ -370,7 +370,7 @@ fn process_packet_rejects_tcp_with_data_offset_less_than_5() {
 }
 
 /// A packet with IP version != 4 (e.g. someone sending IPv6 bytes
-/// through the IPv4 EtherType, or just garbage) must be dropped
+/// through the IPv4 `EtherType`, or just garbage) must be dropped
 /// rather than silently parsed as IPv4.
 #[test]
 fn process_packet_rejects_ipv4_with_wrong_version() {

@@ -171,7 +171,7 @@ impl Engine {
     }
 
     /// The boot epoch advertised in telemetry.
-    pub fn mgmt_epoch(&self) -> u32 {
+    pub const fn mgmt_epoch(&self) -> u32 {
         self.mgmt_auth.epoch()
     }
 

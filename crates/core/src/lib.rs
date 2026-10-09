@@ -13,7 +13,7 @@
 //!   heuristics, eBPF VM, and mgmt-protocol constants.
 //! - [`net`] — Ethernet/IPv4/ARP/ICMP/TCP packet processing. The stack
 //!   is generic over a [`net::PacketSink`] trait so callers supply their
-//!   own send path (VirtIO on the kernel, AF_XDP/nfqueue on the daemon).
+//!   own send path (VirtIO on the kernel, `AF_XDP/nfqueue` on the daemon).
 //! - [`time`] — [`time::TimeSource`] trait abstracting the cycle / wall-
 //!   clock counter. The kernel implements it via the RISC-V `mcycle`
 //!   CSR; the daemon via `CLOCK_MONOTONIC`.

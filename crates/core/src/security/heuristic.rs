@@ -71,22 +71,18 @@ impl HeuristicEngine {
             }
         }
 
-        // RISC-V `addi x0, x0, 0` is the canonical NOP, encoded in
-        // little-endian as 0x13 0x00 0x00 0x00. Detect runs at any
-        // offset (a sled doesn't have to start aligned with the
-        // payload boundary).
-        const RISCV_NOP: [u8; 4] = [0x13, 0x00, 0x00, 0x00];
-        const MIN_RISCV_NOPS: usize = 8;
-        if payload.len() >= RISCV_NOP.len() * MIN_RISCV_NOPS {
+        // A RISC-V sled need not start aligned with the payload, so match at
+        // any offset.
+        if payload.len() >= payload::RISCV_NOP.len() * payload::MIN_RISCV_NOPS {
             let mut consec = 0usize;
             let mut i = 0usize;
-            while i + RISCV_NOP.len() <= payload.len() {
-                if payload[i..i + RISCV_NOP.len()] == RISCV_NOP {
+            while i + payload::RISCV_NOP.len() <= payload.len() {
+                if payload[i..i + payload::RISCV_NOP.len()] == payload::RISCV_NOP {
                     consec += 1;
-                    if consec >= MIN_RISCV_NOPS {
+                    if consec >= payload::MIN_RISCV_NOPS {
                         return Some("Heuristic: Shellcode (RISC-V NOP Sled)");
                     }
-                    i += RISCV_NOP.len();
+                    i += payload::RISCV_NOP.len();
                 } else {
                     consec = 0;
                     i += 1;

@@ -29,4 +29,8 @@ pub mod payload {
     /// positive rate. Shorter sequences may occur in legitimate
     /// binary data.
     pub const MIN_NOP_SLED_LENGTH: usize = 8;
+    /// RISC-V `addi x0, x0, 0`, the canonical NOP, in little-endian bytes.
+    pub const RISCV_NOP: [u8; 4] = [0x13, 0x00, 0x00, 0x00];
+    /// Minimum consecutive RISC-V NOPs to trigger detection.
+    pub const MIN_RISCV_NOPS: usize = 8;
 }

@@ -70,7 +70,7 @@ impl TcpHeader {
     /// before extracting port numbers. Uses the standard TCP header layout
     /// constants for offset calculations. This utility function is used
     /// when parsing TCP headers from packet payloads without constructing
-    /// a full TcpHeader struct.
+    /// a full `TcpHeader` struct.
     ///
     /// # Arguments
     ///
@@ -78,9 +78,9 @@ impl TcpHeader {
     ///
     /// # Returns
     ///
-    /// Some tuple of (src_port, dst_port) in host byte order if the header
+    /// Some tuple of (`src_port`, `dst_port`) in host byte order if the header
     /// is valid, None otherwise
-    pub fn extract_ports(data: &[u8]) -> Option<(u16, u16)> {
+    pub const fn extract_ports(data: &[u8]) -> Option<(u16, u16)> {
         if data.len() < tcp_consts::DST_PORT_OFFSET + tcp_consts::PORT_SIZE {
             return None;
         }

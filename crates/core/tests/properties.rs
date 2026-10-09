@@ -1,5 +1,5 @@
 //! Property-based tests for the stateful primitives the kernel relies
-//! on every packet: PenaltyBox, CountMinSketch, FlowTable, AhoCorasick.
+//! on every packet: `PenaltyBox`, `CountMinSketch`, `FlowTable`, `AhoCorasick`.
 //!
 //! Each property is a statement that should hold for every input, not
 //! just the hand-crafted inputs in `audit.rs`. Proptest generates

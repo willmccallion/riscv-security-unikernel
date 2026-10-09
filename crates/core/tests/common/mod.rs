@@ -6,7 +6,7 @@ use sec_core::config::{IP_ADDR, MAC_ADDR};
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::{SynCookieSecret, checksum};
-use sec_core::security::alert::alert_packet;
+use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt_auth::seal;
 use sec_core::security::report_auth::{ReportVerifier, report_key};
 
@@ -42,12 +42,12 @@ impl CaptureSink {
             .collect()
     }
 
-    /// Reason codes of every alert emitted, in order.
-    pub fn alert_reasons(&self) -> Vec<u8> {
+    /// Reasons of every alert emitted, in order.
+    pub fn alert_reasons(&self) -> Vec<AlertReason> {
         self.report_bodies()
             .iter()
             .filter(|body| body[0] == alert_packet::ALERT_MESSAGE_TYPE)
-            .map(|body| body[alert_packet::REASON_OFFSET])
+            .map(|body| AlertReason::from_u8(body[alert_packet::REASON_OFFSET]).expect("known reason"))
             .collect()
     }
 }

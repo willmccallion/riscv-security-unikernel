@@ -37,10 +37,10 @@ pub const MGMT_TOKEN_COST_CYCLES: u64 = 10_000_000;
 /// Alerts that may go out in one burst before the alert rate limit applies.
 pub const ALERT_BUCKET_CAPACITY: u64 = 32;
 
-/// Time-source units per alert token: about 1000 alerts per second at
-/// 1 GHz. Keeps a flood of dropped traffic from becoming an equal flood
-/// of alerts on the mgmt network; drop counters in telemetry still
-/// count every packet.
+/// Time-source units per alert token: about 1000 alerts per second at 1 GHz.
+///
+/// Keeps a flood of dropped traffic from becoming an equal flood of alerts
+/// on the mgmt network; drop counters in telemetry still count every packet.
 pub const ALERT_TOKEN_COST_CYCLES: u64 = 1_000_000;
 
 /// UDP port number for telemetry broadcasts.
@@ -93,7 +93,7 @@ pub const MAX_BPF_PROGRAM_SIZE: usize = 64;
 
 /// Sampling rate for flow logging.
 ///
-/// Only log new flows when (cycle_count & FLOW_LOG_SAMPLE_MASK) == 0
+/// Only log new flows when (`cycle_count` & `FLOW_LOG_SAMPLE_MASK`) == 0
 /// to prevent log flooding.
 pub const FLOW_LOG_SAMPLE_MASK: usize = 0x0F;
 

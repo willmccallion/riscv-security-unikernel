@@ -29,7 +29,7 @@ fn traffic_to_blocked_port_is_dropped_with_firewall_alert() {
     let v = e.process(&mut udp(PEER_IP, 5000, DEFAULT_BLOCKED_PORT, b"hello"), 1, &mut sink);
 
     assert_eq!(v, Verdict::Dropped(AlertReason::Firewall));
-    assert!(sink.alert_reasons().contains(&AlertReason::Firewall.as_u8()));
+    assert!(sink.alert_reasons().contains(&AlertReason::Firewall));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn unsigned_mgmt_packet_raises_auth_failure() {
     );
 
     assert_eq!(v, Verdict::Management);
-    assert!(sink.alert_reasons().contains(&AlertReason::MgmtAuthFail.as_u8()));
+    assert!(sink.alert_reasons().contains(&AlertReason::MgmtAuthFail));
 }
 
 #[test]

@@ -160,7 +160,7 @@ impl CountMinSketch {
     /// Safe to call before the sketch has seen any data; calling it
     /// after would invalidate existing counts, so callers should
     /// reseed once during init and not again.
-    pub fn reseed(&mut self, seed: u64) {
+    pub const fn reseed(&mut self, seed: u64) {
         self.seed = (seed as u32) ^ ((seed >> 32) as u32);
     }
 
