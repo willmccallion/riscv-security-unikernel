@@ -6,7 +6,6 @@
 // decisions.
 
 /// Opcodes for the virtual machine instruction set.
-#[allow(dead_code)]
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
 pub enum Opcode {
@@ -250,95 +249,61 @@ impl VM {
         program: &[Instruction],
         packet: &[u8],
     ) -> Result<VmAction, VmRuntimeError> {
+        /// Instructions a program may execute per packet before it is
+        /// treated as a runaway and the packet dropped.
+        const MAX_CYCLES: usize = 1000;
+
         self.pc = 0;
         self.regs = [0; 16];
         self.flag = false;
 
-        let mut cycles = 0;
-        /// Maximum number of instruction cycles before execution is terminated.
-        ///
-        /// This safety limit prevents infinite loops in malicious or buggy
-        /// programs. Programs exceeding this limit will default to passing
-        /// the packet, ensuring the kernel remains responsive.
-        const MAX_CYCLES: usize = 1000;
-
-        while self.pc < program.len() && cycles < MAX_CYCLES {
-            // SAFETY: The while condition `self.pc < program.len()` guarantees
-            // the index is in-bounds. get_unchecked avoids a redundant bounds
-            // check on every instruction fetch in the hot execution loop.
-            let inst = unsafe { *program.get_unchecked(self.pc) };
+        for _ in 0..MAX_CYCLES {
+            let Some(&inst) = program.get(self.pc) else {
+                return Ok(VmAction::Pass);
+            };
             self.pc += 1;
-            cycles += 1;
-
-            match inst.op {
-                0x01 => {
-                    let offset = inst.imm as usize;
-                    if offset < packet.len() {
-                        self.regs[(inst.reg_a as usize) & 0x0F] = packet[offset] as u64;
-                    } else {
-                        self.regs[(inst.reg_a as usize) & 0x0F] = 0;
+            let a = usize::from(inst.reg_a & 0x0F);
+            let b = usize::from(inst.reg_b & 0x0F);
+            let imm = inst.imm;
+            match Opcode::from_u8(inst.op) {
+                Some(Opcode::Ldb) => self.regs[a] = load_be::<1>(packet, imm).unwrap_or(0),
+                Some(Opcode::Ldh) => {
+                    if let Some(value) = load_be::<2>(packet, imm) {
+                        self.regs[a] = value;
                     }
                 }
-                0x02 => {
-                    let offset = inst.imm as usize;
-                    if offset + 1 < packet.len() {
-                        self.regs[(inst.reg_a as usize) & 0x0F] =
-                            ((packet[offset] as u64) << 8) | (packet[offset + 1] as u64);
+                Some(Opcode::Ldw) => {
+                    if let Some(value) = load_be::<4>(packet, imm) {
+                        self.regs[a] = value;
                     }
                 }
-                0x03 => {
-                    let offset = inst.imm as usize;
-                    if offset + 3 < packet.len() {
-                        self.regs[(inst.reg_a as usize) & 0x0F] = ((packet[offset] as u64) << 24)
-                            | ((packet[offset + 1] as u64) << 16)
-                            | ((packet[offset + 2] as u64) << 8)
-                            | (packet[offset + 3] as u64);
-                    }
-                }
-                0x04 => {
-                    self.regs[(inst.reg_a as usize) & 0x0F] = inst.imm as u64;
-                }
-                0x05 => {
-                    self.regs[(inst.reg_a as usize) & 0x0F] = self.regs[(inst.reg_b as usize) & 0x0F];
-                }
-                0x06 => {
-                    self.flag = self.regs[(inst.reg_a as usize) & 0x0F] == self.regs[(inst.reg_b as usize) & 0x0F];
-                }
-                0x07 => {
-                    self.flag = self.regs[(inst.reg_a as usize) & 0x0F] > self.regs[(inst.reg_b as usize) & 0x0F];
-                }
-                0x08 => {
-                    self.regs[(inst.reg_a as usize) & 0x0F] &= self.regs[(inst.reg_b as usize) & 0x0F];
-                }
-                0x09 => {
-                    self.regs[(inst.reg_a as usize) & 0x0F] |= self.regs[(inst.reg_b as usize) & 0x0F];
-                }
-                0x0A => {
-                    self.pc = inst.imm as usize;
-                }
-                0x0B if self.flag => {
-                    self.pc = inst.imm as usize;
-                }
-                0x0C if !self.flag => {
-                    self.pc = inst.imm as usize;
-                }
-                0x0D => {
-                    return match inst.imm as u64 {
+                Some(Opcode::Ldi) => self.regs[a] = u64::from(imm),
+                Some(Opcode::Mov) => self.regs[a] = self.regs[b],
+                Some(Opcode::Eq) => self.flag = self.regs[a] == self.regs[b],
+                Some(Opcode::Gt) => self.flag = self.regs[a] > self.regs[b],
+                Some(Opcode::And) => self.regs[a] &= self.regs[b],
+                Some(Opcode::Or) => self.regs[a] |= self.regs[b],
+                Some(Opcode::Jmp) => self.pc = imm as usize,
+                Some(Opcode::Jt) if self.flag => self.pc = imm as usize,
+                Some(Opcode::Jf) if !self.flag => self.pc = imm as usize,
+                Some(Opcode::Ret) => {
+                    return match imm {
                         0 => Ok(VmAction::Drop),
                         1 => Ok(VmAction::Pass),
-                        n => Err(VmRuntimeError::InvalidAction(n)),
+                        n => Err(VmRuntimeError::InvalidAction(u64::from(n))),
                     };
                 }
-                _ => {}
+                Some(Opcode::Jt | Opcode::Jf | Opcode::Nop) | None => {}
             }
         }
-        // Distinguish "program fell off the end without a Ret" (historically
-        // treated as pass) from "cycles exhausted" — the latter is the
-        // infinite-loop primitive an attacker wants, and must alert.
-        if cycles >= MAX_CYCLES {
-            Err(VmRuntimeError::Timeout)
-        } else {
-            Ok(VmAction::Pass)
-        }
+        Err(VmRuntimeError::Timeout)
     }
+}
+
+/// Reads `N` big-endian bytes at `offset`, or `None` if any are out of
+/// bounds.
+fn load_be<const N: usize>(packet: &[u8], offset: u32) -> Option<u64> {
+    let end = (offset as usize).checked_add(N)?;
+    let bytes = packet.get(offset as usize..end)?;
+    Some(bytes.iter().fold(0, |acc, &byte| (acc << 8) | u64::from(byte)))
 }
