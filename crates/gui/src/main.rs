@@ -11,6 +11,7 @@
 
 mod acks;
 mod app;
+mod live;
 /// Per-namespace UDP sender pool for realistic multi-source traffic.
 mod netns;
 /// Background network task for kernel communication and traffic generation.

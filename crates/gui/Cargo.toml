@@ -13,6 +13,8 @@ description = "egui control plane for the security unikernel: telemetry, alerts,
 
 [dependencies]
 sec-core = { workspace = true }
+monitor-proto = { workspace = true }
+clap = { workspace = true }
 eframe = "0.26"
 egui = "0.26"
 egui_plot = "0.26"

@@ -3132,11 +3132,13 @@ name = "security-dashboard"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "crossbeam-channel",
  "eframe",
  "egui",
  "egui_plot",
  "libc",
+ "monitor-proto",
  "rand 0.8.5",
  "sec-core",
  "tokio",
