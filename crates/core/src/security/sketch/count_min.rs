@@ -10,9 +10,11 @@ use crate::security::hash::siphash24;
 /// of `n` items, an estimate exceeds the true count by more than
 /// `e·n / WIDTH` with probability at most `e^-DEPTH`.
 ///
-/// Rows are indexed by one keyed SipHash of the item (Kirsch–Mitzenmacher
-/// double hashing), so without the key an attacker cannot choose sources
-/// that collide with a victim and push its estimate over a threshold.
+/// Each row's column comes from its own slice of one keyed 64-bit SipHash
+/// of the item, so rows are independent and, without the key, an attacker
+/// cannot choose sources that collide with a victim and push its estimate
+/// over a threshold. `WIDTH` must therefore be a power of two with
+/// `DEPTH · log2(WIDTH) <= 64`.
 #[derive(Debug)]
 pub struct CountMinSketch<const WIDTH: usize, const DEPTH: usize> {
     rows: [[u16; WIDTH]; DEPTH],
@@ -20,14 +22,18 @@ pub struct CountMinSketch<const WIDTH: usize, const DEPTH: usize> {
 }
 
 impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
-    const NON_EMPTY: () = assert!(WIDTH > 0 && DEPTH > 0, "sketch needs at least one counter");
+    const COLUMN_BITS: u32 = WIDTH.trailing_zeros();
+    const VALID: () = assert!(
+        WIDTH.is_power_of_two() && DEPTH > 0 && DEPTH as u32 * WIDTH.trailing_zeros() <= 64,
+        "WIDTH must be a power of two and one 64-bit hash must cover every row"
+    );
 
     /// Bytes of counters the sketch holds.
     pub const MEMORY_BYTES: usize = WIDTH * DEPTH * size_of::<u16>();
 
     /// Creates an empty sketch whose hashing is keyed with `key`.
     pub const fn new(key: [u8; 16]) -> Self {
-        let () = Self::NON_EMPTY;
+        let () = Self::VALID;
         Self {
             rows: [[0; WIDTH]; DEPTH],
             key,
@@ -82,16 +88,18 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
         }
     }
 
-    /// The column `item` maps to in each row: `h1 + i·h2` from the two
-    /// halves of one keyed hash, which behaves like independent hashes per
-    /// row.
+    /// The column `item` maps to in each row: consecutive `log2(WIDTH)`-bit
+    /// slices of one keyed hash.
+    ///
+    /// Deriving rows as `h1 + i·h2` instead would make any two items that
+    /// share `h1` and `h2` modulo `WIDTH` collide in every row at once, a
+    /// `1/WIDTH²` chance per pair no matter how many rows there are.
     fn positions(&self, item: &[u8]) -> [usize; DEPTH] {
-        let hash = siphash24(&self.key, item);
-        let h1 = hash as u32 as usize;
-        let h2 = ((hash >> 32) as u32 | 1) as usize;
+        let mut hash = siphash24(&self.key, item);
         let mut columns = [0; DEPTH];
-        for (i, column) in columns.iter_mut().enumerate() {
-            *column = h1.wrapping_add(i.wrapping_mul(h2)) % WIDTH;
+        for column in &mut columns {
+            *column = (hash as usize) & (WIDTH - 1);
+            hash = hash.checked_shr(Self::COLUMN_BITS).unwrap_or(0);
         }
         columns
     }
@@ -165,6 +173,27 @@ mod tests {
         }
 
         assert_eq!(estimate, 135);
+    }
+
+    #[test]
+    fn rows_collide_independently() {
+        const ITEMS: usize = 2000;
+        let cms = CountMinSketch::<16, 4>::new([5; 16]);
+        let mut columns = [[0u8; 4]; ITEMS];
+        for (i, slot) in columns.iter_mut().enumerate() {
+            *slot = cms.positions(&(i as u32).to_be_bytes()).map(|c| c as u8);
+        }
+
+        let mut full_collisions = 0;
+        for a in 0..ITEMS {
+            for b in a + 1..ITEMS {
+                full_collisions += usize::from(columns[a] == columns[b]);
+            }
+        }
+
+        // About 2M pairs: ~30 expected if rows are independent (1/16^4 each),
+        // ~7800 if rows were derived as h1 + i*h2 (1/16^2 each).
+        assert!(full_collisions < 200, "{full_collisions} pairs collide in every row");
     }
 
     #[test]
