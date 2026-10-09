@@ -54,8 +54,41 @@ pub struct TcpSegment<'a> {
     pub src_port: u16,
     /// Destination port.
     pub dst_port: u16,
+    /// The flag bits.
+    pub flags: TcpFlags,
     /// Data after the header, without link-layer padding.
     pub payload: &'a [u8],
+}
+
+/// The low eight TCP flag bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpFlags(u8);
+
+impl TcpFlags {
+    const FIN: u8 = 0x01;
+    const SYN: u8 = 0x02;
+    const RST: u8 = 0x04;
+    const ACK: u8 = 0x10;
+
+    /// Flags from the header byte.
+    pub const fn new(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    /// SYN without ACK: a client opening a connection.
+    pub const fn is_connection_attempt(self) -> bool {
+        self.0 & Self::SYN != 0 && self.0 & Self::ACK == 0
+    }
+
+    /// SYN with ACK: a server accepting a connection.
+    pub const fn is_syn_ack(self) -> bool {
+        self.0 & Self::SYN != 0 && self.0 & Self::ACK != 0
+    }
+
+    /// FIN or RST: one side is ending the connection.
+    pub const fn is_close(self) -> bool {
+        self.0 & (Self::FIN | Self::RST) != 0
+    }
 }
 
 /// The UDP fields the monitor uses.
@@ -216,6 +249,7 @@ fn decode_tcp(segment: &[u8]) -> Option<TcpSegment<'_>> {
     Some(TcpSegment {
         src_port: read_u16(segment, 0)?,
         dst_port: read_u16(segment, 2)?,
+        flags: TcpFlags::new(*segment.get(13)?),
         payload: segment.get(header_len..)?,
     })
 }
@@ -297,6 +331,7 @@ mod tests {
         assert_eq!(packet.dst, IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)));
         let Transport::Tcp(segment) = packet.transport else { panic!("not TCP") };
         assert_eq!((segment.src_port, segment.dst_port), (51000, 443));
+        assert!(segment.flags.is_connection_attempt());
     }
 
     #[test]

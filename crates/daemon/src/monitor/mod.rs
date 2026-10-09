@@ -4,6 +4,7 @@
 pub mod command;
 pub mod config;
 pub mod decode;
+pub mod flows;
 pub mod live;
 pub mod net;
 pub mod pcap;

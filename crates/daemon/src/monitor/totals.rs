@@ -15,7 +15,8 @@ pub struct Counter {
 }
 
 impl Counter {
-    fn add(&mut self, wire_len: u32) {
+    /// Counts one packet of `wire_len` bytes.
+    pub fn add(&mut self, wire_len: u32) {
         self.packets += 1;
         self.bytes += u64::from(wire_len);
     }
@@ -142,7 +143,7 @@ impl fmt::Display for SiBits {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::monitor::decode::{TcpSegment, UdpDatagram};
+    use crate::monitor::decode::{TcpFlags, TcpSegment, UdpDatagram};
     use std::net::IpAddr;
 
     fn packet(src: &str, transport: Transport<'static>) -> Packet<'static> {
@@ -156,6 +157,7 @@ mod tests {
     const TCP: Transport<'static> = Transport::Tcp(TcpSegment {
         src_port: 1,
         dst_port: 2,
+        flags: TcpFlags::new(0x10),
         payload: &[],
     });
     const UDP: Transport<'static> = Transport::Udp(UdpDatagram {
