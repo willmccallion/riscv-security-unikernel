@@ -847,3 +847,24 @@ fn penalty_box_unban_lifts_an_active_ban() {
 
     assert!(!pbox.is_banned(&[10, 0, 0, 1], 1));
 }
+
+#[test]
+fn vm_out_of_bounds_loads_all_clear_the_register() {
+    // Each program loads 0xFF into r0, then loads from past the end of a
+    // 2-byte packet and returns r0 == 0 ? pass : drop.
+    for load in [0x01u8, 0x02, 0x03] {
+        let program = [
+            Instruction::new(0x04, 0, 0, 0xFF),
+            Instruction::new(load, 0, 0, 2),
+            Instruction::new(0x04, 1, 0, 0),
+            Instruction::new(0x06, 0, 1, 0),
+            Instruction::new(0x0B, 0, 0, 6),
+            Instruction::new(0x0D, 0, 0, 0),
+            Instruction::new(0x0D, 0, 0, 1),
+        ];
+
+        let action = VM::new().execute(&program, &[0xAB, 0xCD]);
+
+        assert_eq!(action, Ok(VmAction::Pass), "opcode {load:#x} left a stale register");
+    }
+}

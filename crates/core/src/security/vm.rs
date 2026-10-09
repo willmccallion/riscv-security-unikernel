@@ -266,17 +266,9 @@ impl VM {
             let b = usize::from(inst.reg_b & 0x0F);
             let imm = inst.imm;
             match Opcode::from_u8(inst.op) {
-                Some(Opcode::Ldb) => self.regs[a] = load_be::<1>(packet, imm).unwrap_or(0),
-                Some(Opcode::Ldh) => {
-                    if let Some(value) = load_be::<2>(packet, imm) {
-                        self.regs[a] = value;
-                    }
-                }
-                Some(Opcode::Ldw) => {
-                    if let Some(value) = load_be::<4>(packet, imm) {
-                        self.regs[a] = value;
-                    }
-                }
+                Some(Opcode::Ldb) => self.regs[a] = load_be::<1>(packet, imm),
+                Some(Opcode::Ldh) => self.regs[a] = load_be::<2>(packet, imm),
+                Some(Opcode::Ldw) => self.regs[a] = load_be::<4>(packet, imm),
                 Some(Opcode::Ldi) => self.regs[a] = u64::from(imm),
                 Some(Opcode::Mov) => self.regs[a] = self.regs[b],
                 Some(Opcode::Eq) => self.flag = self.regs[a] == self.regs[b],
@@ -300,10 +292,13 @@ impl VM {
     }
 }
 
-/// Reads `N` big-endian bytes at `offset`, or `None` if any are out of
-/// bounds.
-fn load_be<const N: usize>(packet: &[u8], offset: u32) -> Option<u64> {
-    let end = (offset as usize).checked_add(N)?;
-    let bytes = packet.get(offset as usize..end)?;
-    Some(bytes.iter().fold(0, |acc, &byte| (acc << 8) | u64::from(byte)))
+/// Reads `N` big-endian bytes at `offset`, or 0 if any are out of bounds.
+fn load_be<const N: usize>(packet: &[u8], offset: u32) -> u64 {
+    let Some(bytes) = (offset as usize)
+        .checked_add(N)
+        .and_then(|end| packet.get(offset as usize..end))
+    else {
+        return 0;
+    };
+    bytes.iter().fold(0, |acc, &byte| (acc << 8) | u64::from(byte))
 }
