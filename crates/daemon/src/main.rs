@@ -20,7 +20,7 @@ mod synth;
 /// sketch-lab study, and a 16384 x 4 per-subnet one (128 KB).
 pub type DaemonEngine = sec_core::engine::Engine<65_536, 4, 16_384, 4>;
 
-use af_packet::{RxRing, TxSocket};
+use af_packet::{Outgoing, RxRing, TxSocket};
 use anyhow::{Context, Result};
 use bench::VerdictCounts;
 use clap::{Parser, Subcommand};
@@ -144,7 +144,7 @@ fn run_bench(config: bench::BenchConfig) {
 fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
     let key = key::load()?;
     let clock = clock::Monotonic::new();
-    let mut rx = RxRing::open(iface)?;
+    let mut rx = RxRing::open(iface, Outgoing::Exclude)?;
     let mut tx = TxSocket::open(iface)?;
     let mut engine = new_engine(key);
     let started = Instant::now();
@@ -158,7 +158,7 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
     while duration.is_none_or(|d| started.elapsed() < d) {
         let now = clock.now();
         let seen = rx.poll(100, |frame| {
-            counts.record(engine.process(frame, now, &mut tx));
+            counts.record(engine.process(frame.data, now, &mut tx));
         })?;
         frames += seen as u64;
 

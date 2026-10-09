@@ -7,6 +7,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::monitor::decode::LinkType;
 use anyhow::{Context, Result, bail};
 use std::ffi::CString;
 use std::io;
@@ -54,6 +55,24 @@ fn setsockopt<T>(fd: &OwnedFd, option: libc::c_int, value: &T) -> Result<()> {
     Ok(())
 }
 
+/// The link type of the interface `fd` is bound to, from the hardware
+/// type the kernel reports for the socket.
+fn bound_link_type(fd: &OwnedFd) -> Result<LinkType> {
+    // SAFETY: sockaddr_ll is plain old data; all-zero is a valid value.
+    let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+    let mut len = libc::socklen_t::try_from(size_of::<libc::sockaddr_ll>()).context("sockaddr size")?;
+    // SAFETY: addr and len are live and sized for the call.
+    let rc = unsafe { libc::getsockname(fd.as_raw_fd(), std::ptr::from_mut(&mut addr).cast(), &raw mut len) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error()).context("getsockname(AF_PACKET)");
+    }
+    match addr.sll_hatype {
+        libc::ARPHRD_ETHER => Ok(LinkType::Ethernet),
+        libc::ARPHRD_NONE => Ok(LinkType::RawIp),
+        other => bail!("the interface has hardware type {other}, which the monitor cannot decode"),
+    }
+}
+
 fn interface_index(name: &str) -> Result<libc::c_int> {
     let c_name = CString::new(name).context("interface name contains NUL")?;
     // SAFETY: c_name is a valid NUL-terminated string for the call.
@@ -90,19 +109,38 @@ pub struct RingStats {
     pub drops: u32,
 }
 
+/// Whether a receive ring also sees frames this host sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outgoing {
+    /// Deliver only frames arriving from the network.
+    Exclude,
+    /// Deliver frames in both directions.
+    Include,
+}
+
+/// One frame as the kernel captured it.
+#[derive(Debug)]
+pub struct CapturedFrame<'a> {
+    /// The captured bytes, at most the ring's frame size.
+    pub data: &'a mut [u8],
+    /// The frame's length on the wire, which may exceed `data` for large
+    /// or offload-coalesced frames.
+    pub wire_len: u32,
+}
+
 /// A `TPACKET_V3` receive ring bound to one interface.
 #[derive(Debug)]
 pub struct RxRing {
     fd: OwnedFd,
+    link_type: LinkType,
     ring: NonNull<u8>,
     ring_len: usize,
     next_block: u32,
 }
 
 impl RxRing {
-    /// Opens a receive ring on `interface`. Frames this host sends on the
-    /// interface are not delivered back.
-    pub fn open(interface: &str) -> Result<Self> {
+    /// Opens a receive ring on `interface`.
+    pub fn open(interface: &str, outgoing: Outgoing) -> Result<Self> {
         let ifindex = interface_index(interface)?;
         let fd = packet_socket()?;
         setsockopt(&fd, libc::PACKET_VERSION, &(libc::tpacket_versions::TPACKET_V3 as libc::c_int))?;
@@ -116,7 +154,9 @@ impl RxRing {
             tp_feature_req_word: 0,
         };
         setsockopt(&fd, libc::PACKET_RX_RING, &req)?;
-        setsockopt(&fd, libc::PACKET_IGNORE_OUTGOING, &1 as &libc::c_int)?;
+        if outgoing == Outgoing::Exclude {
+            setsockopt(&fd, libc::PACKET_IGNORE_OUTGOING, &1 as &libc::c_int)?;
+        }
 
         let ring_len = (BLOCK_SIZE as usize) * (BLOCK_COUNT as usize);
         // SAFETY: maps the ring the kernel just allocated for this socket;
@@ -136,8 +176,10 @@ impl RxRing {
         }
         let ring = NonNull::new(ring.cast::<u8>()).context("mmap returned null")?;
         bind_to(&fd, ifindex)?;
+        let link_type = bound_link_type(&fd)?;
         Ok(Self {
             fd,
+            link_type,
             ring,
             ring_len,
             next_block: 0,
@@ -145,10 +187,10 @@ impl RxRing {
     }
 
     /// Waits up to `timeout_ms` for the next block of frames and passes
-    /// each one, mutably, to `handle`. Returns the number of frames seen.
+    /// each one to `handle`. Returns the number of frames seen.
     // Blocks are page-aligned and the kernel aligns each frame header.
     #[allow(clippy::cast_ptr_alignment)]
-    pub fn poll(&mut self, timeout_ms: i32, mut handle: impl FnMut(&mut [u8])) -> Result<usize> {
+    pub fn poll(&mut self, timeout_ms: i32, mut handle: impl FnMut(CapturedFrame<'_>)) -> Result<usize> {
         let block = self.block_status(self.next_block);
         if block.load(Ordering::Acquire) & libc::TP_STATUS_USER == 0 {
             let mut pfd = libc::pollfd {
@@ -187,8 +229,11 @@ impl RxRing {
             if frame_start + frame_len <= BLOCK_SIZE as usize {
                 // SAFETY: the frame lies inside the block we own, and no
                 // other reference to these bytes exists while handle runs.
-                let frame = unsafe { std::slice::from_raw_parts_mut(base.add(frame_start), frame_len) };
-                handle(frame);
+                let data = unsafe { std::slice::from_raw_parts_mut(base.add(frame_start), frame_len) };
+                handle(CapturedFrame {
+                    data,
+                    wire_len: pkt.tp_len,
+                });
             }
             offset += pkt.tp_next_offset as usize;
         }
@@ -196,6 +241,11 @@ impl RxRing {
         block.store(libc::TP_STATUS_KERNEL, Ordering::Release);
         self.next_block = (self.next_block + 1) % BLOCK_COUNT;
         Ok(count)
+    }
+
+    /// How frames on the bound interface begin.
+    pub const fn link_type(&self) -> LinkType {
+        self.link_type
     }
 
     /// Reads and resets the kernel's counters for this ring.
