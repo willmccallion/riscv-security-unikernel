@@ -849,6 +849,15 @@ fn penalty_box_unban_lifts_an_active_ban() {
 }
 
 #[test]
+fn vm_program_finishing_on_its_last_allowed_step_is_not_a_timeout() {
+    let program = [Instruction::new(0x00, 0, 0, 0); 1000];
+
+    let action = VM::new().execute(&program, &[]);
+
+    assert_eq!(action, Ok(VmAction::Pass));
+}
+
+#[test]
 fn vm_out_of_bounds_loads_all_clear_the_register() {
     // Each program loads 0xFF into r0, then loads from past the end of a
     // 2-byte packet and returns r0 == 0 ? pass : drop.

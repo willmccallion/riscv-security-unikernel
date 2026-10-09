@@ -288,7 +288,11 @@ impl VM {
                 Some(Opcode::Jt | Opcode::Jf | Opcode::Nop) | None => {}
             }
         }
-        Err(VmRuntimeError::Timeout)
+        if self.pc >= program.len() {
+            Ok(VmAction::Pass)
+        } else {
+            Err(VmRuntimeError::Timeout)
+        }
     }
 }
 
