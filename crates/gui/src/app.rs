@@ -5,7 +5,11 @@
 //! visualization, event logging, packet inspection, and configuration
 //! interfaces for firewall rules, DPI signatures, and eBPF programs.
 
-use crate::types::{GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, TrafficMode};
+use crate::types::{
+    CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, TrafficMode,
+    UiEvent,
+};
+use sec_core::security::mgmt::MgmtOutcome;
 use eframe::egui;
 use sec_core::net::constants::IpProtocol;
 use sec_core::security::vm::Opcode;
@@ -27,12 +31,34 @@ enum Tab {
     Ebpf,
 }
 
+/// A rule shown in the UI, with what the kernel said about it.
+struct Rule<T> {
+    item: T,
+    /// The command that installed it; `None` for rules built into the kernel.
+    command: Option<CommandId>,
+    status: CommandStatus,
+}
+
+impl<T> Rule<T> {
+    const fn built_in(item: T) -> Self {
+        Self {
+            item,
+            command: None,
+            status: CommandStatus::Applied,
+        }
+    }
+}
+
 /// Main application state and UI implementation.
 pub struct AegisApp {
     /// Shared network statistics from the kernel.
     stats: Arc<NetStats>,
-    /// Receiver for security alerts and log entries.
-    log_rx: std::sync::mpsc::Receiver<LogEntry>,
+    /// Receiver for log entries and command status updates.
+    events: std::sync::mpsc::Receiver<UiEvent>,
+    /// Log entries received while the log is paused.
+    held_logs: Vec<LogEntry>,
+    /// Next id to give a mgmt command.
+    next_command: u64,
     /// Sender for commands to the background network task.
     cmd_tx: UnboundedSender<GuiCommand>,
 
@@ -53,12 +79,12 @@ pub struct AegisApp {
     sdn_sig: String,
     /// Input field for eBPF program source code.
     ebpf_code: String,
-    /// List of currently blocked ports.
-    blocked_ports: Vec<u16>,
-    /// List of active DPI signatures.
-    dpi_signatures: Vec<String>,
-    /// List of uploaded eBPF programs.
-    ebpf_programs: Vec<String>,
+    /// Blocked ports, with the kernel's response to each.
+    blocked_ports: Vec<Rule<u16>>,
+    /// DPI signatures, with the kernel's response to each.
+    dpi_signatures: Vec<Rule<String>>,
+    /// Uploaded eBPF programs, newest last.
+    ebpf_programs: Vec<Rule<String>>,
 
     /// Current log display mode.
     log_mode: LogMode,
@@ -76,16 +102,18 @@ impl AegisApp {
     /// # Arguments
     ///
     /// * `stats` - Shared statistics structure
-    /// * `log_rx` - Receiver for log entries
+    /// * `events` - Receiver for log entries and command status updates
     /// * `cmd_tx` - Sender for GUI commands
     pub fn new(
         stats: Arc<NetStats>,
-        log_rx: std::sync::mpsc::Receiver<LogEntry>,
+        events: std::sync::mpsc::Receiver<UiEvent>,
         cmd_tx: UnboundedSender<GuiCommand>,
     ) -> Self {
         Self {
             stats,
-            log_rx,
+            events,
+            held_logs: Vec::new(),
+            next_command: 0,
             cmd_tx,
             logs: VecDeque::with_capacity(1000),
             history_pass: VecDeque::new(),
@@ -95,13 +123,10 @@ impl AegisApp {
             sdn_port: String::new(),
             sdn_sig: String::new(),
             ebpf_code: "BLOCK TCP DST 80".to_string(),
-            blocked_ports: vec![23],
-            dpi_signatures: vec![
-                "DROP TABLE".to_string(),
-                "<script>".to_string(),
-                "eval(".to_string(),
-                "UNION SELECT".to_string(),
-            ],
+            blocked_ports: vec![Rule::built_in(sec_core::config::DEFAULT_BLOCKED_PORT)],
+            dpi_signatures: ["DROP TABLE", "<script>", "eval(", "UNION SELECT"]
+                .map(|sig| Rule::built_in(sig.to_string()))
+                .into(),
             ebpf_programs: Vec::new(),
             log_mode: LogMode::Alerts,
             log_paused: false,
@@ -117,6 +142,48 @@ impl AegisApp {
     /// * `cmd` - Command to send
     fn send(&self, cmd: GuiCommand) {
         let _ = self.cmd_tx.send(cmd);
+    }
+
+    /// Sends a mgmt command and returns the id its status will arrive under.
+    fn issue(&mut self, command: MgmtCommand) -> CommandId {
+        let id = CommandId(self.next_command);
+        self.next_command += 1;
+        self.send(GuiCommand::Mgmt { id, command });
+        id
+    }
+
+    fn apply_status(&mut self, id: CommandId, status: CommandStatus) {
+        let rules = self
+            .blocked_ports
+            .iter_mut()
+            .map(|r| (&r.command, &mut r.status))
+            .chain(self.dpi_signatures.iter_mut().map(|r| (&r.command, &mut r.status)))
+            .chain(self.ebpf_programs.iter_mut().map(|r| (&r.command, &mut r.status)));
+        for (command, rule_status) in rules {
+            if *command == Some(id) {
+                *rule_status = status;
+            }
+        }
+    }
+
+    fn drain_events(&mut self) {
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                UiEvent::Log(entry) => self.held_logs.push(entry),
+                UiEvent::CommandStatus { id, status } => self.apply_status(id, status),
+            }
+        }
+        if self.log_paused {
+            return;
+        }
+        for mut entry in self.held_logs.drain(..) {
+            entry.timestamp = self.start_time.elapsed().as_secs_f64();
+            if self.logs.len() >= 1000 {
+                self.logs.pop_back();
+            }
+            self.logs.push_front(entry);
+            self.log_new_entry = true;
+        }
     }
 
     /// Renders the main dashboard tab.
@@ -361,6 +428,7 @@ impl AegisApp {
                 }
             });
 
+        let mut ban_target = None;
         if let Some(log) = &self.selected_log {
             let mut open = true;
             egui::Window::new("Packet Inspector")
@@ -374,9 +442,8 @@ impl AegisApp {
                             if ui
                                 .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
                                 .clicked()
-                                && let Ok(ip) = log.src_ip.parse()
                             {
-                                self.send(GuiCommand::Mgmt(MgmtCommand::BanIp(ip)));
+                                ban_target = log.src_ip.parse().ok();
                             }
                         });
                     });
@@ -422,6 +489,9 @@ impl AegisApp {
             if !open {
                 self.selected_log = None;
             }
+        }
+        if let Some(ip) = ban_target {
+            let _ = self.issue(MgmtCommand::BanIp(ip));
         }
     }
 
@@ -510,9 +580,11 @@ impl AegisApp {
                     if ui.button("BLOCK PORT").clicked()
                         && let Ok(port) = self.sdn_port.trim().parse::<u16>()
                     {
-                        self.send(GuiCommand::Mgmt(MgmtCommand::BlockPort(port)));
-                        if !self.blocked_ports.contains(&port) {
-                            self.blocked_ports.push(port);
+                        let command = Some(self.issue(MgmtCommand::BlockPort(port)));
+                        let status = CommandStatus::Pending;
+                        match self.blocked_ports.iter_mut().find(|r| r.item == port) {
+                            Some(rule) => (rule.command, rule.status) = (command, status),
+                            None => self.blocked_ports.push(Rule { item: port, command, status }),
                         }
                         self.sdn_port.clear();
                     }
@@ -524,10 +596,11 @@ impl AegisApp {
                     .id_source("fw_list")
                     .max_height(200.0)
                     .show(ui, |ui| {
-                        for &port in &self.blocked_ports {
+                        for rule in &self.blocked_ports {
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::RED, "BLOCK");
-                                ui.label(format!("TCP/UDP dst:{port}"));
+                                ui.label(format!("TCP/UDP dst:{}", rule.item));
+                                status_badge(ui, rule.status);
                             });
                         }
                     });
@@ -540,12 +613,13 @@ impl AegisApp {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.sdn_sig);
                     if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
-                        self.send(GuiCommand::Mgmt(MgmtCommand::AddDpiPattern(
-                            self.sdn_sig.as_bytes().to_vec(),
-                        )));
-                        let sig = self.sdn_sig.clone();
-                        if !self.dpi_signatures.contains(&sig) {
-                            self.dpi_signatures.push(sig);
+                        let sig = std::mem::take(&mut self.sdn_sig);
+                        let command =
+                            Some(self.issue(MgmtCommand::AddDpiPattern(sig.as_bytes().to_vec())));
+                        let status = CommandStatus::Pending;
+                        match self.dpi_signatures.iter_mut().find(|r| r.item == sig) {
+                            Some(rule) => (rule.command, rule.status) = (command, status),
+                            None => self.dpi_signatures.push(Rule { item: sig, command, status }),
                         }
                         self.sdn_sig.clear();
                     }
@@ -557,10 +631,11 @@ impl AegisApp {
                     .id_source("dpi_list")
                     .max_height(200.0)
                     .show(ui, |ui| {
-                        for sig in &self.dpi_signatures {
+                        for rule in &self.dpi_signatures {
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
-                                ui.monospace(format!("\"{sig}\""));
+                                ui.monospace(format!("\"{}\"", rule.item));
+                                status_badge(ui, rule.status);
                             });
                         }
                     });
@@ -603,9 +678,12 @@ impl AegisApp {
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
                     if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
-                        self.send(GuiCommand::Mgmt(MgmtCommand::UploadBpf(bytecode)));
-                        let prog = self.ebpf_code.trim().to_string();
-                        self.ebpf_programs.push(prog);
+                        let command = Some(self.issue(MgmtCommand::UploadBpf(bytecode)));
+                        self.ebpf_programs.push(Rule {
+                            item: self.ebpf_code.trim().to_string(),
+                            command,
+                            status: CommandStatus::Pending,
+                        });
                     } else {
                         let entry = LogEntry {
                             timestamp: self.start_time.elapsed().as_secs_f64(),
@@ -625,7 +703,7 @@ impl AegisApp {
 
             // Right: active programs list
             cols[1].group(|ui| {
-                ui.label(egui::RichText::new("Active Programs").strong());
+                ui.label(egui::RichText::new("Uploaded Programs").strong());
                 ui.add_space(5.0);
                 ui.separator();
                 ui.add_space(5.0);
@@ -636,13 +714,24 @@ impl AegisApp {
                         .id_source("ebpf_list")
                         .max_height(200.0)
                         .show(ui, |ui| {
-                            for (i, prog) in self.ebpf_programs.iter().enumerate() {
+                            let active = self
+                                .ebpf_programs
+                                .iter()
+                                .rposition(|r| r.status == CommandStatus::Applied);
+                            for (i, rule) in self.ebpf_programs.iter().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         egui::Color32::LIGHT_BLUE,
                                         format!("[{}]", i + 1),
                                     );
-                                    ui.monospace(prog);
+                                    ui.monospace(&rule.item);
+                                    if Some(i) == active {
+                                        ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+                                    } else if rule.status == CommandStatus::Applied {
+                                        ui.colored_label(egui::Color32::GRAY, "replaced");
+                                    } else {
+                                        status_badge(ui, rule.status);
+                                    }
                                 });
                             }
                         });
@@ -673,16 +762,7 @@ impl eframe::App for AegisApp {
     /// * `ctx` - egui context for rendering
     /// * `_frame` - Application frame (unused)
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !self.log_paused {
-            while let Ok(mut msg) = self.log_rx.try_recv() {
-                msg.timestamp = self.start_time.elapsed().as_secs_f64();
-                if self.logs.len() >= 1000 {
-                    self.logs.pop_back();
-                }
-                self.logs.push_front(msg);
-                self.log_new_entry = true;
-            }
-        }
+        self.drain_events();
 
         let now = self.start_time.elapsed().as_secs_f64();
         let pass_rate = self.stats.passed.load(Ordering::Relaxed) as f64;
@@ -748,6 +828,23 @@ impl eframe::App for AegisApp {
             Tab::Ebpf => self.ui_ebpf(ui),
         });
     }
+}
+
+/// Shows what the kernel said about a rule's command.
+fn status_badge(ui: &mut egui::Ui, status: CommandStatus) {
+    let orange = egui::Color32::from_rgb(255, 140, 0);
+    let (text, color) = match status {
+        CommandStatus::Applied => ("applied", egui::Color32::GREEN),
+        CommandStatus::Pending => ("pending", egui::Color32::GRAY),
+        CommandStatus::Rejected(MgmtOutcome::TableFull) => ("rejected: table full", egui::Color32::RED),
+        CommandStatus::Rejected(MgmtOutcome::Refused) => ("refused", egui::Color32::RED),
+        CommandStatus::Rejected(MgmtOutcome::Invalid | MgmtOutcome::Applied) => {
+            ("rejected: invalid", egui::Color32::RED)
+        }
+        CommandStatus::NotSent => ("not sent: kernel not seen yet", orange),
+        CommandStatus::NoAck => ("no ack from kernel", orange),
+    };
+    ui.colored_label(color, text);
 }
 
 /// Formats a numeric value with metric prefixes (k, M).

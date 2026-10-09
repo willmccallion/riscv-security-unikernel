@@ -5,6 +5,7 @@
 //! and allows dynamic configuration of firewall rules, DPI signatures,
 //! and eBPF packet filters.
 
+mod acks;
 mod app;
 /// Per-namespace UDP sender pool for realistic multi-source traffic.
 mod netns;
@@ -14,7 +15,7 @@ mod traffic;
 mod types;
 
 use crate::app::AegisApp;
-use crate::types::{LogEntry, NetStats};
+use crate::types::{NetStats, UiEvent};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc::unbounded_channel;
@@ -25,7 +26,7 @@ use tokio::sync::mpsc::unbounded_channel;
 /// and spawns the background network task that communicates with the kernel.
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {
-    let (log_tx, mut log_rx) = unbounded_channel::<LogEntry>();
+    let (event_tx, mut event_rx) = unbounded_channel::<UiEvent>();
     let (cmd_tx, cmd_rx) = unbounded_channel();
 
     let stats = Arc::new(NetStats {
@@ -47,16 +48,16 @@ async fn main() -> Result<(), eframe::Error> {
 
     let stats_clone = stats.clone();
     tokio::spawn(async move {
-        if let Err(e) = traffic::start_background_task(stats_clone, log_tx, cmd_rx).await {
+        if let Err(e) = traffic::start_background_task(stats_clone, event_tx, cmd_rx).await {
             eprintln!("[gui] background task failed: {e}");
             std::process::exit(1);
         }
     });
 
-    let (log_tx_sync, log_rx_sync) = std::sync::mpsc::channel();
+    let (event_tx_sync, event_rx_sync) = std::sync::mpsc::channel();
     tokio::spawn(async move {
-        while let Some(msg) = log_rx.recv().await {
-            let _ = log_tx_sync.send(msg);
+        while let Some(event) = event_rx.recv().await {
+            let _ = event_tx_sync.send(event);
         }
     });
 
@@ -68,6 +69,6 @@ async fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "Security Appliance Control Plane",
         options,
-        Box::new(|_cc| Box::new(AegisApp::new(stats, log_rx_sync, cmd_tx))),
+        Box::new(|_cc| Box::new(AegisApp::new(stats, event_rx_sync, cmd_tx))),
     )
 }

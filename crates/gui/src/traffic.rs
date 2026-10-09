@@ -5,12 +5,14 @@
 //! and generating test traffic patterns for security testing.
 
 use crate::netns::NsPool;
+use crate::acks::PendingAcks;
 use crate::types::{
-    GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, MgmtCommand, NetStats, TrafficMode,
+    CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, MgmtCommand, NetStats,
+    TrafficMode, UiEvent,
 };
 use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
-use sec_core::security::mgmt::ManagementMessageType;
+use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
 use sec_core::security::mgmt_auth::seal;
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
@@ -29,19 +31,15 @@ const NETNS_DEFAULT_COUNT: usize = 200;
 /// construction live in exactly one place — the kernel rejects anything
 /// signed differently, so it must match `mgmt_auth::seal` byte-for-byte.
 ///
-/// Returns silently without sending if the boot epoch is not yet known
-/// (no telemetry packet from the kernel has been seen). Sending under
-/// epoch=0 is guaranteed to be rejected, so the operator would just see
-/// a silently-discarded command.
-async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) {
-    let Some(counter) = next_counter() else {
-        eprintln!("[gui] dropping mgmt command: kernel epoch unknown (no telemetry yet)");
-        return;
-    };
+/// Returns the sequence number the packet was sealed with, which the
+/// kernel echoes in its ack, or `None` if nothing was sent because no
+/// telemetry has announced the kernel's boot epoch yet.
+async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Option<u32> {
+    let counter = next_counter()?;
     let mut packet = vec![0u8; 8 + body.len() + 8];
-    if seal(key, counter, body, &mut packet).is_some() {
-        let _ = sock.send_to(&packet, MGMT_ADDR).await;
-    }
+    seal(key, counter, body, &mut packet)?;
+    let _ = sock.send_to(&packet, MGMT_ADDR).await;
+    u32::try_from(counter & u64::from(u32::MAX)).ok()
 }
 use rand::Rng;
 use rand::SeedableRng;
@@ -168,11 +166,11 @@ fn next_counter() -> Option<u64> {
 /// # Arguments
 ///
 /// * `stats` - Shared statistics structure updated with kernel telemetry
-/// * `log_tx` - Channel sender for forwarding security alerts to the GUI
+/// * `events` - Channel for log entries and command status updates
 /// * `cmd_rx` - Channel receiver for commands from the GUI
 pub async fn start_background_task(
     stats: Arc<NetStats>,
-    log_tx: UnboundedSender<LogEntry>,
+    events: UnboundedSender<UiEvent>,
     mut cmd_rx: UnboundedReceiver<GuiCommand>,
 ) -> anyhow::Result<()> {
     // Fail loudly on bind errors — the alternative was `.unwrap()`,
@@ -212,6 +210,7 @@ pub async fn start_background_task(
     let mut mode = TrafficMode::Idle;
     let start_time = Instant::now();
     let mgmt_key = load_mgmt_key();
+    let mut pending = PendingAcks::default();
 
     let target_ip: std::net::IpAddr = "192.168.100.2".parse().unwrap();
     let target_80 = SocketAddr::new(target_ip, 80);
@@ -271,7 +270,15 @@ pub async fn start_background_task(
                         }
                     }
                     KernelDatagram::Alert => {
-                        let _ = log_tx.send(parse_alert(data));
+                        let _ = events.send(UiEvent::Log(parse_alert(data)));
+                    }
+                    KernelDatagram::Ack => {
+                        if let Some(ack) = parse_ack(data) {
+                            let _ = events.send(UiEvent::Log(ack_entry(ack)));
+                            if let Some((id, status)) = pending.acked(ack.seq, ack.outcome) {
+                                let _ = events.send(UiEvent::CommandStatus { id, status });
+                            }
+                        }
                     }
                     KernelDatagram::Unknown => {}
                 }
@@ -279,23 +286,34 @@ pub async fn start_background_task(
             Ok((len, _)) = alert_socket.recv_from(&mut alert_buf) => {
                 let data = &alert_buf[..len];
                 if classify_datagram(data) == KernelDatagram::Alert {
-                    let _ = log_tx.send(parse_alert(data));
+                    let _ = events.send(UiEvent::Log(parse_alert(data)));
                 }
             }
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     GuiCommand::SetMode(m) => mode = m,
-                    GuiCommand::Mgmt(command) => {
+                    GuiCommand::Mgmt { id, command } => {
                         if let MgmtCommand::BanIp(ip) = &command {
-                            let _ = log_tx.send(manual_ban_entry(*ip));
+                            let _ = events.send(UiEvent::Log(manual_ban_entry(*ip)));
                         }
-                        if let Some(body) = mgmt_body(&command) {
-                            send_sealed(&socket_pool[0], &mgmt_key, &body).await;
-                        }
+                        let sent = match mgmt_body(&command) {
+                            Some(body) => send_sealed(&socket_pool[0], &mgmt_key, &body).await,
+                            None => None,
+                        };
+                        let status = if let Some(seq) = sent {
+                            pending.sent(seq, id, Instant::now());
+                            CommandStatus::Pending
+                        } else {
+                            CommandStatus::NotSent
+                        };
+                        let _ = events.send(UiEvent::CommandStatus { id, status });
                     }
                 }
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
+                for id in pending.expire(Instant::now()) {
+                    let _ = events.send(UiEvent::CommandStatus { id, status: CommandStatus::NoAck });
+                }
                 // Rates are tuned against the kernel's CMS heavy-hitter
                 // threshold (100 pps/source). With N real source IPs
                 // (netns mode) the per-source rate is total/N:
@@ -379,6 +397,8 @@ enum KernelDatagram {
     Telemetry,
     /// A security alert, starting with the alert message-type byte.
     Alert,
+    /// A mgmt command ack, starting with the ack message-type byte.
+    Ack,
     /// Empty or unrecognised; must be ignored.
     Unknown,
 }
@@ -389,6 +409,7 @@ const TELEMETRY_LEN: usize = 80;
 fn classify_datagram(data: &[u8]) -> KernelDatagram {
     match data.first() {
         Some(&alert_packet::ALERT_MESSAGE_TYPE) => KernelDatagram::Alert,
+        Some(&ack_packet::ACK_MESSAGE_TYPE) if data.len() < TELEMETRY_LEN => KernelDatagram::Ack,
         Some(_) if data.len() >= TELEMETRY_LEN => KernelDatagram::Telemetry,
         _ => KernelDatagram::Unknown,
     }
@@ -522,6 +543,51 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         protocol,
         packet_len,
         msg,
+        color,
+    }
+}
+
+/// A mgmt ack received from the kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ack {
+    seq: u32,
+    command: u8,
+    outcome: MgmtOutcome,
+}
+
+fn parse_ack(data: &[u8]) -> Option<Ack> {
+    let body = data.get(..ack_packet::ACK_BODY_LEN)?;
+    let seq = &body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4];
+    Some(Ack {
+        seq: u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
+        command: body[ack_packet::COMMAND_OFFSET],
+        outcome: MgmtOutcome::from_u8(body[ack_packet::OUTCOME_OFFSET])?,
+    })
+}
+
+fn ack_entry(ack: Ack) -> LogEntry {
+    let command = match ManagementMessageType::from_u8(ack.command) {
+        Some(ManagementMessageType::BlockPort) => "block port",
+        Some(ManagementMessageType::AddDpiPattern) => "add DPI pattern",
+        Some(ManagementMessageType::UploadBpfProgram) => "upload BPF program",
+        Some(ManagementMessageType::BanIp) => "ban IP",
+        None => "unknown command",
+    };
+    let (outcome, color) = match ack.outcome {
+        MgmtOutcome::Applied => ("applied", egui::Color32::GREEN),
+        MgmtOutcome::TableFull => ("rejected: table full", egui::Color32::from_rgb(255, 80, 0)),
+        MgmtOutcome::Invalid => ("rejected: invalid", egui::Color32::from_rgb(255, 80, 0)),
+        MgmtOutcome::Refused => ("refused", egui::Color32::from_rgb(255, 80, 0)),
+    };
+    LogEntry {
+        timestamp: 0.0,
+        src_ip: "Kernel".to_string(),
+        dst_ip: String::new(),
+        src_port: 0,
+        dst_port: 0,
+        protocol: 0,
+        packet_len: 0,
+        msg: format!("[MGMT] #{} {command}: {outcome}", ack.seq),
         color,
     }
 }
@@ -790,6 +856,24 @@ mod tests {
 
         KERNEL_EPOCH.store(saved_epoch, Ordering::Relaxed);
         MGMT_SEQ.store(saved_seq, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn ack_datagram_is_classified_and_parsed() {
+        let data = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 1, 2, 0x01, 1];
+
+        assert_eq!(classify_datagram(&data), KernelDatagram::Ack);
+        assert_eq!(
+            parse_ack(&data),
+            Some(Ack { seq: 0x0102, command: 0x01, outcome: MgmtOutcome::TableFull })
+        );
+    }
+
+    #[test]
+    fn ack_with_unknown_outcome_is_rejected() {
+        let data = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 0, 1, 0x01, 99];
+
+        assert_eq!(parse_ack(&data), None);
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! log entries, and command types.
 
 use eframe::egui;
+use sec_core::security::mgmt::MgmtOutcome;
 use std::sync::atomic::AtomicU64;
 
 /// UDP address for sending management commands to the security kernel.
@@ -103,8 +104,46 @@ pub enum LogMode {
 pub enum GuiCommand {
     /// Change the traffic generation mode.
     SetMode(TrafficMode),
-    /// Seal and send a command to the kernel's management plane.
-    Mgmt(MgmtCommand),
+    /// Seal and send a command to the kernel's management plane; its
+    /// outcome comes back as a [`UiEvent::CommandStatus`] for `id`.
+    Mgmt {
+        /// Identifies the command in the status event.
+        id: CommandId,
+        /// The command to send.
+        command: MgmtCommand,
+    },
+}
+
+/// Identifies one mgmt command so its ack can be matched back to the UI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CommandId(pub u64);
+
+/// What the GUI knows about a mgmt command it issued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandStatus {
+    /// Sent; no ack yet.
+    Pending,
+    /// The kernel applied it.
+    Applied,
+    /// The kernel refused it, for the given reason.
+    Rejected(MgmtOutcome),
+    /// Not sent: no telemetry has announced the kernel's boot epoch yet.
+    NotSent,
+    /// Sent, but no ack arrived in time.
+    NoAck,
+}
+
+/// Messages from the network task to the UI.
+pub enum UiEvent {
+    /// An entry for the event log.
+    Log(LogEntry),
+    /// A mgmt command's status changed.
+    CommandStatus {
+        /// The command whose status changed.
+        id: CommandId,
+        /// Its new status.
+        status: CommandStatus,
+    },
 }
 
 /// A management-plane command. `traffic.rs` seals every one with the
