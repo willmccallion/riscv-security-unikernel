@@ -1,0 +1,107 @@
+//! Behaviour of the full per-packet pipeline in `sec_core::engine`.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
+use common::{CaptureSink, PEER_IP, engine, mgmt, tcp, udp};
+use sec_core::config::DEFAULT_BLOCKED_PORT;
+use sec_core::engine::Verdict;
+use sec_core::security::alert::AlertReason;
+use sec_core::security::mgmt::ManagementMessageType;
+
+#[test]
+fn clean_udp_passes() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let v = e.process(&mut udp(PEER_IP, 5000, 80, b"GET / HTTP/1.1"), 1, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+    assert_eq!(e.interval_stats().passed, 1);
+}
+
+#[test]
+fn traffic_to_blocked_port_is_dropped_with_firewall_alert() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let v = e.process(&mut udp(PEER_IP, 5000, DEFAULT_BLOCKED_PORT, b"hello"), 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Firewall));
+    assert!(sink.alert_reasons().contains(&AlertReason::Firewall.as_u8()));
+}
+
+#[test]
+fn signature_match_is_dropped_as_malware() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let v = e.process(&mut udp(PEER_IP, 5000, 80, b"x UNION SELECT 1"), 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Malware));
+}
+
+#[test]
+fn xmas_scan_is_dropped_by_heuristics() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let v = e.process(&mut tcp(PEER_IP, 5000, 80, 0x29, b""), 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Heuristic));
+}
+
+#[test]
+fn heavy_hitter_is_banned_after_threshold() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut last = Verdict::Passed;
+
+    for i in 0..200u64 {
+        last = e.process(&mut udp([10, 0, 0, 9], 5000, 80, b"flood"), i * 1_000_000, &mut sink);
+    }
+
+    assert_eq!(last, Verdict::Dropped(AlertReason::Ddos));
+}
+
+#[test]
+fn unsigned_mgmt_packet_raises_auth_failure() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let v = e.process(
+        &mut udp(PEER_IP, 40_000, sec_core::config::MANAGEMENT_PORT, &[0u8; 24]),
+        1,
+        &mut sink,
+    );
+
+    assert_eq!(v, Verdict::Management);
+    assert!(sink.alert_reasons().contains(&AlertReason::MgmtAuthFail.as_u8()));
+}
+
+#[test]
+fn authenticated_block_port_takes_effect() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let body = [ManagementMessageType::BlockPort as u8, 0x1F, 0x90];
+    let _ = e.process(&mut mgmt(1, &body), 1, &mut sink);
+
+    let v = e.process(&mut udp(PEER_IP, 5000, 8080, b"hello"), 2, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Firewall));
+}
+
+#[test]
+fn alerts_go_to_the_operator_after_it_authenticates() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let _ = e.process(&mut mgmt(1, &[ManagementMessageType::BlockPort as u8, 0, 99]), 1, &mut sink);
+    sink.sent.clear();
+
+    let _ = e.process(&mut udp(PEER_IP, 5000, 99, b"x"), 2, &mut sink);
+
+    let alert = sink.sent.last().expect("firewall alert");
+    assert_eq!(&alert[0..6], &common::PEER_MAC);
+    assert_eq!(&alert[30..34], &PEER_IP);
+}
