@@ -12,7 +12,7 @@ members = [
 # cargo-fuzz packages need nightly + libFuzzer instrumentation. Keep them
 # out of the default `cargo build` so contributors aren't forced onto
 # nightly to compile the kernel. Run via `make fuzz-*` instead.
-exclude = ["crates/core/fuzz"]
+exclude = ["crates/core/fuzz", "crates/daemon/fuzz"]
 
 [workspace.package]
 version = "0.1.0"

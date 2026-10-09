@@ -232,7 +232,7 @@ impl<'a> LongHeaderPacket<'a> {
 
 /// The CRYPTO frames in a decrypted Initial payload, skipping the other
 /// frames an Initial may carry; stops at any frame it cannot step over.
-fn crypto_frames(mut payload: &[u8]) -> Vec<CryptoData> {
+pub fn crypto_frames(mut payload: &[u8]) -> Vec<CryptoData> {
     const PADDING: u64 = 0x00;
     const PING: u64 = 0x01;
     const ACK: u64 = 0x02;

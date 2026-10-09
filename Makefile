@@ -241,11 +241,13 @@ miri:
 # `-- -max_total_time=N` for a bounded run, e.g.:
 #   make fuzz-process-packet ARGS="-- -max_total_time=60"
 FUZZ_DIR := crates/core/fuzz
+MONITOR_FUZZ_DIR := crates/daemon/fuzz
 ARGS ?=
 
 fuzz-build:
 	@echo "[*] Compiling all fuzz targets..."
 	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz build
+	@cd $(MONITOR_FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz build
 
 fuzz-process-packet:
 	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run process_packet $(ARGS)
@@ -265,6 +267,12 @@ fuzz-engine-frame:
 fuzz-engine-sequence:
 	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run engine_sequence $(ARGS)
 
+# The network monitor's parsers and pipeline: decode, dns, tls, quic,
+# pcap, hellos or pipeline, e.g. `make fuzz-monitor-quic`.
+fuzz-monitor-%:
+	@cd $(MONITOR_FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run monitor_$* $(ARGS)
+
 clean:
 	@cargo clean
 	@cd $(FUZZ_DIR) && cargo clean 2>/dev/null || true
+	@cd $(MONITOR_FUZZ_DIR) && cargo clean 2>/dev/null || true

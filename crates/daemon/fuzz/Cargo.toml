@@ -1,0 +1,67 @@
+# Detach from the parent workspace; cargo-fuzz uses its own profile and
+# nightly toolchain. Run via `make fuzz-monitor-*`.
+[workspace]
+
+[package]
+name = "security-daemon-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+authors = ["Will McCallion"]
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+security-daemon = { path = ".." }
+
+[[bin]]
+name = "monitor_decode"
+path = "fuzz_targets/monitor_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "monitor_dns"
+path = "fuzz_targets/monitor_dns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "monitor_tls"
+path = "fuzz_targets/monitor_tls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "monitor_quic"
+path = "fuzz_targets/monitor_quic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "monitor_pcap"
+path = "fuzz_targets/monitor_pcap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "monitor_hellos"
+path = "fuzz_targets/monitor_hellos.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "monitor_pipeline"
+path = "fuzz_targets/monitor_pipeline.rs"
+test = false
+doc = false
+bench = false
