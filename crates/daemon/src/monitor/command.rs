@@ -4,7 +4,9 @@
 use super::config::MonitorConfig;
 use super::net::IpPrefix;
 use super::report::Detail;
-use super::{link, live, replay};
+use super::{live, replay};
+use anyhow::Context;
+use monitor_proto as proto;
 use crate::sandbox::{self, WriteAccess};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
@@ -66,7 +68,7 @@ impl Serving {
     pub fn path(&self) -> Result<Option<PathBuf>> {
         match self {
             Self::Off => Ok(None),
-            Self::AtDefaultPath => link::default_socket_path().map(Some),
+            Self::AtDefaultPath => proto::default_socket_path().map(Some).context("find the runtime directory"),
             Self::At(path) => Ok(Some(path.clone())),
         }
     }

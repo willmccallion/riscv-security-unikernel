@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 
 /// This protocol's version; a viewer should refuse others.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -13,6 +15,23 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// Longest line a viewer should accept, so a confused or hostile peer
 /// cannot make it buffer without bound.
 pub const MAX_LINE_LEN: usize = 4 * 1024 * 1024;
+
+/// Where the monitor serves viewers unless told otherwise:
+/// `security-daemon/monitor.sock` in the user's runtime directory
+/// (`$XDG_RUNTIME_DIR`, else `/run/user/<uid>`).
+///
+/// # Errors
+/// If neither is known: `$XDG_RUNTIME_DIR` is unset and this process's
+/// user cannot be read from `/proc/self`.
+pub fn default_socket_path() -> std::io::Result<PathBuf> {
+    let runtime_dir = if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        PathBuf::from(dir)
+    } else {
+        let uid = std::fs::metadata("/proc/self")?.uid();
+        PathBuf::from(format!("/run/user/{uid}"))
+    };
+    Ok(runtime_dir.join("security-daemon").join("monitor.sock"))
+}
 
 /// One line of the stream.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

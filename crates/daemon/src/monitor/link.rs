@@ -13,25 +13,13 @@ use std::fs::{self, DirBuilder};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Most viewers connected at once.
 const MAX_VIEWERS: usize = 8;
 /// Bytes queued for a viewer that is not reading before it is dropped,
 /// so a stuck viewer can never hold up capture or use unbounded memory.
 const MAX_QUEUED_BYTES: usize = 4 * 1024 * 1024;
-
-/// The socket's usual place: `security-daemon/monitor.sock` in the
-/// user's runtime directory.
-pub fn default_socket_path() -> Result<PathBuf> {
-    let runtime_dir = if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        PathBuf::from(dir)
-    } else {
-        let uid = fs::metadata("/proc/self").context("read /proc/self")?.uid();
-        PathBuf::from(format!("/run/user/{uid}"))
-    };
-    Ok(runtime_dir.join("security-daemon").join("monitor.sock"))
-}
 
 /// The hello a viewer receives on connecting.
 pub fn hello(interfaces: &[String], local: &LocalNetworks, interval_ms: u64) -> proto::Hello {
@@ -220,6 +208,7 @@ mod tests {
     use crate::monitor::pipeline::Monitor;
     use crate::monitor::time::UnixNanos;
     use std::io::{BufRead, BufReader};
+    use std::path::PathBuf;
     use std::time::Duration;
 
     /// A fresh private directory for one test's socket.
