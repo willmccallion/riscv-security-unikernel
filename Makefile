@@ -16,7 +16,7 @@ RAM_LIMIT := 65536
 CARGO_NIGHTLY ?= cargo +nightly
 
 .PHONY: all kernel gui daemon run setup_net setup_net_many teardown_net_many \
-        bench check-size clean miri dev-key qemu-test \
+        bench check-size clean miri dev-key qemu-test qemu-fuzz \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build \
         fuzz-engine-frame fuzz-engine-sequence
 
@@ -173,6 +173,14 @@ run: kernel setup_net
 # Frames travel over a Unix socket, so no tap device or sudo is needed.
 qemu-test: kernel
 	@cargo test -p qemu-harness -- --ignored --test-threads=4
+
+# Fuzz the real kernel under QEMU with mutated frames and sealed mgmt
+# commands. Failures and their minimised inputs land in target/qemu-fuzz.
+#   make qemu-fuzz QEMU_FUZZ_ARGS="--duration-secs 3600 --jobs 8"
+#   make qemu-fuzz QEMU_FUZZ_ARGS="--replay target/qemu-fuzz/<dir>/minimal.txt"
+QEMU_FUZZ_ARGS ?=
+qemu-fuzz: kernel
+	@cargo run -q -p qemu-harness --release --bin qemu-fuzz -- $(QEMU_FUZZ_ARGS)
 
 # Run criterion benchmarks (host-native, no QEMU required)
 bench:

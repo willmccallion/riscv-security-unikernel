@@ -8,6 +8,7 @@
 
 pub mod frame;
 pub mod mgmt;
+pub mod mutate;
 
 use anyhow::{Context, Result, bail};
 use std::io::Read;
