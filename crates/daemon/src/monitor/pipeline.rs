@@ -1,8 +1,10 @@
 //! The monitor's processing core, independent of where frames come from.
 
-use super::decode::{self, LinkType, Packet};
-use super::flows::FlowTable;
+use super::decode::{self, LinkType, Packet, Transport};
+use super::dns;
+use super::flows::{FlowTable, PacketRole};
 use super::hosts::{HostActivity, HostTable, Locality, PacketEnd};
+use super::names::{HelloAssembler, HostName, NameSource, NameTable};
 use super::net::LocalNetworks;
 use super::time::UnixNanos;
 use super::totals::TrafficTotals;
@@ -15,6 +17,19 @@ const FLOW_CAPACITY: usize = 262_144;
 const HOST_CAPACITY: usize = 65_536;
 /// Most hosts listed in one summary, busiest first.
 const HOSTS_PER_SUMMARY: usize = 256;
+/// Most host names remembered at once.
+const NAME_CAPACITY: usize = 65_536;
+const DNS_PORT: u16 = 53;
+const MDNS_PORT: u16 = 5353;
+
+/// A host listed in a summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedHost {
+    /// Its traffic over the interval.
+    pub activity: HostActivity,
+    /// Its best known name.
+    pub name: Option<HostName>,
+}
 
 /// Traffic over one closed interval.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +41,7 @@ pub struct Summary {
     /// What crossed during it.
     pub totals: TrafficTotals,
     /// The busiest hosts active during it, busiest first.
-    pub hosts: Vec<HostActivity>,
+    pub hosts: Vec<ListedHost>,
     /// Active hosts beyond those listed.
     pub hosts_omitted: usize,
     /// Flows being tracked at the interval's end.
@@ -50,6 +65,8 @@ pub struct Monitor {
     current: Option<OpenInterval>,
     flows: FlowTable,
     hosts: HostTable,
+    names: NameTable,
+    hellos: HelloAssembler,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -69,6 +86,8 @@ impl Monitor {
             current: None,
             flows: FlowTable::new(FLOW_CAPACITY),
             hosts: HostTable::new(HOST_CAPACITY),
+            names: NameTable::new(NAME_CAPACITY),
+            hellos: HelloAssembler::default(),
         }
     }
 
@@ -100,9 +119,36 @@ impl Monitor {
 
     fn track(&mut self, packet: &Packet<'_>, wire_len: u32, at: UnixNanos) {
         let role = self.flows.observe(packet, wire_len, at);
+        self.learn_names(packet, role.as_ref(), at);
         let sender = self.end(packet.src);
         let receiver = self.end(packet.dst);
         self.hosts.record(sender, receiver, wire_len, role.as_ref(), at);
+    }
+
+    /// Learns names from DNS and mDNS responses, and from the server name
+    /// in a TLS client's hello.
+    fn learn_names(&mut self, packet: &Packet<'_>, role: Option<&PacketRole>, at: UnixNanos) {
+        match packet.transport {
+            Transport::Udp(udp) => {
+                let source = match udp.src_port {
+                    DNS_PORT => NameSource::Dns,
+                    MDNS_PORT => NameSource::Mdns,
+                    _ => return,
+                };
+                if let Some(response) = dns::parse_response(udp.payload) {
+                    self.names.learn_from_dns(&response, source, at);
+                }
+            }
+            Transport::Tcp(tcp) => {
+                let Some(role) = role.filter(|r| r.from_client) else { return };
+                let Some(hello) = self.hellos.observe(role.client, role.server, tcp.sequence, tcp.payload, at) else {
+                    return;
+                };
+                let source = if hello.encrypted_hello { NameSource::TlsCoverName } else { NameSource::TlsServerName };
+                self.names.learn(role.server.addr, &hello.name, source, at);
+            }
+            Transport::Icmp | Transport::Fragment | Transport::Other(_) => {}
+        }
     }
 
     fn end(&self, addr: IpAddr) -> PacketEnd {
@@ -120,6 +166,8 @@ impl Monitor {
         let summary = self.summarise(open);
         self.flows.expire(now);
         self.hosts.expire(now);
+        self.names.expire(now);
+        self.hellos.expire(now);
         Some(summary)
     }
 
@@ -131,9 +179,16 @@ impl Monitor {
     }
 
     fn summarise(&mut self, open: OpenInterval) -> Summary {
-        let mut hosts = self.hosts.close_interval();
-        let hosts_omitted = hosts.len().saturating_sub(HOSTS_PER_SUMMARY);
-        hosts.truncate(HOSTS_PER_SUMMARY);
+        let active = self.hosts.close_interval();
+        let hosts_omitted = active.len().saturating_sub(HOSTS_PER_SUMMARY);
+        let hosts = active
+            .into_iter()
+            .take(HOSTS_PER_SUMMARY)
+            .map(|activity| ListedHost {
+                name: self.names.lookup(activity.addr).cloned(),
+                activity,
+            })
+            .collect();
         Summary {
             start: open.start,
             length: self.interval,
@@ -224,10 +279,34 @@ mod tests {
         let _ = m.observe(&udp_frame(), 60, UnixNanos::new(SECOND));
         let summary = m.finish().unwrap();
 
-        let addrs: Vec<String> = summary.hosts.iter().map(|h| h.addr.to_string()).collect();
+        let addrs: Vec<String> = summary.hosts.iter().map(|h| h.activity.addr.to_string()).collect();
         assert_eq!(addrs, ["1.1.1.1", "192.168.1.86"]);
-        assert_eq!(summary.hosts[0].locality, Locality::Remote);
+        assert_eq!(summary.hosts[0].activity.locality, Locality::Remote);
         assert_eq!(summary.active_flows, 1);
         assert_eq!(summary.untracked, 0);
+    }
+
+    #[test]
+    fn dns_answers_name_the_hosts_in_summaries() {
+        let mut m = monitor();
+        let answer = [
+            0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0, 3, b'o', b'n', b'e', 3, b'o', b'n', b'e', 0, 0, 1, 0, 1, 0xC0,
+            12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 1, 1, 1, 1,
+        ];
+        let mut frame = vec![0u8; 12];
+        frame.extend_from_slice(&[0x08, 0x00]);
+        let total = u16::try_from(20 + 8 + answer.len()).unwrap();
+        frame.extend_from_slice(&[0x45, 0, 0, 0, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86]);
+        frame[16..18].copy_from_slice(&total.to_be_bytes());
+        frame.extend_from_slice(&[0, 53, 0x9C, 0x40]);
+        frame.extend_from_slice(&u16::try_from(8 + answer.len()).unwrap().to_be_bytes());
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&answer);
+
+        let _ = m.observe(&frame, 90, UnixNanos::new(SECOND));
+        let summary = m.finish().unwrap();
+
+        let resolver = summary.hosts.iter().find(|h| h.activity.addr.to_string() == "1.1.1.1").unwrap();
+        assert_eq!(resolver.name.as_ref().map(|n| &*n.name), Some("one.one"));
     }
 }

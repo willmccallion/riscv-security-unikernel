@@ -28,14 +28,14 @@ pub fn print_summary(summary: &Summary) {
     let top: Vec<String> = summary
         .hosts
         .iter()
-        .filter(|h| h.locality == Locality::Remote)
+        .filter(|h| h.activity.locality == Locality::Remote)
         .take(TOP_REMOTE_HOSTS)
         .map(|h| {
+            let label = h.name.as_ref().map_or_else(|| h.activity.addr.to_string(), |n| n.name.to_string());
             format!(
-                "{} \u{2193}{}/s \u{2191}{}/s",
-                h.addr,
-                SiBits(h.sent.bytes as f64 * 8.0 / seconds),
-                SiBits(h.received.bytes as f64 * 8.0 / seconds)
+                "{label} \u{2193}{}/s \u{2191}{}/s",
+                SiBits(h.activity.sent.bytes as f64 * 8.0 / seconds),
+                SiBits(h.activity.received.bytes as f64 * 8.0 / seconds)
             )
         })
         .collect();

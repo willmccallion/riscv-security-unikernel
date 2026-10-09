@@ -8,6 +8,7 @@ pub mod dns;
 pub mod flows;
 pub mod hosts;
 pub mod live;
+pub mod names;
 pub mod net;
 pub mod pcap;
 pub mod pipeline;
