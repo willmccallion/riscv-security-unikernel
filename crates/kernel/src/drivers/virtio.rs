@@ -51,6 +51,10 @@ const NET_HDR_SIZE: usize = 10;
 /// Maximum buffer size for packet storage.
 const BUF_SIZE: usize = 1536;
 
+/// Spin budget while waiting for the device to release a TX descriptor
+/// before the frame is dropped.
+const TX_RECLAIM_SPINS: u32 = 1_000_000;
+
 /// VirtIO queue descriptor structure.
 ///
 /// Describes a single buffer in the virtqueue. The descriptor contains
@@ -295,6 +299,9 @@ impl VirtioNet {
         if packet.len() > BUF_SIZE - NET_HDR_SIZE {
             return;
         }
+        if !Self::wait_for_free_tx_slot() {
+            return;
+        }
         // SAFETY: TX_QUEUE is a mutable static only accessed from this single-threaded kernel.
         // Volatile writes and fences ensure the device sees the descriptor before the available
         // index is updated.
@@ -319,6 +326,36 @@ impl VirtioNet {
 
             fence(Ordering::SeqCst);
             (*tx).avail.idx = (*tx).avail.idx.wrapping_add(1);
+        }
+    }
+
+    /// Returns once the device has released a TX descriptor, kicking it
+    /// first if the ring is full. Returns `false` if it never does, in
+    /// which case the caller drops the frame rather than overwrite a
+    /// buffer the device still owns.
+    fn wait_for_free_tx_slot() -> bool {
+        if Self::tx_in_flight() < QUEUE_SIZE {
+            return true;
+        }
+        Self::flush();
+        for _ in 0..TX_RECLAIM_SPINS {
+            if Self::tx_in_flight() < QUEUE_SIZE {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+
+    /// Number of TX descriptors handed to the device and not yet returned.
+    fn tx_in_flight() -> usize {
+        // SAFETY: TX_QUEUE is a mutable static only accessed from this
+        // single-threaded kernel; the device updates `used.idx`, so it is
+        // read volatile.
+        unsafe {
+            let tx = addr_of_mut!(TX_QUEUE);
+            let used = read_volatile(addr_of_mut!((*tx).used.idx));
+            (*tx).avail.idx.wrapping_sub(used) as usize
         }
     }
 
