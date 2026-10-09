@@ -92,6 +92,37 @@ const fn sipround(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
     *v2 = v2.rotate_left(32);
 }
 
+/// Longest label [`derive_key`] accepts.
+pub const MAX_LABEL_LEN: usize = 31;
+
+/// Derives an independent 128-bit key from `key` for the purpose `label`.
+///
+/// Lets one secret key several hashes without their outputs being related.
+/// Labels longer than [`MAX_LABEL_LEN`] are truncated.
+pub const fn derive_key(key: &[u8; 16], label: &[u8]) -> [u8; 16] {
+    let len = if label.len() < MAX_LABEL_LEN { label.len() } else { MAX_LABEL_LEN };
+    let mut input = [0u8; MAX_LABEL_LEN + 1];
+    let mut i = 0;
+    while i < len {
+        input[i] = label[i];
+        i += 1;
+    }
+    let (labelled, _) = input.split_at(len + 1);
+    let lo = siphash24(key, labelled).to_le_bytes();
+    input[len] = 1;
+    let (labelled, _) = input.split_at(len + 1);
+    let hi = siphash24(key, labelled).to_le_bytes();
+
+    let mut out = [0u8; 16];
+    let mut j = 0;
+    while j < 8 {
+        out[j] = lo[j];
+        out[8 + j] = hi[j];
+        j += 1;
+    }
+    out
+}
+
 /// Constant-time equality check for two byte slices of equal length.
 ///
 /// Avoids early-exit on first mismatch so an attacker measuring reply
@@ -137,6 +168,18 @@ mod tests {
         k2[0] = 1;
         let msg = b"abcdefgh";
         assert_ne!(siphash24(&k1, msg), siphash24(&k2, msg));
+    }
+
+    #[test]
+    fn derived_keys_differ_by_label_and_from_the_input() {
+        let key = [9u8; 16];
+
+        let a = derive_key(&key, b"a");
+        let b = derive_key(&key, b"b");
+
+        assert_ne!(a, b);
+        assert_ne!(a, key);
+        assert_ne!(a[..8], a[8..], "halves come from different inputs");
     }
 
     #[test]

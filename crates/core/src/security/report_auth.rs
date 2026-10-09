@@ -11,7 +11,7 @@
 //! never be replayed to the kernel as a command, and the 64-bit sequence
 //! cannot wrap under any realistic alert rate.
 
-use crate::security::hash::{ct_eq, siphash24};
+use crate::security::hash::{ct_eq, derive_key, siphash24};
 
 /// Bytes before the body: epoch and sequence.
 pub const HEADER_LEN: usize = 4 + 8;
@@ -37,16 +37,7 @@ const REMEMBERED_EPOCHS: usize = 8;
 
 /// Derives the report-signing key from the pre-shared mgmt key.
 pub const fn report_key(mgmt_key: &[u8; 16]) -> [u8; 16] {
-    let lo = siphash24(mgmt_key, b"sec-core report key 0").to_le_bytes();
-    let hi = siphash24(mgmt_key, b"sec-core report key 1").to_le_bytes();
-    let mut key = [0u8; 16];
-    let mut i = 0;
-    while i < 8 {
-        key[i] = lo[i];
-        key[8 + i] = hi[i];
-        i += 1;
-    }
-    key
+    derive_key(mgmt_key, b"sec-core report key")
 }
 
 /// Writes `body` into `out` as a sealed report and returns its length, or
