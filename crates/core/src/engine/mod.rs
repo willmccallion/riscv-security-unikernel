@@ -10,11 +10,11 @@ mod report;
 
 use crate::config::{
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
-    IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, RATE_LIMIT_PPS,
-    TOKEN_BUCKET_CAPACITY,
+    IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
+    MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_PPS, TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
-use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp};
+use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
 use crate::net::tcp::TcpHeader;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
@@ -102,6 +102,7 @@ pub struct Engine {
     cms: dos::CountMinSketch,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
+    mgmt_limiter: dos::TokenBucket,
     vm: VM,
     bpf: BpfSlot,
     flows: flow::FlowTable,
@@ -123,6 +124,7 @@ impl Engine {
             cms: dos::CountMinSketch::new(),
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_PPS),
+            mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
             vm: VM::new(),
             bpf: BpfSlot {
                 program: [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE],
@@ -242,6 +244,10 @@ impl Engine {
                 meta.dst_port = dst_port;
             }
 
+            if let Some(envelope) = mgmt_envelope(packet, ip, meta.dst_port) {
+                return self.handle_mgmt(envelope, src_mac, &meta, now, sink);
+            }
+
             if self.pbox.is_banned(&meta.src_ip, now) {
                 drop = true;
             } else if self.cms.insert(&meta.src_ip) > HEAVY_HITTER_THRESHOLD {
@@ -303,24 +309,6 @@ impl Engine {
             return Verdict::Consumed;
         }
 
-        if dst_port == MANAGEMENT_PORT {
-            self.stats.mgmt += 1;
-            const UDP_HEADER_LEN: usize = 8;
-            if payload.len() > UDP_HEADER_LEN {
-                let envelope = &payload[UDP_HEADER_LEN..];
-                if let Some(body) = self.mgmt_auth.verify(envelope) {
-                    self.operator = Some(OperatorAddr {
-                        mac: src_mac,
-                        ip: meta.src_ip,
-                    });
-                    self.dispatch_mgmt(body, now, &meta, sink);
-                } else {
-                    self.alert(&meta, AlertReason::MgmtAuthFail, sink);
-                }
-            }
-            return Verdict::Management;
-        }
-
         if self.ac.scan(payload) || self.dyn_rules.check(payload) {
             self.stats.malware += 1;
             self.alert(&meta, AlertReason::Malware, sink);
@@ -329,6 +317,38 @@ impl Engine {
             self.stats.passed += 1;
             Verdict::Passed
         }
+    }
+
+    /// Authenticates and applies a datagram addressed to the mgmt port.
+    ///
+    /// Runs ahead of every data-plane check so no ban, rate limit, BPF
+    /// program or heuristic can cut the operator off; the mgmt plane's own
+    /// token bucket bounds the verification work a flood can cause.
+    fn handle_mgmt<S: PacketSink>(
+        &mut self,
+        envelope: MgmtEnvelope<'_>,
+        src_mac: [u8; 6],
+        meta: &AlertMeta,
+        now: u64,
+        sink: &mut S,
+    ) -> Verdict {
+        self.stats.mgmt += 1;
+        if !self.mgmt_limiter.allow(now) {
+            return Verdict::Management;
+        }
+        let MgmtEnvelope::Sealed(envelope) = envelope else {
+            return Verdict::Management;
+        };
+        if let Some(body) = self.mgmt_auth.verify(envelope) {
+            self.operator = Some(OperatorAddr {
+                mac: src_mac,
+                ip: meta.src_ip,
+            });
+            self.dispatch_mgmt(body, now, meta, sink);
+        } else {
+            self.alert(meta, AlertReason::MgmtAuthFail, sink);
+        }
+        Verdict::Management
     }
 
     /// Records the packet against its flow, alerting on a sample of new
@@ -473,6 +493,33 @@ fn transport_ports(packet: &[u8], ip: &Ipv4Fields) -> Option<(u16, u16)> {
         }
         IpProtocol::Icmp => None,
     }
+}
+
+/// The payload of a UDP datagram addressed to the mgmt port.
+#[derive(Debug, Clone, Copy)]
+enum MgmtEnvelope<'a> {
+    /// The UDP payload, bounded by the UDP length so Ethernet padding on
+    /// short frames is not mistaken for part of the sealed envelope.
+    Sealed(&'a [u8]),
+    /// The UDP header is truncated or its length field is inconsistent.
+    Malformed,
+}
+
+/// Returns the mgmt envelope if `packet` is UDP to our mgmt port.
+fn mgmt_envelope<'a>(packet: &'a [u8], ip: &Ipv4Fields, dst_port: u16) -> Option<MgmtEnvelope<'a>> {
+    if IpProtocol::from_u8(ip.protocol) != Some(IpProtocol::Udp)
+        || ip.dst_ip != IP_ADDR
+        || dst_port != MANAGEMENT_PORT
+    {
+        return None;
+    }
+    let payload_start = ip.l4_offset + udp::HEADER_SIZE;
+    let envelope = packet
+        .get(ip.l4_offset + 4..ip.l4_offset + 6)
+        .map(|len| usize::from(u16::from_be_bytes([len[0], len[1]])))
+        .filter(|&udp_len| udp_len >= udp::HEADER_SIZE)
+        .and_then(|udp_len| packet.get(payload_start..ip.l4_offset + udp_len));
+    Some(envelope.map_or(MgmtEnvelope::Malformed, MgmtEnvelope::Sealed))
 }
 
 /// The TCP flags byte, if this is a TCP segment with a full header.

@@ -24,6 +24,15 @@ pub const HEAVY_HITTER_THRESHOLD: u16 = 100;
 /// UDP port number for management interface commands.
 pub const MANAGEMENT_PORT: u16 = 1337;
 
+/// Mgmt packets that may arrive in one burst before the mgmt plane's own
+/// rate limit applies.
+pub const MGMT_BUCKET_CAPACITY: u64 = 16;
+
+/// Time-source units per mgmt token: about 100 packets per second at
+/// 1 GHz. Bounds the MAC-verification work an unauthenticated flood to
+/// the mgmt port can cause.
+pub const MGMT_TOKEN_COST_CYCLES: u64 = 10_000_000;
+
 /// UDP port number for telemetry broadcasts.
 pub const TELEMETRY_PORT: u16 = 8888;
 
