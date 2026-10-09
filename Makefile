@@ -16,7 +16,7 @@ RAM_LIMIT := 65536
 CARGO_NIGHTLY ?= cargo +nightly
 
 .PHONY: all kernel gui daemon run setup_net setup_net_many teardown_net_many \
-        bench check-size clean miri dev-key \
+        bench check-size clean miri dev-key qemu-test \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build
 
 all: kernel gui
@@ -167,6 +167,11 @@ run: kernel setup_net
 		-object rng-random,id=rng0,filename=/dev/urandom \
 		-device virtio-rng-device,rng=rng0 \
 		-echr 0x02
+
+# Boot the real kernel under QEMU and run the end-to-end tests against it.
+# Frames travel over a Unix socket, so no tap device or sudo is needed.
+qemu-test: kernel
+	@cargo test -p qemu-harness -- --ignored --test-threads=4
 
 # Run criterion benchmarks (host-native, no QEMU required)
 bench:
