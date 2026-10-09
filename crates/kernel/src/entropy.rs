@@ -133,7 +133,7 @@ pub struct GatherReport {
 
 impl GatherReport {
     /// Returns `true` if at least one strong source contributed.
-    pub fn has_strong_source(&self) -> bool {
+    pub const fn has_strong_source(&self) -> bool {
         self.zkr || self.virtio_rng
     }
 }
@@ -171,7 +171,7 @@ pub fn gather(out: &mut [u8], virtio_rng_present: bool) -> GatherReport {
     }
 
     tmp.fill(0);
-    McycleSource.fill(&mut tmp[..want]);
+    let _ = McycleSource.fill(&mut tmp[..want]);
     xor_into(&mut out[..want], &tmp[..want]);
     report.mcycle = true;
 

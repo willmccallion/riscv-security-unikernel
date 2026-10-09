@@ -169,7 +169,7 @@ impl VirtioRng {
         // ensure the device sees the descriptor and avail-index update
         // in order. The descriptor address points into the queue's own
         // `buf`, valid for the lifetime of the static.
-        let written = unsafe {
+        unsafe {
             let q = addr_of_mut!(RNG_QUEUE);
             (*q).desc[0].addr = addr_of_mut!(RNG_BUF) as u64;
             (*q).desc[0].len = want as u32;
@@ -199,8 +199,7 @@ impl VirtioRng {
             let src = addr_of_mut!(RNG_BUF).cast::<u8>();
             core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), n);
             n
-        };
-        written
+        }
     }
 
     fn reg_write(offset: usize, val: u32) {

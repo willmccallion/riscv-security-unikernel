@@ -14,7 +14,7 @@ pub mod virtio_rng;
 
 /// Unified network device interface.
 ///
-/// Exports the primary network device driver as a generic NetDevice type
+/// Exports the primary network device driver as a generic `NetDevice` type
 /// to allow easy swapping of implementations.
 pub mod net_device {
     pub use super::virtio::VirtioNet as NetDevice;

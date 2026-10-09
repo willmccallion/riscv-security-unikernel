@@ -29,7 +29,7 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-env-changed=KERNEL_MGMT_KEY");
 
-    fs::copy("memory.x", out_dir.join("memory.x")).expect("failed to copy memory.x");
+    let _ = fs::copy("memory.x", out_dir.join("memory.x")).expect("failed to copy memory.x");
     println!("cargo:rustc-link-search={}", out_dir.display());
     println!("cargo:rustc-link-arg=-Tmemory.x");
 
@@ -52,17 +52,13 @@ fn main() {
         random_key()
     };
 
-    let mut body = String::with_capacity(160);
-    body.push_str("/// Pre-shared 16-byte key used by `MgmtAuth` to verify mgmt packets.\n");
-    body.push_str("/// Generated at build time from `KERNEL_MGMT_KEY`, `.mgmt-key.local`, or `/dev/urandom` (debug only).\n");
-    body.push_str("pub const MGMT_KEY: [u8; 16] = [");
-    for (i, b) in key.iter().enumerate() {
-        if i > 0 {
-            body.push_str(", ");
-        }
-        body.push_str(&format!("0x{b:02x}"));
-    }
-    body.push_str("];\n");
+    let bytes: Vec<String> = key.iter().map(|b| format!("0x{b:02x}")).collect();
+    let body = format!(
+        "/// Pre-shared 16-byte key used by `MgmtAuth` to verify mgmt packets.\n\
+         /// Generated at build time from `KERNEL_MGMT_KEY`, `.mgmt-key.local`, or `/dev/urandom` (debug only).\n\
+         pub const MGMT_KEY: [u8; 16] = [{}];\n",
+        bytes.join(", ")
+    );
     fs::write(out_dir.join("mgmt_key.rs"), body).expect("failed to write mgmt_key.rs");
 }
 

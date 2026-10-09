@@ -10,6 +10,9 @@
 
 #![no_std]
 #![no_main]
+// MMIO, CSR access, linker symbols and the boot stub all need unsafe;
+// each block carries a SAFETY comment.
+#![allow(unsafe_code)]
 
 /// Hardware device drivers for network interfaces and peripherals.
 mod drivers;
@@ -84,6 +87,9 @@ global_asm!(
         j park
 "#
 );
+
+/// Maximum number of packets to process before servicing timers again.
+const BATCH_SIZE: usize = 64;
 
 /// Global security engine instance.
 static ENGINE: Singleton<Engine> = Singleton::new(Engine::new(MGMT_KEY));
@@ -162,9 +168,6 @@ pub extern "C" fn kmain() -> ! {
         );
     }
     engine.init(boot_secrets(&entropy));
-
-    /// Maximum number of packets to process in a single iteration.
-    const BATCH_SIZE: usize = 64;
 
     loop {
         let now = clock.now();

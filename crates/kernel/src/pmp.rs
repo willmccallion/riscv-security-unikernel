@@ -48,7 +48,7 @@ const CFG_DATA: u8 = R | W | A_TOR | L;
 
 /// Lower bound of the device-MMIO window (UART + VirtIO).
 const MMIO_START: usize = 0x1000_0000;
-/// Exclusive upper bound; covers 0x1000_0000..0x1001_0000 (UART at
+/// Exclusive upper bound; covers `0x1000_0000..0x1001_0000` (UART at
 /// 0x10000000, VirtIO MMIO devices at 0x10001000..0x10009000 on
 /// QEMU `virt`).
 const MMIO_END: usize = 0x1001_0000;

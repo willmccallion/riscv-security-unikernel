@@ -186,16 +186,16 @@ impl VirtioNet {
         Self::reg_write(0x020, 0);
         Self::reg_write(STATUS, 0x01 | 0x02 | 0x08);
 
-        // SAFETY: RX_QUEUE is a mutable static only accessed from this single-threaded kernel.
-        // The descriptor addresses point into the queue's own buffer array, which is valid
-        // for the lifetime of the static.
+        // SAFETY: RX_QUEUE and RX_BUFFERS are statics only accessed from this
+        // single-threaded kernel, so the descriptors' buffer addresses stay valid.
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
-            for i in 0..QUEUE_SIZE {
-                (*rx).desc[i].addr = addr_of_mut!(RX_BUFFERS[i]) as u64;
-                (*rx).desc[i].len = BUF_SIZE as u32;
-                (*rx).desc[i].flags = 2;
-                (*rx).avail.ring[i] = i as u16;
+            let slots = (*rx).desc.iter_mut().zip((*rx).avail.ring.iter_mut());
+            for (id, (desc, ring_slot)) in slots.enumerate() {
+                desc.addr = addr_of_mut!(RX_BUFFERS[id]) as u64;
+                desc.len = BUF_SIZE as u32;
+                desc.flags = 2;
+                *ring_slot = id as u16;
             }
             (*rx).avail.idx = QUEUE_SIZE as u16;
         }
