@@ -17,7 +17,8 @@ CARGO_NIGHTLY ?= cargo +nightly
 
 .PHONY: all kernel gui daemon run setup_net setup_net_many teardown_net_many \
         bench check-size clean miri dev-key qemu-test \
-        fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build
+        fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build \
+        fuzz-engine-frame fuzz-engine-sequence
 
 all: kernel gui
 
@@ -223,6 +224,12 @@ fuzz-vm:
 
 fuzz-ahocorasick:
 	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run ahocorasick_scan $(ARGS)
+
+fuzz-engine-frame:
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run engine_frame $(ARGS)
+
+fuzz-engine-sequence:
+	@cd $(FUZZ_DIR) && $(CARGO_NIGHTLY) fuzz run engine_sequence $(ARGS)
 
 clean:
 	@cargo clean

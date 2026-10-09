@@ -55,6 +55,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "engine_sequence"
+path = "fuzz_targets/engine_sequence.rs"
+test = false
+doc = false
+bench = false
+
 # cargo-fuzz binaries don't need the workspace lint set; relax the strict
 # pedantic/nursery deny so the fuzz harness compiles without ceremony.
 [lints]
