@@ -122,11 +122,7 @@ fn main() -> Result<()> {
             iface,
             local_networks,
             duration_secs,
-        } => monitor::live::run(&monitor::live::MonitorOptions {
-            interface: iface,
-            extra_local_networks: local_networks,
-            duration: duration_secs.map(Duration::from_secs),
-        }),
+        } => monitor::live::run(&iface, duration_secs.map(Duration::from_secs), &local_networks),
         Command::Flood { iface, mix, duration_secs, threads } => {
             run_flood(&iface, mix, Duration::from_secs(duration_secs), threads)
         }

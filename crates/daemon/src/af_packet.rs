@@ -126,6 +126,8 @@ pub struct CapturedFrame<'a> {
     /// The frame's length on the wire, which may exceed `data` for large
     /// or offload-coalesced frames.
     pub wire_len: u32,
+    /// When the kernel captured it, in nanoseconds since the Unix epoch.
+    pub captured_at_unix_ns: u64,
 }
 
 /// A `TPACKET_V3` receive ring bound to one interface.
@@ -233,6 +235,7 @@ impl RxRing {
                 handle(CapturedFrame {
                     data,
                     wire_len: pkt.tp_len,
+                    captured_at_unix_ns: u64::from(pkt.tp_sec) * 1_000_000_000 + u64::from(pkt.tp_nsec),
                 });
             }
             offset += pkt.tp_next_offset as usize;
