@@ -11,7 +11,7 @@ mod report;
 use crate::config::{
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
     IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
-    MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_PPS, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
+    MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_TOKEN_COST_CYCLES, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
@@ -125,7 +125,7 @@ impl Engine {
             fw: firewall::FirewallState::new(),
             cms: dos::CountMinSketch::new(),
             pbox: dos::PenaltyBox::new(),
-            limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_PPS),
+            limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
             mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
             vm: VM::new(),
             bpf: BpfSlot {

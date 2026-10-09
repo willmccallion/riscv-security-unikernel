@@ -12,8 +12,9 @@ pub const MAC_ADDR: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 /// IPv4 address assigned to the network interface.
 pub const IP_ADDR: [u8; 4] = [192, 168, 100, 2];
 
-/// Maximum packets per second allowed by the rate limiter.
-pub const RATE_LIMIT_PPS: u64 = 10_000;
+/// Time-source units per data-plane token in the global rate limiter:
+/// 100k packets per second on a 1 GHz cycle counter.
+pub const RATE_LIMIT_TOKEN_COST_CYCLES: u64 = 10_000;
 
 /// Threshold for heavy hitter detection in the Count-Min Sketch.
 ///
