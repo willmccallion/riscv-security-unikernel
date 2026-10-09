@@ -73,8 +73,8 @@ impl PenaltyBox {
     /// * `ip_bytes` - IP address as 4 bytes in network byte order.
     /// * `duration` - Ban duration in time-source units.
     /// * `now`      - Current time-source value.
-    pub fn ban(&mut self, ip_bytes: &[u8], duration: u64, now: u64) {
-        let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
+    pub fn ban(&mut self, ip_bytes: &[u8; 4], duration: u64, now: u64) {
+        let ip = u32::from_be_bytes(*ip_bytes);
         let expiry = now.saturating_add(duration);
 
         if let Some(entry) = self.entries.iter_mut().find(|e| e.ip == ip && e.is_active(now)) {
@@ -111,9 +111,8 @@ impl PenaltyBox {
     /// # Returns
     ///
     /// `true` if the IP is banned and the ban has not expired.
-    pub fn is_banned(&self, ip_bytes: &[u8], now: u64) -> bool {
-        let ip = u32::from_be_bytes([ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]]);
-
+    pub fn is_banned(&self, ip_bytes: &[u8; 4], now: u64) -> bool {
+        let ip = u32::from_be_bytes(*ip_bytes);
         self.entries.iter().any(|e| e.ip == ip && e.is_active(now))
     }
 }
