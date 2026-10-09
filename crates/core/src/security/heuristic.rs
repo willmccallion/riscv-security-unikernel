@@ -1,8 +1,8 @@
-// Heuristic-based security analysis.
-//
-// Detects suspicious patterns that don't match known signatures but
-// indicate potential attacks based on protocol anomalies and payload
-// characteristics.
+//! Heuristic-based security analysis.
+//!
+//! Detects suspicious patterns that don't match known signatures but
+//! indicate potential attacks based on protocol anomalies and payload
+//! characteristics.
 
 /// Heuristic analysis engine for anomaly detection.
 ///

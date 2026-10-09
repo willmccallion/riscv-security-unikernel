@@ -1,8 +1,8 @@
-// Network flow tracking.
-//
-// Maintains a table of active network flows (connections) with statistics
-// including packet counts, byte counts, and timing information. Used for
-// connection tracking and flow-based security analysis.
+//! Network flow tracking.
+//!
+//! Maintains a table of active network flows (connections) with statistics
+//! including packet counts, byte counts, and timing information. Used for
+//! connection tracking and flow-based security analysis.
 
 /// Maximum number of flows that can be tracked simultaneously.
 const MAX_FLOWS: usize = 74;

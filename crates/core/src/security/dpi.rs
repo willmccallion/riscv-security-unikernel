@@ -1,8 +1,8 @@
-// Deep Packet Inspection (DPI) engine.
-//
-// Implements pattern matching for detecting malware signatures and
-// attack patterns in packet payloads. Uses the Aho-Corasick algorithm
-// for efficient multi-pattern matching and supports dynamic rule addition.
+//! Deep Packet Inspection (DPI) engine.
+//!
+//! Implements pattern matching for detecting malware signatures and
+//! attack patterns in packet payloads. Uses the Aho-Corasick algorithm
+//! for efficient multi-pattern matching and supports dynamic rule addition.
 
 /// Maximum number of nodes in the Aho-Corasick automaton.
 const MAX_NODES: usize = 128;
@@ -233,14 +233,10 @@ impl AhoCorasick {
     }
 }
 
-/// Dynamic rules storage for runtime-added DPI patterns.
+/// Why a [`DynamicRules::add`] call was rejected.
 ///
-/// Maintains a fixed-size array of byte patterns that can be added
-/// at runtime via the management interface. Uses simple substring
-/// Why a [`DynamicRules::add`] call was rejected. Both variants are
-/// non-fatal at the data plane (the existing rules keep running);
-/// the kernel raises an alert so the operator knows their command
-/// was not applied.
+/// None is fatal: the existing rules keep running, and the mgmt ack tells
+/// the operator their command was not applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DynRulesError {
     /// The 8-slot table is already full.
@@ -255,6 +251,10 @@ pub enum DynRulesError {
     Empty,
 }
 
+/// Dynamic rules storage for runtime-added DPI patterns.
+///
+/// Maintains a fixed-size array of byte patterns that can be added
+/// at runtime via the management interface. Uses simple substring
 /// matching for pattern detection.
 #[derive(Debug)]
 pub struct DynamicRules {

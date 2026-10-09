@@ -1,9 +1,9 @@
-// Virtual machine for executing eBPF-like packet filters.
-//
-// Implements a simple register-based virtual machine that can execute
-// custom bytecode programs on each packet. Provides instructions for
-// loading packet data, performing comparisons, and making filtering
-// decisions.
+//! Virtual machine for executing eBPF-like packet filters.
+//!
+//! Implements a simple register-based virtual machine that can execute
+//! custom bytecode programs on each packet. Provides instructions for
+//! loading packet data, performing comparisons, and making filtering
+//! decisions.
 
 /// Opcodes for the virtual machine instruction set.
 #[derive(Copy, Clone, Debug)]
