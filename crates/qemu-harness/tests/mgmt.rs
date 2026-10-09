@@ -59,7 +59,7 @@ fn expect_alert(kernel: &Kernel, reason: AlertReason) {
 fn rejected_bpf_upload_leaves_the_active_program_intact() {
     let kernel = Kernel::boot(&default_kernel_elf()).expect("kernel boots");
     let mut mgmt = MgmtClient::connect(&kernel).unwrap();
-    mgmt.send(&kernel, &drop_udp_port(9999)).unwrap();
+    let _ = mgmt.send(&kernel, &drop_udp_port(9999)).unwrap();
     let probe = frame::udp_to_kernel(frame::HOST_IP, 5000, 9999, b"probe");
     kernel.send(&probe).unwrap();
     expect_alert(&kernel, AlertReason::Ebpf);
@@ -68,7 +68,7 @@ fn rejected_bpf_upload_leaves_the_active_program_intact() {
         instruction(Opcode::Ret, 0, 0, 1),
         vec![0xFF, 0, 0, 0, 0, 0, 0],
     ]);
-    mgmt.send(&kernel, &passes_then_invalid).unwrap();
+    let _ = mgmt.send(&kernel, &passes_then_invalid).unwrap();
     let ack = kernel
         .recv_matching(ALERT_WAIT, |f| frame::mgmt_ack(f).is_some())
         .unwrap()
