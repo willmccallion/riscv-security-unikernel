@@ -12,6 +12,7 @@ pub mod names;
 pub mod net;
 pub mod pcap;
 pub mod pipeline;
+pub mod quic;
 pub mod replay;
 pub mod report;
 pub mod time;
