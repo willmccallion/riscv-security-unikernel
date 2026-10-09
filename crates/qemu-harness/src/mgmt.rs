@@ -2,13 +2,11 @@
 
 use crate::{Kernel, frame};
 use anyhow::{Context, Result, bail};
-use sec_core::config::{MANAGEMENT_PORT, TELEMETRY_PORT};
+use sec_core::config::MANAGEMENT_PORT;
+use sec_core::security::report_auth::{ReportVerifier, report_key};
 use sec_core::security::mgmt_auth::{COUNTER_LEN, MAC_LEN, seal};
 use std::path::Path;
 use std::time::Duration;
-
-/// Byte offset of telemetry slot 9 (the boot epoch) within a frame.
-const EPOCH_OFFSET: usize = 42 + 9 * 8;
 
 /// Source port the harness sends mgmt commands from.
 const MGMT_SRC_PORT: u16 = 40_000;
@@ -27,14 +25,18 @@ impl MgmtClient {
     pub fn connect(kernel: &Kernel) -> Result<Self> {
         let key = load_key()?;
         let telemetry = kernel
-            .recv_matching(Duration::from_secs(5), |f| {
-                frame::is_udp_from_kernel_to_port(f, TELEMETRY_PORT) && f.len() >= EPOCH_OFFSET + 8
-            })?
+            .recv_matching(Duration::from_secs(5), |f| frame::telemetry_slots(f).is_some())?
             .context("no telemetry frame to learn the epoch from")?;
-        let mut epoch = [0u8; 8];
-        epoch.copy_from_slice(&telemetry[EPOCH_OFFSET..EPOCH_OFFSET + 8]);
-        let epoch = u32::try_from(u64::from_be_bytes(epoch)).context("epoch exceeds u32")?;
+        let slots = frame::telemetry_slots(&telemetry).context("telemetry vanished")?;
+        let epoch = u32::try_from(slots[9]).context("epoch exceeds u32")?;
         Ok(Self { key, epoch, seq: 0 })
+    }
+
+    /// Verifies a report frame's signature under the key the kernel was
+    /// built with, returning its body.
+    pub fn verify_report<'a>(&self, frame: &'a [u8]) -> Option<&'a [u8]> {
+        let mut verifier = ReportVerifier::new(report_key(&self.key));
+        verifier.verify(frame.get(42..)?).map(|report| report.body)
     }
 
     /// Seals `body` with the next counter and sends it to the mgmt port.

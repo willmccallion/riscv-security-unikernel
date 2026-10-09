@@ -8,6 +8,7 @@ use sec_core::net::PacketSink;
 use sec_core::net::stack::{SynCookieSecret, checksum};
 use sec_core::security::alert::alert_packet;
 use sec_core::security::mgmt_auth::seal;
+use sec_core::security::report_auth::{ReportVerifier, report_key};
 
 pub const KEY: [u8; 16] = *b"engine-test-key!";
 pub const EPOCH: u32 = 0x1234_5678;
@@ -27,12 +28,26 @@ impl PacketSink for CaptureSink {
 }
 
 impl CaptureSink {
-    /// Reason codes of every alert emitted, in order.
-    pub fn alert_reasons(&self) -> Vec<u8> {
+    /// Bodies of every report emitted, in order. Panics if any report
+    /// fails verification under the test key.
+    pub fn report_bodies(&self) -> Vec<Vec<u8>> {
+        let mut verifier = ReportVerifier::new(report_key(&KEY));
         self.sent
             .iter()
-            .filter(|f| f.len() > 43 && f[23] == 17 && f[42] == alert_packet::ALERT_MESSAGE_TYPE)
-            .map(|f| f[42 + alert_packet::REASON_OFFSET])
+            .filter(|f| f.len() > 42 && f[23] == 17)
+            .map(|f| {
+                let report = verifier.verify(&f[42..]).expect("report verifies");
+                report.body.to_vec()
+            })
+            .collect()
+    }
+
+    /// Reason codes of every alert emitted, in order.
+    pub fn alert_reasons(&self) -> Vec<u8> {
+        self.report_bodies()
+            .iter()
+            .filter(|body| body[0] == alert_packet::ALERT_MESSAGE_TYPE)
+            .map(|body| body[alert_packet::REASON_OFFSET])
             .collect()
     }
 }
@@ -102,11 +117,10 @@ pub fn mgmt(seq: u32, body: &[u8]) -> Vec<u8> {
 /// `(seq, command, outcome)` of every mgmt ack emitted, in order.
 pub fn acks(sink: &CaptureSink) -> Vec<(u32, u8, u8)> {
     use sec_core::security::mgmt::ack_packet::{
-        ACK_BODY_LEN, ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
+        ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
     };
-    sink.sent
-        .iter()
-        .filter_map(|f| f.get(42..42 + ACK_BODY_LEN))
+    sink.report_bodies()
+        .into_iter()
         .filter(|body| body[0] == ACK_MESSAGE_TYPE)
         .map(|body| {
             let seq = u32::from_be_bytes(body[SEQ_OFFSET..SEQ_OFFSET + 4].try_into().unwrap());

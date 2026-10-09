@@ -20,16 +20,32 @@ pub const MAC_LEN: usize = 8;
 /// Envelope overhead added to every report body.
 pub const OVERHEAD: usize = HEADER_LEN + MAC_LEN;
 
+/// Layout of the telemetry report body.
+pub mod telemetry_packet {
+    /// Message-type byte distinguishing telemetry from alerts and acks.
+    pub const MESSAGE_TYPE: u8 = 0x01;
+    /// Number of big-endian u64 counters after the type byte.
+    pub const SLOTS: usize = 10;
+    /// Offset of the first counter.
+    pub const SLOTS_OFFSET: usize = 1;
+    /// Total bytes of telemetry body.
+    pub const BODY_LEN: usize = SLOTS_OFFSET + SLOTS * 8;
+}
+
 /// Epochs a verifier remembers so replays from earlier boots stay rejected.
 const REMEMBERED_EPOCHS: usize = 8;
 
 /// Derives the report-signing key from the pre-shared mgmt key.
-pub fn report_key(mgmt_key: &[u8; 16]) -> [u8; 16] {
-    let lo = siphash24(mgmt_key, b"sec-core report key 0");
-    let hi = siphash24(mgmt_key, b"sec-core report key 1");
+pub const fn report_key(mgmt_key: &[u8; 16]) -> [u8; 16] {
+    let lo = siphash24(mgmt_key, b"sec-core report key 0").to_le_bytes();
+    let hi = siphash24(mgmt_key, b"sec-core report key 1").to_le_bytes();
     let mut key = [0u8; 16];
-    key[..8].copy_from_slice(&lo.to_le_bytes());
-    key[8..].copy_from_slice(&hi.to_le_bytes());
+    let mut i = 0;
+    while i < 8 {
+        key[i] = lo[i];
+        key[8 + i] = hi[i];
+        i += 1;
+    }
     key
 }
 

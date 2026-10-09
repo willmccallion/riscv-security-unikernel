@@ -19,7 +19,7 @@
 /// `key` is a 128-bit secret split into two little-endian 64-bit
 /// halves. `data` is the message to authenticate. Returns the 64-bit
 /// keyed digest.
-pub fn siphash24(key: &[u8; 16], data: &[u8]) -> u64 {
+pub const fn siphash24(key: &[u8; 16], data: &[u8]) -> u64 {
     let k0 = u64::from_le_bytes([
         key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
     ]);
@@ -75,7 +75,7 @@ pub fn siphash24(key: &[u8; 16], data: &[u8]) -> u64 {
 }
 
 #[inline(always)]
-fn sipround(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
+const fn sipround(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
     *v0 = v0.wrapping_add(*v1);
     *v2 = v2.wrapping_add(*v3);
     *v1 = v1.rotate_left(13);

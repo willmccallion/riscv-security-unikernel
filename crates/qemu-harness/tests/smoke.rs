@@ -36,3 +36,17 @@ fn kernel_broadcasts_telemetry_before_an_operator_is_known() {
     let telemetry = telemetry.expect("telemetry frame within 5s");
     assert_eq!(&telemetry[0..6], &[0xFF; 6], "telemetry is broadcast");
 }
+
+#[test]
+#[ignore = "needs a built kernel and qemu; run via `make qemu-test`"]
+fn telemetry_is_signed_with_the_report_key() {
+    let kernel = boot();
+    let mgmt = qemu_harness::mgmt::MgmtClient::connect(&kernel).unwrap();
+
+    let telemetry = kernel
+        .recv_matching(Duration::from_secs(5), |f| frame::telemetry_slots(f).is_some())
+        .unwrap()
+        .expect("telemetry frame within 5s");
+
+    assert!(mgmt.verify_report(&telemetry).is_some(), "telemetry MAC does not verify");
+}

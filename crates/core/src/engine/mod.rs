@@ -11,7 +11,7 @@ mod report;
 use crate::config::{
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
     IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
-    MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_PPS, TOKEN_BUCKET_CAPACITY,
+    MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_PPS, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
@@ -20,9 +20,9 @@ use crate::net::tcp::TcpHeader;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
-use crate::security::{dos, dpi, firewall, flow, heuristic, mgmt_auth, vm};
+use crate::security::{dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, vm};
 
-pub use report::{ACK_FRAME_LEN, ALERT_FRAME_LEN, TELEMETRY_FRAME_LEN};
+use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
 
 /// Where alerts and telemetry are sent once an operator has authenticated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +107,8 @@ pub struct Engine {
     bpf: BpfSlot,
     flows: flow::FlowTable,
     mgmt_auth: mgmt_auth::MgmtAuth,
+    report_key: [u8; 16],
+    report_seq: u64,
     operator: Option<OperatorAddr>,
     syn_secret: SynCookieSecret,
     stats: IntervalStats,
@@ -132,6 +134,8 @@ impl Engine {
             },
             flows: flow::FlowTable::new(),
             mgmt_auth: mgmt_auth::MgmtAuth::new(mgmt_key),
+            report_key: report_auth::report_key(&mgmt_key),
+            report_seq: 0,
             operator: None,
             syn_secret: SynCookieSecret::new([0; 16]),
             stats: IntervalStats {
@@ -196,11 +200,11 @@ impl Engine {
         self.cms.reset();
     }
 
-    /// Sends the telemetry frame for the current interval: ten big-endian
-    /// u64 slots holding passed, ddos, firewall, malware, ebpf and
-    /// heuristic counts, `memory_used`, active flows, mgmt packets and the
-    /// boot epoch.
-    pub fn send_telemetry<S: PacketSink>(&self, memory_used: u64, sink: &mut S) {
+    /// Sends the signed telemetry report for the current interval: ten
+    /// big-endian u64 slots holding passed, ddos, firewall, malware, ebpf
+    /// and heuristic counts, `memory_used`, active flows, mgmt packets and
+    /// the boot epoch.
+    pub fn send_telemetry<S: PacketSink>(&mut self, memory_used: u64, sink: &mut S) {
         let s = &self.stats;
         let slots = [
             s.passed,
@@ -214,9 +218,7 @@ impl Engine {
             s.mgmt,
             u64::from(self.mgmt_auth.epoch()),
         ];
-        let mut frame = [0u8; TELEMETRY_FRAME_LEN];
-        let frame = report::telemetry_frame(&mut frame, self.operator, &slots);
-        sink.send(frame);
+        self.send_report(TELEMETRY_PORT, &report::telemetry_body(&slots), sink);
     }
 
     /// Runs one received frame through the pipeline.
@@ -370,7 +372,7 @@ impl Engine {
     }
 
     fn drop_with_alert<S: PacketSink>(
-        &self,
+        &mut self,
         meta: &AlertMeta,
         reason: AlertReason,
         sink: &mut S,
@@ -379,17 +381,29 @@ impl Engine {
         Verdict::Dropped(reason)
     }
 
-    fn alert<S: PacketSink>(&self, meta: &AlertMeta, reason: AlertReason, sink: &mut S) {
-        let mut frame = [0u8; ALERT_FRAME_LEN];
-        let frame = report::alert_frame(&mut frame, self.operator, meta, reason);
-        sink.send(frame);
+    fn alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, sink: &mut S) {
+        self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
     }
 
-    fn send_ack<S: PacketSink>(&self, seq: u32, body: &[u8], outcome: MgmtOutcome, sink: &mut S) {
+    fn send_ack<S: PacketSink>(&mut self, seq: u32, body: &[u8], outcome: MgmtOutcome, sink: &mut S) {
         let command = body.get(mgmt_packet::MSG_TYPE_OFFSET).copied().unwrap_or(0);
-        let mut frame = [0u8; ACK_FRAME_LEN];
-        let frame = report::ack_frame(&mut frame, self.operator, seq, command, outcome);
-        sink.send(frame);
+        self.send_report(MANAGEMENT_PORT, &report::ack_body(seq, command, outcome), sink);
+    }
+
+    /// Signs `body` as the next report of this boot and sends it to the
+    /// operator's telemetry port.
+    fn send_report<S: PacketSink>(&mut self, src_port: u16, body: &[u8], sink: &mut S) {
+        self.report_seq += 1;
+        let header = ReportHeader {
+            operator: self.operator,
+            src_port,
+            dst_port: TELEMETRY_PORT,
+            key: &self.report_key,
+            epoch: self.mgmt_auth.epoch(),
+            seq: self.report_seq,
+        };
+        let mut frame = [0u8; MAX_REPORT_FRAME_LEN];
+        sink.send(report::report_frame(&mut frame, &header, body));
     }
 
     /// Applies an authenticated mgmt body and reports what happened.

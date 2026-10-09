@@ -1,14 +1,17 @@
-//! Builds the alert and telemetry frames the engine sends to the operator.
+//! Builds the signed report frames the engine sends to the operator.
 //!
+//! Every report (alert, mgmt ack or telemetry) is a UDP datagram whose
+//! payload is a [`report_auth`](crate::security::report_auth) envelope.
 //! Alerts carry a fixed-size metadata record and never echo inbound
 //! payload bytes, so the mgmt network is not a relay for attacker data.
 
 use super::OperatorAddr;
-use crate::config::{IP_ADDR, MAC_ADDR, MANAGEMENT_PORT, TELEMETRY_PORT};
+use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::constants::{BROADCAST_MAC, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
 use crate::security::alert::{AlertMeta, AlertReason, alert_packet};
 use crate::security::mgmt::{MgmtOutcome, ack_packet};
+use crate::security::report_auth::{self, telemetry_packet};
 
 /// IPv4 broadcast fallback used before the operator address is learned.
 const BROADCAST_IP: [u8; 4] = [192, 168, 100, 255];
@@ -17,25 +20,30 @@ const UDP_OFFSET: usize = ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE;
 const UDP_PAYLOAD_OFFSET: usize = UDP_OFFSET + udp::HEADER_SIZE;
 const IP_CHECKSUM_OFFSET: usize = ipv4::HEADER_OFFSET + 10;
 
-/// Number of u64 counters in a telemetry frame.
-const TELEMETRY_SLOTS: usize = 10;
+/// Length of the largest report frame, a telemetry report.
+pub const MAX_REPORT_FRAME_LEN: usize =
+    UDP_PAYLOAD_OFFSET + report_auth::OVERHEAD + telemetry_packet::BODY_LEN;
 
-/// Length of an alert frame on the wire.
-pub const ALERT_FRAME_LEN: usize = UDP_PAYLOAD_OFFSET + alert_packet::ALERT_BODY_LEN;
-/// Length of a mgmt ack frame on the wire.
-pub const ACK_FRAME_LEN: usize = UDP_PAYLOAD_OFFSET + ack_packet::ACK_BODY_LEN;
-/// Length of a telemetry frame on the wire.
-pub const TELEMETRY_FRAME_LEN: usize = UDP_PAYLOAD_OFFSET + TELEMETRY_SLOTS * 8;
+/// Who signs a report and where it goes.
+#[derive(Debug, Clone, Copy)]
+pub struct ReportHeader<'a> {
+    /// Unicast destination, or `None` to broadcast.
+    pub operator: Option<OperatorAddr>,
+    /// UDP source port.
+    pub src_port: u16,
+    /// UDP destination port.
+    pub dst_port: u16,
+    /// Report-signing key.
+    pub key: &'a [u8; 16],
+    /// Boot epoch.
+    pub epoch: u32,
+    /// Position in this boot's report stream.
+    pub seq: u64,
+}
 
-/// Writes an alert frame into `buf` and returns it.
-pub fn alert_frame<'a>(
-    buf: &'a mut [u8; ALERT_FRAME_LEN],
-    operator: Option<OperatorAddr>,
-    meta: &AlertMeta,
-    reason: AlertReason,
-) -> &'a [u8] {
-    write_udp_headers(&mut buf[..], operator, MANAGEMENT_PORT, TELEMETRY_PORT);
-    let body = &mut buf[UDP_PAYLOAD_OFFSET..];
+/// Body of an alert report.
+pub fn alert_body(meta: &AlertMeta, reason: AlertReason) -> [u8; alert_packet::ALERT_BODY_LEN] {
+    let mut body = [0u8; alert_packet::ALERT_BODY_LEN];
     body[0] = alert_packet::ALERT_MESSAGE_TYPE;
     body[alert_packet::REASON_OFFSET] = reason.as_u8();
     body[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4].copy_from_slice(&meta.src_ip);
@@ -47,39 +55,48 @@ pub fn alert_frame<'a>(
     body[alert_packet::PROTOCOL_OFFSET] = meta.protocol;
     body[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
         .copy_from_slice(&meta.packet_len.to_be_bytes());
-    &buf[..]
+    body
 }
 
-/// Writes an ack for the command `seq` of type `command` into `buf` and
-/// returns it.
-pub fn ack_frame(
-    buf: &mut [u8; ACK_FRAME_LEN],
-    operator: Option<OperatorAddr>,
-    seq: u32,
-    command: u8,
-    outcome: MgmtOutcome,
-) -> &[u8] {
-    write_udp_headers(&mut buf[..], operator, MANAGEMENT_PORT, TELEMETRY_PORT);
-    let body = &mut buf[UDP_PAYLOAD_OFFSET..];
+/// Body of an ack for the command `seq` of type `command`.
+pub fn ack_body(seq: u32, command: u8, outcome: MgmtOutcome) -> [u8; ack_packet::ACK_BODY_LEN] {
+    let mut body = [0u8; ack_packet::ACK_BODY_LEN];
     body[0] = ack_packet::ACK_MESSAGE_TYPE;
     body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4].copy_from_slice(&seq.to_be_bytes());
     body[ack_packet::COMMAND_OFFSET] = command;
     body[ack_packet::OUTCOME_OFFSET] = outcome as u8;
-    &buf[..]
+    body
 }
 
-/// Writes a telemetry frame carrying `slots` into `buf` and returns it.
-pub fn telemetry_frame<'a>(
-    buf: &'a mut [u8; TELEMETRY_FRAME_LEN],
-    operator: Option<OperatorAddr>,
-    slots: &[u64; TELEMETRY_SLOTS],
-) -> &'a [u8] {
-    write_udp_headers(&mut buf[..], operator, TELEMETRY_PORT, TELEMETRY_PORT);
-    let (chunks, _) = buf[UDP_PAYLOAD_OFFSET..].as_chunks_mut::<8>();
+/// Body of a telemetry report carrying `slots`.
+pub fn telemetry_body(slots: &[u64; telemetry_packet::SLOTS]) -> [u8; telemetry_packet::BODY_LEN] {
+    let mut body = [0u8; telemetry_packet::BODY_LEN];
+    body[0] = telemetry_packet::MESSAGE_TYPE;
+    let (chunks, _) = body[telemetry_packet::SLOTS_OFFSET..].as_chunks_mut::<8>();
     for (chunk, value) in chunks.iter_mut().zip(slots) {
         chunk.copy_from_slice(&value.to_be_bytes());
     }
-    &buf[..]
+    body
+}
+
+/// Writes `body` as a signed report frame into `buf` and returns the
+/// frame.
+pub fn report_frame<'a>(
+    buf: &'a mut [u8; MAX_REPORT_FRAME_LEN],
+    header: &ReportHeader<'_>,
+    body: &[u8],
+) -> &'a [u8] {
+    let len = UDP_PAYLOAD_OFFSET + report_auth::OVERHEAD + body.len();
+    let frame = &mut buf[..len];
+    write_udp_headers(frame, header.operator, header.src_port, header.dst_port);
+    let _ = report_auth::seal_report(
+        header.key,
+        header.epoch,
+        header.seq,
+        body,
+        &mut frame[UDP_PAYLOAD_OFFSET..],
+    );
+    frame
 }
 
 /// Fills the Ethernet, IPv4 and UDP headers for a frame that spans all of

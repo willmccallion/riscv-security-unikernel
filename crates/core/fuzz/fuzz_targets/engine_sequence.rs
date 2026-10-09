@@ -20,6 +20,7 @@ use sec_core::config::{MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES};
 use sec_core::security::mgmt::ack_packet;
 use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::seal;
+use sec_core::security::report_auth::{ReportVerifier, report_key};
 
 const KEY: [u8; 16] = [0x5A; 16];
 const EPOCH: u32 = 7;
@@ -38,15 +39,34 @@ enum Step {
     Tick { dt: u32 },
 }
 
-#[derive(Default)]
+/// Checks every emitted frame and records the sequence of each ack.
 struct CheckedSink {
+    reports: ReportVerifier,
     acked_seqs: Vec<u32>,
+}
+
+impl CheckedSink {
+    fn new() -> Self {
+        Self {
+            reports: ReportVerifier::new(report_key(&KEY)),
+            acked_seqs: Vec::new(),
+        }
+    }
 }
 
 impl PacketSink for CheckedSink {
     fn send(&mut self, frame: &[u8]) {
         assert!((14..=MAX_FRAME).contains(&frame.len()), "emitted {}-byte frame", frame.len());
-        if let Some(body) = frame.get(42..42 + ack_packet::ACK_BODY_LEN)
+        // Replies to the fuzzed frames themselves are not reports.
+        let is_report = frame.len() > 42
+            && frame[23] == 17
+            && frame[26..30] == sec_core::config::IP_ADDR
+            && frame[36..38] == sec_core::config::TELEMETRY_PORT.to_be_bytes();
+        if !is_report {
+            return;
+        }
+        let report = self.reports.verify(&frame[42..]).expect("report verifies in sequence");
+        if let Some(body) = report.body.get(..ack_packet::ACK_BODY_LEN)
             && body[0] == ack_packet::ACK_MESSAGE_TYPE
         {
             let seq = &body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4];
@@ -89,7 +109,7 @@ fuzz_target!(|steps: Vec<Step>| {
     });
     let mut now: u64 = 0;
     let mut seq: u32 = 0;
-    let mut sink = CheckedSink::default();
+    let mut sink = CheckedSink::new();
 
     for step in steps.into_iter().take(256) {
         match step {

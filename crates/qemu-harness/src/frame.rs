@@ -76,16 +76,25 @@ pub fn is_udp_from_kernel_to_port(frame: &[u8], dst_port: u16) -> bool {
         && frame[36..38] == dst_port.to_be_bytes()
 }
 
+/// The body of a report from the kernel (telemetry, alert or ack), with
+/// the UDP headers and signed envelope stripped. Does not check the MAC;
+/// see [`crate::mgmt::MgmtClient::verify_report`] for that.
+pub fn report_body(frame: &[u8]) -> Option<&[u8]> {
+    use sec_core::security::report_auth::{HEADER_LEN, MAC_LEN};
+    let from_kernel =
+        frame.len() > 42 && frame[12..14] == ETHERTYPE_IPV4 && frame[23] == 17 && frame[26..30] == KERNEL_IP;
+    if !from_kernel {
+        return None;
+    }
+    frame.get(42 + HEADER_LEN..frame.len().checked_sub(MAC_LEN)?)
+}
+
 /// Returns the alert reason code if `frame` is a security alert from the
 /// kernel.
 pub fn alert_reason(frame: &[u8]) -> Option<u8> {
     use sec_core::security::alert::alert_packet::{ALERT_MESSAGE_TYPE, REASON_OFFSET};
-    let is_alert = frame.len() > 42 + REASON_OFFSET
-        && frame[12..14] == ETHERTYPE_IPV4
-        && frame[23] == 17
-        && frame[26..30] == KERNEL_IP
-        && frame[42] == ALERT_MESSAGE_TYPE;
-    is_alert.then(|| frame[42 + REASON_OFFSET])
+    let body = report_body(frame)?;
+    (body.first() == Some(&ALERT_MESSAGE_TYPE)).then(|| body.get(REASON_OFFSET).copied())?
 }
 
 /// Returns `(seq, command, outcome)` if `frame` is a mgmt ack from the
@@ -94,17 +103,28 @@ pub fn mgmt_ack(frame: &[u8]) -> Option<(u32, u8, u8)> {
     use sec_core::security::mgmt::ack_packet::{
         ACK_BODY_LEN, ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
     };
-    let body = frame.get(42..42 + ACK_BODY_LEN)?;
-    let is_ack = frame[12..14] == ETHERTYPE_IPV4
-        && frame[23] == 17
-        && frame[26..30] == KERNEL_IP
-        && body[0] == ACK_MESSAGE_TYPE;
-    is_ack.then(|| {
-        let seq = &body[SEQ_OFFSET..SEQ_OFFSET + 4];
-        (
-            u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
-            body[COMMAND_OFFSET],
-            body[OUTCOME_OFFSET],
-        )
-    })
+    let body = report_body(frame)?.get(..ACK_BODY_LEN)?;
+    if body[0] != ACK_MESSAGE_TYPE {
+        return None;
+    }
+    let seq = &body[SEQ_OFFSET..SEQ_OFFSET + 4];
+    Some((
+        u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
+        body[COMMAND_OFFSET],
+        body[OUTCOME_OFFSET],
+    ))
+}
+
+/// Returns the telemetry counters if `frame` is a telemetry report.
+pub fn telemetry_slots(frame: &[u8]) -> Option<[u64; 10]> {
+    use sec_core::security::report_auth::telemetry_packet::{BODY_LEN, MESSAGE_TYPE, SLOTS_OFFSET};
+    let body = report_body(frame)?.get(..BODY_LEN)?;
+    if body[0] != MESSAGE_TYPE {
+        return None;
+    }
+    let mut slots = [0u64; 10];
+    for (slot, bytes) in slots.iter_mut().zip(body[SLOTS_OFFSET..].as_chunks::<8>().0) {
+        *slot = u64::from_be_bytes(*bytes);
+    }
+    Some(slots)
 }

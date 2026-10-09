@@ -14,6 +14,7 @@ use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
 use sec_core::security::mgmt_auth::seal;
+use sec_core::security::report_auth::{Report, ReportVerifier, report_key, telemetry_packet};
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
 /// value in the Makefile.
@@ -179,9 +180,6 @@ pub async fn start_background_task(
     let socket = UdpSocket::bind(LISTEN_ADDR)
         .await
         .map_err(|e| anyhow::anyhow!("bind {LISTEN_ADDR}: {e}"))?;
-    let alert_socket = UdpSocket::bind("0.0.0.0:1337")
-        .await
-        .map_err(|e| anyhow::anyhow!("bind 0.0.0.0:1337: {e}"))?;
 
     let mut socket_pool = Vec::new();
     for _ in 0..50 {
@@ -206,10 +204,10 @@ pub async fn start_background_task(
     let ns_pool = NsPool::try_init(NETNS_PREFIX, ns_count);
 
     let mut buf = vec![0u8; 1024];
-    let mut alert_buf = vec![0u8; 1024];
     let mut mode = TrafficMode::Idle;
     let start_time = Instant::now();
     let mgmt_key = load_mgmt_key();
+    let mut reports = ReportVerifier::new(report_key(&mgmt_key));
     let mut pending = PendingAcks::default();
 
     let target_ip: std::net::IpAddr = "192.168.100.2".parse().unwrap();
@@ -220,73 +218,8 @@ pub async fn start_background_task(
     loop {
         tokio::select! {
             Ok((len, _)) = socket.recv_from(&mut buf) => {
-                let data = &buf[..len];
-                let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-                stats.last_seen.store(now_secs, Ordering::Relaxed);
-
-                match classify_datagram(data) {
-                    KernelDatagram::Telemetry => {
-                        for i in 0..10 {
-                            let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
-                            match i {
-                                0 => {
-                                    stats.passed.store(val, Ordering::Relaxed);
-                                    stats.total_passed.fetch_add(val, Ordering::Relaxed);
-                                }
-                                1 => {
-                                    stats.ddos.store(val, Ordering::Relaxed);
-                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                                }
-                                2 => {
-                                    stats.fw.store(val, Ordering::Relaxed);
-                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                                }
-                                3 => {
-                                    stats.mal.store(val, Ordering::Relaxed);
-                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                                }
-                                4 => {
-                                    stats.bpf.store(val, Ordering::Relaxed);
-                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                                }
-                                5 => {
-                                    stats.heur.store(val, Ordering::Relaxed);
-                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                                }
-                                6 => {
-                                    stats.memory.store(val, Ordering::Relaxed);
-                                }
-                                7 => {
-                                    stats.flows.store(val, Ordering::Relaxed);
-                                }
-                                8 => {
-                                    stats.mgmt.store(val, Ordering::Relaxed);
-                                }
-                                9 => {
-                                    observe_kernel_epoch(val as u32);
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    KernelDatagram::Alert => {
-                        let _ = events.send(UiEvent::Log(parse_alert(data)));
-                    }
-                    KernelDatagram::Ack => {
-                        if let Some(ack) = parse_ack(data) {
-                            let _ = events.send(UiEvent::Log(ack_entry(ack)));
-                            if let Some((id, status)) = pending.acked(ack.seq, ack.outcome) {
-                                let _ = events.send(UiEvent::CommandStatus { id, status });
-                            }
-                        }
-                    }
-                    KernelDatagram::Unknown => {}
-                }
-            }
-            Ok((len, _)) = alert_socket.recv_from(&mut alert_buf) => {
-                let data = &alert_buf[..len];
-                if classify_datagram(data) == KernelDatagram::Alert {
-                    let _ = events.send(UiEvent::Log(parse_alert(data)));
+                if let Some(report) = reports.verify(&buf[..len]) {
+                    handle_report(report, &stats, &events, &mut pending);
                 }
             }
             Some(cmd) = cmd_rx.recv() => {
@@ -390,29 +323,90 @@ pub async fn start_background_task(
     }
 }
 
-/// What a datagram received from the kernel carries.
+/// What a verified report from the kernel carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KernelDatagram {
-    /// Ten big-endian u64 telemetry counters.
+enum ReportKind {
+    /// Interval counters.
     Telemetry,
-    /// A security alert, starting with the alert message-type byte.
+    /// A security alert.
     Alert,
-    /// A mgmt command ack, starting with the ack message-type byte.
+    /// A mgmt command ack.
     Ack,
-    /// Empty or unrecognised; must be ignored.
+    /// Unrecognised; must be ignored.
     Unknown,
 }
 
-/// Size of the kernel's telemetry body: ten big-endian u64 counters.
-const TELEMETRY_LEN: usize = 80;
-
-fn classify_datagram(data: &[u8]) -> KernelDatagram {
-    match data.first() {
-        Some(&alert_packet::ALERT_MESSAGE_TYPE) => KernelDatagram::Alert,
-        Some(&ack_packet::ACK_MESSAGE_TYPE) if data.len() < TELEMETRY_LEN => KernelDatagram::Ack,
-        Some(_) if data.len() >= TELEMETRY_LEN => KernelDatagram::Telemetry,
-        _ => KernelDatagram::Unknown,
+fn classify_report(body: &[u8]) -> ReportKind {
+    match body.first() {
+        Some(&telemetry_packet::MESSAGE_TYPE) => ReportKind::Telemetry,
+        Some(&alert_packet::ALERT_MESSAGE_TYPE) => ReportKind::Alert,
+        Some(&ack_packet::ACK_MESSAGE_TYPE) => ReportKind::Ack,
+        _ => ReportKind::Unknown,
     }
+}
+
+/// Applies one verified report from the kernel.
+fn handle_report(
+    report: Report<'_>,
+    stats: &NetStats,
+    events: &UnboundedSender<UiEvent>,
+    pending: &mut PendingAcks,
+) {
+    observe_kernel_epoch(report.epoch);
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    stats.last_seen.store(now_secs, Ordering::Relaxed);
+
+    match classify_report(report.body) {
+        ReportKind::Telemetry => {
+            if let Some(slots) = parse_telemetry(report.body) {
+                record_telemetry(stats, &slots);
+            }
+        }
+        ReportKind::Alert => {
+            let _ = events.send(UiEvent::Log(parse_alert(report.body)));
+        }
+        ReportKind::Ack => {
+            if let Some(ack) = parse_ack(report.body) {
+                let _ = events.send(UiEvent::Log(ack_entry(ack)));
+                if let Some((id, status)) = pending.acked(ack.seq, ack.outcome) {
+                    let _ = events.send(UiEvent::CommandStatus { id, status });
+                }
+            }
+        }
+        ReportKind::Unknown => {}
+    }
+}
+
+fn parse_telemetry(body: &[u8]) -> Option<[u64; telemetry_packet::SLOTS]> {
+    let counters = body.get(telemetry_packet::SLOTS_OFFSET..telemetry_packet::BODY_LEN)?;
+    let mut slots = [0u64; telemetry_packet::SLOTS];
+    for (slot, bytes) in slots.iter_mut().zip(counters.as_chunks::<8>().0) {
+        *slot = u64::from_be_bytes(*bytes);
+    }
+    Some(slots)
+}
+
+/// Stores one interval's counters. Slot 9 (the epoch) is taken from the
+/// authenticated envelope instead.
+fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
+    let [passed, ddos, fw, mal, bpf, heur, memory, flows, mgmt, _epoch] = *slots;
+    stats.passed.store(passed, Ordering::Relaxed);
+    stats.total_passed.fetch_add(passed, Ordering::Relaxed);
+    for (gauge, value) in [
+        (&stats.ddos, ddos),
+        (&stats.fw, fw),
+        (&stats.mal, mal),
+        (&stats.bpf, bpf),
+        (&stats.heur, heur),
+    ] {
+        gauge.store(value, Ordering::Relaxed);
+        stats.total_dropped.fetch_add(value, Ordering::Relaxed);
+    }
+    stats.memory.store(memory, Ordering::Relaxed);
+    stats.flows.store(flows, Ordering::Relaxed);
+    stats.mgmt.store(mgmt, Ordering::Relaxed);
 }
 
 /// Send a test-traffic UDP packet. Prefers the per-namespace pool so
@@ -878,12 +872,12 @@ mod tests {
     }
 
     #[test]
-    fn ack_datagram_is_classified_and_parsed() {
-        let data = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 1, 2, 0x01, 1];
+    fn ack_report_is_classified_and_parsed() {
+        let body = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 1, 2, 0x01, 1];
 
-        assert_eq!(classify_datagram(&data), KernelDatagram::Ack);
+        assert_eq!(classify_report(&body), ReportKind::Ack);
         assert_eq!(
-            parse_ack(&data),
+            parse_ack(&body),
             Some(Ack { seq: 0x0102, command: 0x01, outcome: MgmtOutcome::TableFull })
         );
     }
@@ -909,19 +903,34 @@ mod tests {
     }
 
     #[test]
-    fn empty_datagram_is_ignored() {
-        assert_eq!(classify_datagram(&[]), KernelDatagram::Unknown);
+    fn empty_report_is_ignored() {
+        assert_eq!(classify_report(&[]), ReportKind::Unknown);
     }
 
     #[test]
-    fn short_non_alert_datagram_is_ignored() {
-        assert_eq!(classify_datagram(&[0x00; TELEMETRY_LEN - 1]), KernelDatagram::Unknown);
+    fn truncated_telemetry_is_not_parsed() {
+        let body = [telemetry_packet::MESSAGE_TYPE; telemetry_packet::BODY_LEN - 1];
+
+        assert_eq!(parse_telemetry(&body), None);
     }
 
     #[test]
-    fn datagram_classification_matches_kernel_formats() {
-        assert_eq!(classify_datagram(&[0x00; TELEMETRY_LEN]), KernelDatagram::Telemetry);
-        assert_eq!(classify_datagram(&make_alert(1)), KernelDatagram::Alert);
+    fn report_classification_matches_kernel_formats() {
+        let mut telemetry = [0u8; telemetry_packet::BODY_LEN];
+        telemetry[0] = telemetry_packet::MESSAGE_TYPE;
+
+        assert_eq!(classify_report(&telemetry), ReportKind::Telemetry);
+        assert_eq!(classify_report(&make_alert(1)), ReportKind::Alert);
+    }
+
+    #[test]
+    fn forged_report_is_rejected() {
+        let mut reports = ReportVerifier::new(report_key(&TEST_KEY));
+        let mut forged = [0u8; 64];
+        let n = sec_core::security::report_auth::seal_report(&[0xAA; 16], 1, 1, &[1], &mut forged)
+            .unwrap();
+
+        assert!(reports.verify(&forged[..n]).is_none());
     }
 
     #[test]
