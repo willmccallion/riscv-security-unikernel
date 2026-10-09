@@ -1,7 +1,9 @@
 //! Printing the monitor's findings to the terminal.
 
+use super::hosts::Locality;
 use super::net::LocalNetworks;
 use super::pipeline::Summary;
+use super::totals::SiBits;
 use super::time::UnixNanos;
 use std::fmt;
 use std::time::Duration;
@@ -15,9 +17,36 @@ pub fn print_local_networks(local: &LocalNetworks) {
     println!("monitor: local networks {}", prefixes.join(", "));
 }
 
-/// Prints one interval's summary, stamped with its start in UTC.
+/// Remote hosts named in each summary line.
+const TOP_REMOTE_HOSTS: usize = 3;
+
+/// Prints one interval's summary, stamped with its start in UTC, and the
+/// busiest remote hosts.
 pub fn print_summary(summary: &Summary) {
     println!("{} {}", UtcClock(summary.start), summary.totals.rates(summary.length));
+    let seconds = summary.length.as_secs_f64().max(1e-9);
+    let top: Vec<String> = summary
+        .hosts
+        .iter()
+        .filter(|h| h.locality == Locality::Remote)
+        .take(TOP_REMOTE_HOSTS)
+        .map(|h| {
+            format!(
+                "{} \u{2193}{}/s \u{2191}{}/s",
+                h.addr,
+                SiBits(h.sent.bytes as f64 * 8.0 / seconds),
+                SiBits(h.received.bytes as f64 * 8.0 / seconds)
+            )
+        })
+        .collect();
+    if !top.is_empty() {
+        println!(
+            "          top: {} | {} flows{}",
+            top.join(", "),
+            summary.active_flows,
+            if summary.untracked > 0 { format!(", {} packets untracked", summary.untracked) } else { String::new() }
+        );
+    }
 }
 
 /// The time of day of a moment, in UTC, as `HH:MM:SSZ`.

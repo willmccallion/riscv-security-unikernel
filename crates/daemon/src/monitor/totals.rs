@@ -126,7 +126,7 @@ impl fmt::Display for Rates<'_> {
 }
 
 /// A bit rate with an SI prefix, e.g. `12.4 Mb`.
-struct SiBits(f64);
+pub struct SiBits(pub f64);
 
 impl fmt::Display for SiBits {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

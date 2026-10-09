@@ -1,13 +1,23 @@
 //! The monitor's processing core, independent of where frames come from.
 
-use super::decode::{self, LinkType};
+use super::decode::{self, LinkType, Packet};
+use super::flows::FlowTable;
+use super::hosts::{HostActivity, HostTable, Locality, PacketEnd};
 use super::net::LocalNetworks;
 use super::time::UnixNanos;
 use super::totals::TrafficTotals;
+use std::net::IpAddr;
 use std::time::Duration;
 
+/// Most flows tracked at once (roughly 100 bytes each).
+const FLOW_CAPACITY: usize = 262_144;
+/// Most hosts tracked at once.
+const HOST_CAPACITY: usize = 65_536;
+/// Most hosts listed in one summary, busiest first.
+const HOSTS_PER_SUMMARY: usize = 256;
+
 /// Traffic over one closed interval.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
     /// When the interval began.
     pub start: UnixNanos,
@@ -15,6 +25,16 @@ pub struct Summary {
     pub length: Duration,
     /// What crossed during it.
     pub totals: TrafficTotals,
+    /// The busiest hosts active during it, busiest first.
+    pub hosts: Vec<HostActivity>,
+    /// Active hosts beyond those listed.
+    pub hosts_omitted: usize,
+    /// Flows being tracked at the interval's end.
+    pub active_flows: usize,
+    /// Packets that could not be attributed to a flow or host because a
+    /// table was full; non-zero means the traffic exceeds what the monitor
+    /// can follow.
+    pub untracked: u64,
 }
 
 /// Turns timestamped frames into per-interval summaries.
@@ -28,6 +48,8 @@ pub struct Monitor {
     local: LocalNetworks,
     interval: Duration,
     current: Option<OpenInterval>,
+    flows: FlowTable,
+    hosts: HostTable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -39,12 +61,14 @@ struct OpenInterval {
 impl Monitor {
     /// A monitor for frames of `link` type, judging direction against
     /// `local`, summarising every `interval`.
-    pub const fn new(link: LinkType, local: LocalNetworks, interval: Duration) -> Self {
+    pub fn new(link: LinkType, local: LocalNetworks, interval: Duration) -> Self {
         Self {
             link,
             local,
             interval,
             current: None,
+            flows: FlowTable::new(FLOW_CAPACITY),
+            hosts: HostTable::new(HOST_CAPACITY),
         }
     }
 
@@ -67,10 +91,23 @@ impl Monitor {
             Some(packet) => {
                 let direction = self.local.direction(packet.src, packet.dst);
                 open.totals.record(&packet, direction, wire_len);
+                self.track(&packet, wire_len, at);
             }
             None => open.totals.record_non_ip(wire_len),
         }
         closed
+    }
+
+    fn track(&mut self, packet: &Packet<'_>, wire_len: u32, at: UnixNanos) {
+        let role = self.flows.observe(packet, wire_len, at);
+        let sender = self.end(packet.src);
+        let receiver = self.end(packet.dst);
+        self.hosts.record(sender, receiver, wire_len, role.as_ref(), at);
+    }
+
+    fn end(&self, addr: IpAddr) -> PacketEnd {
+        let locality = if self.local.contains(addr) { Locality::Local } else { Locality::Remote };
+        PacketEnd { addr, locality }
     }
 
     /// Closes the open interval if `now` is past its end.
@@ -80,20 +117,31 @@ impl Monitor {
             return None;
         }
         self.current = None;
-        Some(self.summarise(open))
+        let summary = self.summarise(open);
+        self.flows.expire(now);
+        self.hosts.expire(now);
+        Some(summary)
     }
 
     /// Closes the open interval however far it got, as at the end of a
     /// capture file.
     pub fn finish(&mut self) -> Option<Summary> {
-        self.current.take().map(|open| self.summarise(open))
+        let open = self.current.take()?;
+        Some(self.summarise(open))
     }
 
-    const fn summarise(&self, open: OpenInterval) -> Summary {
+    fn summarise(&mut self, open: OpenInterval) -> Summary {
+        let mut hosts = self.hosts.close_interval();
+        let hosts_omitted = hosts.len().saturating_sub(HOSTS_PER_SUMMARY);
+        hosts.truncate(HOSTS_PER_SUMMARY);
         Summary {
             start: open.start,
             length: self.interval,
             totals: open.totals,
+            hosts,
+            hosts_omitted,
+            active_flows: self.flows.len(),
+            untracked: self.flows.take_untracked() + self.hosts.take_untracked(),
         }
     }
 }
@@ -167,5 +215,19 @@ mod tests {
         let summary = m.finish().unwrap();
         assert_eq!(summary.totals.non_ip.packets, 1);
         assert_eq!(summary.totals.ip().packets, 0);
+    }
+
+    #[test]
+    fn summaries_list_active_hosts_and_flows() {
+        let mut m = monitor();
+
+        let _ = m.observe(&udp_frame(), 60, UnixNanos::new(SECOND));
+        let summary = m.finish().unwrap();
+
+        let addrs: Vec<String> = summary.hosts.iter().map(|h| h.addr.to_string()).collect();
+        assert_eq!(addrs, ["1.1.1.1", "192.168.1.86"]);
+        assert_eq!(summary.hosts[0].locality, Locality::Remote);
+        assert_eq!(summary.active_flows, 1);
+        assert_eq!(summary.untracked, 0);
     }
 }
