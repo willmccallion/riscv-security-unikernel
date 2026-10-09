@@ -4,7 +4,7 @@
 use super::config::MonitorConfig;
 use super::net::IpPrefix;
 use super::report::Detail;
-use super::{live, replay};
+use super::{link, live, replay};
 use crate::sandbox::{self, WriteAccess};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
@@ -38,6 +38,38 @@ pub struct MonitorArgs {
     /// Also show what could not be decoded and how naming went.
     #[arg(long)]
     pub verbose: bool,
+    /// Stream summaries to viewers, such as the dashboard, over a Unix
+    /// socket only this user can open.
+    #[arg(long, conflicts_with = "pcap")]
+    pub serve: bool,
+    /// Where to put that socket [default:
+    /// $XDG_RUNTIME_DIR/security-daemon/monitor.sock].
+    #[arg(long, value_name = "PATH", requires = "serve")]
+    pub socket: Option<PathBuf>,
+}
+
+/// Whether, and where, the monitor serves viewers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Serving {
+    /// Print to the terminal only.
+    #[default]
+    Off,
+    /// Serve at the user's runtime directory, worked out once privileges
+    /// are dropped so it is the right user's.
+    AtDefaultPath,
+    /// Serve at this path.
+    At(PathBuf),
+}
+
+impl Serving {
+    /// The socket path, if serving.
+    pub fn path(&self) -> Result<Option<PathBuf>> {
+        match self {
+            Self::Off => Ok(None),
+            Self::AtDefaultPath => link::default_socket_path().map(Some),
+            Self::At(path) => Ok(Some(path.clone())),
+        }
+    }
 }
 
 /// Whether the monitor confines itself before reading untrusted input.
@@ -93,6 +125,8 @@ pub struct MonitorOptions {
     pub sandboxing: Sandboxing,
     /// How much each summary shows.
     pub detail: Detail,
+    /// Whether, and where, to serve viewers.
+    pub serving: Serving,
 }
 
 impl MonitorOptions {
@@ -115,11 +149,17 @@ impl MonitorOptions {
         extra_local_networks.extend(args.local_networks);
         let sandboxing = if args.no_sandbox { Sandboxing::Unconfined } else { Sandboxing::Confine };
         let detail = if args.verbose { Detail::Verbose } else { Detail::Normal };
+        let serving = match (args.serve, args.socket) {
+            (false, _) => Serving::Off,
+            (true, None) => Serving::AtDefaultPath,
+            (true, Some(path)) => Serving::At(path),
+        };
         Ok(Self {
             source,
             extra_local_networks,
             sandboxing,
             detail,
+            serving,
         })
     }
 }
@@ -133,7 +173,7 @@ pub fn run(args: MonitorArgs) -> Result<()> {
     let options = MonitorOptions::resolve(args, file)?;
     match &options.source {
         Source::Interfaces { names, duration } => {
-            live::run(names, *duration, &options.extra_local_networks, options.sandboxing, options.detail)
+            live::run(names, *duration, &options)
         }
         Source::PcapFile(path) => replay::run(path, &options.extra_local_networks, options.sandboxing, options.detail),
     }

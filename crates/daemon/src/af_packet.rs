@@ -315,6 +315,12 @@ pub fn wait_for_any(rings: &[RxRing], timeout_ms: i32) -> Result<()> {
     Ok(())
 }
 
+impl AsRawFd for RxRing {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.fd.as_raw_fd()
+    }
+}
+
 impl Drop for RxRing {
     fn drop(&mut self) {
         // SAFETY: unmaps exactly the region mapped in `open`; no references
