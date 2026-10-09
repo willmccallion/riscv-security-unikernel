@@ -1,0 +1,17 @@
+[package]
+name = "qemu-harness"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Boots the unikernel under QEMU and exchanges raw Ethernet frames with it over a Unix datagram socket."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+sec-core = { path = "../core" }

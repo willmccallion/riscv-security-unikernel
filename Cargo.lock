@@ -2613,6 +2613,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "qemu-harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sec-core",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.37.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
