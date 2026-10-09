@@ -3,12 +3,8 @@
 //! Maintains a list of blocked destination ports and provides
 //! fast lookup for packet filtering decisions.
 
-/// Reasons a [`FirewallState::block_port`] call may be rejected.
-///
-/// The previous version of `block_port` returned `()` and silently
-/// dropped on overflow, so an operator adding a 17th port saw no error
-/// and believed it was loaded. A `Result` makes the rejection visible
-/// so the mgmt dispatcher can raise `MgmtRejected`.
+/// Reasons a [`FirewallState::block_port`] call may be rejected, so the
+/// mgmt dispatcher can report the failure in the command's ack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallError {
     /// The 16-slot table is already full.

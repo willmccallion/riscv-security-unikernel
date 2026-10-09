@@ -48,6 +48,48 @@ impl ManagementMessageType {
     }
 }
 
+/// What happened to an authenticated mgmt command, reported back to the
+/// operator in an ack.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MgmtOutcome {
+    /// The command took effect (including no-op duplicates).
+    Applied = 0,
+    /// The relevant table is full; nothing changed.
+    TableFull = 1,
+    /// The body was malformed or named an unknown command.
+    Invalid = 2,
+    /// Well-formed but refused, e.g. blocking the mgmt port itself.
+    Refused = 3,
+}
+
+impl MgmtOutcome {
+    /// Converts a raw outcome byte back to the enum variant.
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Applied),
+            1 => Some(Self::TableFull),
+            2 => Some(Self::Invalid),
+            3 => Some(Self::Refused),
+            _ => None,
+        }
+    }
+}
+
+/// Layout of the ack the kernel sends for every authenticated command.
+pub mod ack_packet {
+    /// Message-type byte distinguishing acks from alerts.
+    pub const ACK_MESSAGE_TYPE: u8 = 0x03;
+    /// Offset of the acknowledged command's sequence (big-endian u32).
+    pub const SEQ_OFFSET: usize = 1;
+    /// Offset of the acknowledged command's type byte (0 if absent).
+    pub const COMMAND_OFFSET: usize = 5;
+    /// Offset of the [`super::MgmtOutcome`] byte.
+    pub const OUTCOME_OFFSET: usize = 6;
+    /// Total bytes of ack body on the wire.
+    pub const ACK_BODY_LEN: usize = 7;
+}
+
 /// Management message format constants.
 ///
 /// All offsets are body-relative — the caller has already validated

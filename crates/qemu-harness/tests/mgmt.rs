@@ -7,7 +7,7 @@
 use qemu_harness::mgmt::MgmtClient;
 use qemu_harness::{Kernel, default_kernel_elf, frame};
 use sec_core::security::alert::AlertReason;
-use sec_core::security::mgmt::ManagementMessageType;
+use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome};
 use sec_core::security::vm::Opcode;
 use std::time::Duration;
 
@@ -69,7 +69,14 @@ fn rejected_bpf_upload_leaves_the_active_program_intact() {
         vec![0xFF, 0, 0, 0, 0, 0, 0],
     ]);
     mgmt.send(&kernel, &passes_then_invalid).unwrap();
-    expect_alert(&kernel, AlertReason::BpfReject);
+    let ack = kernel
+        .recv_matching(ALERT_WAIT, |f| frame::mgmt_ack(f).is_some())
+        .unwrap()
+        .and_then(|f| frame::mgmt_ack(&f));
+    assert_eq!(
+        ack.map(|(_, _, outcome)| outcome),
+        Some(MgmtOutcome::Invalid as u8)
+    );
     kernel.drain().unwrap();
     kernel.send(&probe).unwrap();
 

@@ -87,3 +87,24 @@ pub fn alert_reason(frame: &[u8]) -> Option<u8> {
         && frame[42] == ALERT_MESSAGE_TYPE;
     is_alert.then(|| frame[42 + REASON_OFFSET])
 }
+
+/// Returns `(seq, command, outcome)` if `frame` is a mgmt ack from the
+/// kernel.
+pub fn mgmt_ack(frame: &[u8]) -> Option<(u32, u8, u8)> {
+    use sec_core::security::mgmt::ack_packet::{
+        ACK_BODY_LEN, ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
+    };
+    let body = frame.get(42..42 + ACK_BODY_LEN)?;
+    let is_ack = frame[12..14] == ETHERTYPE_IPV4
+        && frame[23] == 17
+        && frame[26..30] == KERNEL_IP
+        && body[0] == ACK_MESSAGE_TYPE;
+    is_ack.then(|| {
+        let seq = &body[SEQ_OFFSET..SEQ_OFFSET + 4];
+        (
+            u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
+            body[COMMAND_OFFSET],
+            body[OUTCOME_OFFSET],
+        )
+    })
+}

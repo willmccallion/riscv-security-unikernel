@@ -41,6 +41,15 @@ pub const MAC_LEN: usize = 8;
 /// Smallest possible authenticated packet: counter + 1-byte body + MAC.
 pub const MIN_PACKET_LEN: usize = COUNTER_LEN + 1 + MAC_LEN;
 
+/// An authenticated mgmt command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verified<'a> {
+    /// In-epoch sequence number the sender stamped on the command.
+    pub seq: u32,
+    /// The command body, with counter and MAC stripped.
+    pub body: &'a [u8],
+}
+
 /// Stateful verifier for the authenticated mgmt protocol.
 ///
 /// Holds the pre-shared key, the current boot epoch (high 32 bits of
@@ -86,7 +95,7 @@ impl MgmtAuth {
         self.epoch
     }
 
-    /// Verifies an inbound mgmt packet and returns its body slice.
+    /// Verifies an inbound mgmt packet and returns its sequence and body.
     ///
     /// Returns `None` if the packet is too short, the counter's epoch
     /// does not match the verifier's epoch (cross-reboot replay), the
@@ -97,7 +106,7 @@ impl MgmtAuth {
     ///
     /// The MAC is compared in constant time so an attacker cannot
     /// learn correct prefix bytes by measuring reply latency.
-    pub fn verify<'a>(&mut self, packet: &'a [u8]) -> Option<&'a [u8]> {
+    pub fn verify<'a>(&mut self, packet: &'a [u8]) -> Option<Verified<'a>> {
         if packet.len() < MIN_PACKET_LEN {
             return None;
         }
@@ -128,7 +137,10 @@ impl MgmtAuth {
         }
 
         self.last_seq = seq;
-        Some(&packet[COUNTER_LEN..mac_start])
+        Some(Verified {
+            seq,
+            body: &packet[COUNTER_LEN..mac_start],
+        })
     }
 }
 
@@ -178,7 +190,8 @@ mod tests {
         let mut packet = [0u8; 32];
         let n = seal(&key, counter(TEST_EPOCH, 1), &body, &mut packet).unwrap();
         let got = auth.verify(&packet[..n]).expect("valid packet");
-        assert_eq!(got, &body);
+        assert_eq!(got.body, &body);
+        assert_eq!(got.seq, 1);
     }
 
     #[test]

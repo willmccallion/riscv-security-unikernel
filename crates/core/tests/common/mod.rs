@@ -98,3 +98,19 @@ pub fn mgmt(seq: u32, body: &[u8]) -> Vec<u8> {
     let n = seal(&KEY, counter, body, &mut sealed).unwrap();
     udp(PEER_IP, 40_000, sec_core::config::MANAGEMENT_PORT, &sealed[..n])
 }
+
+/// `(seq, command, outcome)` of every mgmt ack emitted, in order.
+pub fn acks(sink: &CaptureSink) -> Vec<(u32, u8, u8)> {
+    use sec_core::security::mgmt::ack_packet::{
+        ACK_BODY_LEN, ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
+    };
+    sink.sent
+        .iter()
+        .filter_map(|f| f.get(42..42 + ACK_BODY_LEN))
+        .filter(|body| body[0] == ACK_MESSAGE_TYPE)
+        .map(|body| {
+            let seq = u32::from_be_bytes(body[SEQ_OFFSET..SEQ_OFFSET + 4].try_into().unwrap());
+            (seq, body[COMMAND_OFFSET], body[OUTCOME_OFFSET])
+        })
+        .collect()
+}

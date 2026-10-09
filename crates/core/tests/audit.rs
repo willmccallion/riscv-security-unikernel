@@ -386,7 +386,7 @@ fn process_packet_rejects_ipv4_with_wrong_version() {
 /// `DynamicRules::add` used to return `()` and silently drop on
 /// overflow, so an operator who hit the 8-pattern cap saw no error
 /// and believed their pattern was loaded. The fix returns a Result
-/// and the kernel raises `MgmtRejected`; this test pins the new
+/// that the mgmt ack reports; this test pins the new
 /// signalling so a future "make it return () again" refactor fails
 /// loudly.
 #[test]
@@ -482,8 +482,7 @@ fn penalty_box_dedups_duplicate_bans() {
 /// so an authenticated attacker could send `BlockPort(P)` 16 times
 /// and permanently wedge the table against further legitimate blocks
 /// — overflow was silent and duplicates consumed all 16 slots. The
-/// fix dedups and returns a Result so the kernel raises
-/// `MgmtRejected`.
+/// fix dedups and returns a Result that the mgmt ack reports.
 #[test]
 fn firewall_dedups_and_signals_overflow() {
     let mut fw = FirewallState::new();

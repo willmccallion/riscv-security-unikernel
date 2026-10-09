@@ -141,3 +141,42 @@ fn operator_regains_access_once_a_mgmt_flood_stops() {
 
     assert!(operator_can_still_manage(&mut e, 1, 1_000_000_000));
 }
+
+#[test]
+fn every_authenticated_command_is_acknowledged_with_its_outcome() {
+    use sec_core::security::mgmt::MgmtOutcome;
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let block = ManagementMessageType::BlockPort as u8;
+
+    let _ = e.process(&mut mgmt(1, &block_port(8080)), 1, &mut sink);
+    let _ = e.process(&mut mgmt(2, &block_port(MANAGEMENT_PORT)), 2, &mut sink);
+    let _ = e.process(&mut mgmt(3, &[block]), 3, &mut sink);
+    let _ = e.process(&mut mgmt(4, &[0xEE]), 4, &mut sink);
+
+    assert_eq!(
+        common::acks(&sink),
+        [
+            (1, block, MgmtOutcome::Applied as u8),
+            (2, block, MgmtOutcome::Refused as u8),
+            (3, block, MgmtOutcome::Invalid as u8),
+            (4, 0xEE, MgmtOutcome::Invalid as u8),
+        ]
+    );
+}
+
+#[test]
+fn full_firewall_table_is_reported_in_the_ack() {
+    use sec_core::security::mgmt::MgmtOutcome;
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    for i in 0..15u16 {
+        let _ = e.process(&mut mgmt(u32::from(i) + 1, &block_port(9000 + i)), 1, &mut sink);
+    }
+    sink.sent.clear();
+
+    let _ = e.process(&mut mgmt(100, &block_port(9999)), 2, &mut sink);
+
+    let outcome = common::acks(&sink).last().map(|&(_, _, o)| o);
+    assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
+}

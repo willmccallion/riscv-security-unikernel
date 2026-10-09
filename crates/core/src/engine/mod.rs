@@ -18,11 +18,11 @@ use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
 use crate::net::tcp::TcpHeader;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
-use crate::security::mgmt::{ManagementMessageType, mgmt_packet};
+use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
 use crate::security::{dos, dpi, firewall, flow, heuristic, mgmt_auth, vm};
 
-pub use report::{ALERT_FRAME_LEN, TELEMETRY_FRAME_LEN};
+pub use report::{ACK_FRAME_LEN, ALERT_FRAME_LEN, TELEMETRY_FRAME_LEN};
 
 /// Where alerts and telemetry are sent once an operator has authenticated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,12 +339,13 @@ impl Engine {
         let MgmtEnvelope::Sealed(envelope) = envelope else {
             return Verdict::Management;
         };
-        if let Some(body) = self.mgmt_auth.verify(envelope) {
+        if let Some(command) = self.mgmt_auth.verify(envelope) {
             self.operator = Some(OperatorAddr {
                 mac: src_mac,
                 ip: meta.src_ip,
             });
-            self.dispatch_mgmt(body, now, meta, sink);
+            let outcome = self.dispatch_mgmt(command.body, now);
+            self.send_ack(command.seq, command.body, outcome, sink);
         } else {
             self.alert(meta, AlertReason::MgmtAuthFail, sink);
         }
@@ -384,63 +385,82 @@ impl Engine {
         sink.send(frame);
     }
 
-    /// Applies an authenticated mgmt body. Under-length bodies are ignored:
-    /// the sender has already proven it holds the key.
-    fn dispatch_mgmt<S: PacketSink>(&mut self, body: &[u8], now: u64, meta: &AlertMeta, sink: &mut S) {
-        if body.len() < mgmt_packet::MIN_PAYLOAD_LEN {
-            return;
-        }
-        match ManagementMessageType::from_u8(body[mgmt_packet::MSG_TYPE_OFFSET]) {
-            Some(ManagementMessageType::BlockPort) => {
-                use mgmt_packet::block_port;
-                if body.len() >= block_port::MIN_PAYLOAD_LEN {
-                    let p = u16::from_be_bytes([
-                        body[block_port::PORT_OFFSET],
-                        body[block_port::PORT_OFFSET + 1],
-                    ]);
-                    // Blocking the mgmt port would lock the operator out for good.
-                    if p == MANAGEMENT_PORT || self.fw.block_port(p).is_err() {
-                        self.alert(meta, AlertReason::MgmtRejected, sink);
-                    }
-                }
-            }
-            Some(ManagementMessageType::AddDpiPattern) => {
-                use mgmt_packet::add_dpi;
-                if body.len() >= add_dpi::MIN_PAYLOAD_LEN {
-                    let len = body[add_dpi::LEN_OFFSET] as usize;
-                    if body.len() >= add_dpi::PATTERN_OFFSET + len && len <= add_dpi::MAX_PATTERN_LEN {
-                        let pattern = &body[add_dpi::PATTERN_OFFSET..add_dpi::PATTERN_OFFSET + len];
-                        if self.dyn_rules.add(pattern).is_err() {
-                            self.alert(meta, AlertReason::MgmtRejected, sink);
-                        }
-                    }
-                }
-            }
-            Some(ManagementMessageType::UploadBpfProgram) => self.upload_bpf(body, meta, sink),
-            Some(ManagementMessageType::BanIp) => {
-                use mgmt_packet::ban_ip;
-                if body.len() >= ban_ip::MIN_PAYLOAD_LEN {
-                    let ip = &body[ban_ip::IP_OFFSET..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE];
-                    self.pbox.ban(ip, IP_BAN_DURATION_CYCLES as u64, now);
-                }
-            }
-            None => {}
+    fn send_ack<S: PacketSink>(&self, seq: u32, body: &[u8], outcome: MgmtOutcome, sink: &mut S) {
+        let command = body.get(mgmt_packet::MSG_TYPE_OFFSET).copied().unwrap_or(0);
+        let mut frame = [0u8; ACK_FRAME_LEN];
+        let frame = report::ack_frame(&mut frame, self.operator, seq, command, outcome);
+        sink.send(frame);
+    }
+
+    /// Applies an authenticated mgmt body and reports what happened.
+    fn dispatch_mgmt(&mut self, body: &[u8], now: u64) -> MgmtOutcome {
+        let Some(&msg_type) = body.get(mgmt_packet::MSG_TYPE_OFFSET) else {
+            return MgmtOutcome::Invalid;
+        };
+        match ManagementMessageType::from_u8(msg_type) {
+            Some(ManagementMessageType::BlockPort) => self.block_port(body),
+            Some(ManagementMessageType::AddDpiPattern) => self.add_dpi_pattern(body),
+            Some(ManagementMessageType::UploadBpfProgram) => self.upload_bpf(body),
+            Some(ManagementMessageType::BanIp) => self.ban_ip(body, now),
+            None => MgmtOutcome::Invalid,
         }
     }
 
-    fn upload_bpf<S: PacketSink>(&mut self, body: &[u8], meta: &AlertMeta, sink: &mut S) {
+    fn block_port(&mut self, body: &[u8]) -> MgmtOutcome {
+        use mgmt_packet::block_port;
+        let Some(port) = body.get(block_port::PORT_OFFSET..block_port::PORT_OFFSET + 2) else {
+            return MgmtOutcome::Invalid;
+        };
+        let port = u16::from_be_bytes([port[0], port[1]]);
+        // Blocking the mgmt port would cut the operator off for good.
+        if port == MANAGEMENT_PORT {
+            return MgmtOutcome::Refused;
+        }
+        match self.fw.block_port(port) {
+            Ok(()) => MgmtOutcome::Applied,
+            Err(firewall::FirewallError::Full) => MgmtOutcome::TableFull,
+        }
+    }
+
+    fn add_dpi_pattern(&mut self, body: &[u8]) -> MgmtOutcome {
+        use mgmt_packet::add_dpi;
+        let Some(&len) = body.get(add_dpi::LEN_OFFSET) else {
+            return MgmtOutcome::Invalid;
+        };
+        let Some(pattern) = body.get(add_dpi::PATTERN_OFFSET..add_dpi::PATTERN_OFFSET + usize::from(len)) else {
+            return MgmtOutcome::Invalid;
+        };
+        match self.dyn_rules.add(pattern) {
+            Ok(()) => MgmtOutcome::Applied,
+            Err(dpi::DynRulesError::Full) => MgmtOutcome::TableFull,
+            Err(dpi::DynRulesError::TooLong | dpi::DynRulesError::Empty) => MgmtOutcome::Invalid,
+        }
+    }
+
+    fn ban_ip(&mut self, body: &[u8], now: u64) -> MgmtOutcome {
+        use mgmt_packet::ban_ip;
+        let Some(ip) = body.get(ban_ip::IP_OFFSET..ban_ip::IP_OFFSET + ipv4::IP_ADDR_SIZE) else {
+            return MgmtOutcome::Invalid;
+        };
+        self.pbox.ban(ip, IP_BAN_DURATION_CYCLES as u64, now);
+        MgmtOutcome::Applied
+    }
+
+    fn upload_bpf(&mut self, body: &[u8]) -> MgmtOutcome {
         use mgmt_packet::upload_bpf;
-        if body.len() < upload_bpf::MIN_PAYLOAD_LEN {
-            return;
+        let Some(&count) = body.get(upload_bpf::COUNT_OFFSET) else {
+            return MgmtOutcome::Invalid;
+        };
+        let count = usize::from(count);
+        if count > upload_bpf::MAX_INSTR_COUNT {
+            return MgmtOutcome::Invalid;
         }
-        let count = body[upload_bpf::COUNT_OFFSET] as usize;
-        if body.len() < upload_bpf::INSTR_OFFSET + count * upload_bpf::INSTR_SIZE
-            || count > upload_bpf::MAX_INSTR_COUNT
-        {
-            return;
-        }
+        let Some(encoded) =
+            body.get(upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + count * upload_bpf::INSTR_SIZE)
+        else {
+            return MgmtOutcome::Invalid;
+        };
         let mut staged = [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE];
-        let encoded = &body[upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + count * upload_bpf::INSTR_SIZE];
         let (encoded, _) = encoded.as_chunks::<{ upload_bpf::INSTR_SIZE }>();
         for (slot, raw) in staged.iter_mut().zip(encoded) {
             let imm = u32::from_be_bytes([raw[3], raw[4], raw[5], raw[6]]);
@@ -448,12 +468,12 @@ impl Engine {
         }
         // Decode into a staging buffer so a rejected upload leaves the
         // running program untouched.
-        if vm::validate(&staged[..count]).is_ok() {
-            self.bpf.program[..count].copy_from_slice(&staged[..count]);
-            self.bpf.len = count;
-        } else {
-            self.alert(meta, AlertReason::BpfReject, sink);
+        if vm::validate(&staged[..count]).is_err() {
+            return MgmtOutcome::Invalid;
         }
+        self.bpf.program[..count].copy_from_slice(&staged[..count]);
+        self.bpf.len = count;
+        MgmtOutcome::Applied
     }
 }
 

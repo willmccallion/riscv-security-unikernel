@@ -8,6 +8,7 @@ use crate::config::{IP_ADDR, MAC_ADDR, MANAGEMENT_PORT, TELEMETRY_PORT};
 use crate::net::constants::{BROADCAST_MAC, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
 use crate::security::alert::{AlertMeta, AlertReason, alert_packet};
+use crate::security::mgmt::{MgmtOutcome, ack_packet};
 
 /// IPv4 broadcast fallback used before the operator address is learned.
 const BROADCAST_IP: [u8; 4] = [192, 168, 100, 255];
@@ -21,6 +22,8 @@ const TELEMETRY_SLOTS: usize = 10;
 
 /// Length of an alert frame on the wire.
 pub const ALERT_FRAME_LEN: usize = UDP_PAYLOAD_OFFSET + alert_packet::ALERT_BODY_LEN;
+/// Length of a mgmt ack frame on the wire.
+pub const ACK_FRAME_LEN: usize = UDP_PAYLOAD_OFFSET + ack_packet::ACK_BODY_LEN;
 /// Length of a telemetry frame on the wire.
 pub const TELEMETRY_FRAME_LEN: usize = UDP_PAYLOAD_OFFSET + TELEMETRY_SLOTS * 8;
 
@@ -44,6 +47,24 @@ pub fn alert_frame<'a>(
     body[alert_packet::PROTOCOL_OFFSET] = meta.protocol;
     body[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
         .copy_from_slice(&meta.packet_len.to_be_bytes());
+    &buf[..]
+}
+
+/// Writes an ack for the command `seq` of type `command` into `buf` and
+/// returns it.
+pub fn ack_frame(
+    buf: &mut [u8; ACK_FRAME_LEN],
+    operator: Option<OperatorAddr>,
+    seq: u32,
+    command: u8,
+    outcome: MgmtOutcome,
+) -> &[u8] {
+    write_udp_headers(&mut buf[..], operator, MANAGEMENT_PORT, TELEMETRY_PORT);
+    let body = &mut buf[UDP_PAYLOAD_OFFSET..];
+    body[0] = ack_packet::ACK_MESSAGE_TYPE;
+    body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4].copy_from_slice(&seq.to_be_bytes());
+    body[ack_packet::COMMAND_OFFSET] = command;
+    body[ack_packet::OUTCOME_OFFSET] = outcome as u8;
     &buf[..]
 }
 

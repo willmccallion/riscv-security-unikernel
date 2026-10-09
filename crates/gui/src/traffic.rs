@@ -525,14 +525,6 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[MGMT AUTH] Rejected unsigned/replayed mgmt packet from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
         ),
-        Some(AlertReason::BpfReject) => (
-            format!("[BPF REJECT] Malformed BPF program from {ip}"),
-            egui::Color32::from_rgb(255, 80, 0),
-        ),
-        Some(AlertReason::MgmtRejected) => (
-            format!("[MGMT REJECT] Mgmt command dropped (table full) from {ip}"),
-            egui::Color32::from_rgb(255, 80, 0),
-        ),
         Some(AlertReason::BpfTimeout) => (
             format!("[BPF TIMEOUT] Installed program hit cycle budget from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
@@ -634,6 +626,7 @@ mod tests {
         auth.set_epoch(TEST_EPOCH);
         auth.verify(&packet[..n])
             .expect("sealed packet must verify with same key")
+            .body
             .to_vec()
     }
 
@@ -746,7 +739,6 @@ mod tests {
             (AlertReason::Flow, "[FLOW]"),
             (AlertReason::Pass, "[PASS]"),
             (AlertReason::MgmtAuthFail, "[MGMT AUTH]"),
-            (AlertReason::BpfReject, "[BPF REJECT]"),
         ];
         for (reason, tag) in cases {
             let data = make_alert(reason.as_u8());
