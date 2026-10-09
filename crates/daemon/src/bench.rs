@@ -12,7 +12,7 @@
 use crate::synth::{self, Mix};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sec_core::config::{CMS_RESET_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, TELEMETRY_INTERVAL_CYCLES};
+use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, TELEMETRY_INTERVAL_CYCLES};
 use sec_core::security::alert::AlertReason;
 use sec_core::engine::{BootSecrets, Engine, Verdict};
 use sec_core::net::PacketSink;
@@ -136,7 +136,7 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     let mut scratch = [0u8; 2048];
     let mut now: u64 = 0;
     let mut next_telemetry = TELEMETRY_INTERVAL_CYCLES as u64;
-    let mut next_cms_reset = CMS_RESET_INTERVAL_CYCLES as u64;
+    let mut next_cms_decay = CMS_DECAY_INTERVAL_CYCLES as u64;
 
     let started = Instant::now();
     let packets = usize::try_from(config.packets_per_thread).unwrap_or(usize::MAX);
@@ -147,9 +147,9 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
             engine.start_interval();
             next_telemetry += TELEMETRY_INTERVAL_CYCLES as u64;
         }
-        if now >= next_cms_reset {
-            engine.reset_heavy_hitters();
-            next_cms_reset += CMS_RESET_INTERVAL_CYCLES as u64;
+        if now >= next_cms_decay {
+            engine.decay_heavy_hitters();
+            next_cms_decay += CMS_DECAY_INTERVAL_CYCLES as u64;
         }
         let buf = &mut scratch[..frame.len()];
         buf.copy_from_slice(frame);

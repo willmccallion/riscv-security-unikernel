@@ -74,9 +74,12 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
             .unwrap_or(0)
     }
 
-    /// Resets all counters to zero.
-    pub const fn reset(&mut self) {
-        self.rows = [[0; WIDTH]; DEPTH];
+    /// Halves every counter, so old traffic fades out exponentially
+    /// instead of vanishing all at once at a window boundary.
+    pub fn decay(&mut self) {
+        for counter in self.rows.iter_mut().flatten() {
+            *counter >>= 1;
+        }
     }
 
     /// The column `item` maps to in each row: `h1 + i·h2` from the two
@@ -135,6 +138,33 @@ mod tests {
             assert!(truth <= tight, "conservative undercounted item {k}");
             assert!(tight <= usize::from(classic.estimate(&item)), "item {k}");
         }
+    }
+
+    #[test]
+    fn decay_halves_estimates() {
+        let mut cms = CountMinSketch::<64, 3>::new([1; 16]);
+        for _ in 0..90 {
+            let _ = cms.insert(b"a");
+        }
+
+        cms.decay();
+
+        assert_eq!(cms.estimate(b"a"), 45);
+    }
+
+    #[test]
+    fn a_burst_straddling_a_decay_still_accumulates() {
+        let mut cms = CountMinSketch::<64, 3>::new([1; 16]);
+        for _ in 0..90 {
+            let _ = cms.insert(b"a");
+        }
+        cms.decay();
+        let mut estimate = 0;
+        for _ in 0..90 {
+            estimate = cms.insert(b"a");
+        }
+
+        assert_eq!(estimate, 135);
     }
 
     #[test]

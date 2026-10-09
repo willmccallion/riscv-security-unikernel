@@ -22,10 +22,8 @@ pub const CMS_WIDTH: usize = 128;
 /// Rows (independent hashes) of the heavy-hitter Count-Min Sketch.
 pub const CMS_DEPTH: usize = 4;
 
-/// Threshold for heavy hitter detection in the Count-Min Sketch.
-///
-/// IPs exceeding this packet count within a measurement window
-/// are automatically banned.
+/// Estimated rate, in packets per second, above which a source is
+/// banned as a heavy hitter. See [`CMS_DECAY_INTERVAL_CYCLES`].
 pub const HEAVY_HITTER_THRESHOLD: u16 = 100;
 
 /// UDP port number for management interface commands.
@@ -63,14 +61,13 @@ pub const TOTAL_MEMORY_SIZE: usize = 64 * 1024;
 /// cycles have elapsed since the last report.
 pub const TELEMETRY_INTERVAL_CYCLES: usize = 1_000_000_000;
 
-/// Count-Min Sketch reset interval in CPU cycles.
+/// How often the heavy-hitter sketch halves its counters, in CPU cycles.
 ///
-/// The heavy-hitter sketch is wiped on this cadence to bound
-/// false-positive growth from hash collisions and to define the
-/// sliding window over which `HEAVY_HITTER_THRESHOLD` applies.
-/// Decoupled from telemetry so that operators can tune reporting
-/// frequency without changing the detector's effective window.
-pub const CMS_RESET_INTERVAL_CYCLES: usize = 1_000_000_000;
+/// Half a second at 1 GHz. A source sending steadily at `r` packets per
+/// second peaks at about `r` just before each halving (`c = c/2 + r/2`),
+/// so [`HEAVY_HITTER_THRESHOLD`] reads as packets per second, and a
+/// burst is not forgotten just because it straddles a boundary.
+pub const CMS_DECAY_INTERVAL_CYCLES: usize = 500_000_000;
 
 /// Flow expiration timeout in CPU cycles.
 ///

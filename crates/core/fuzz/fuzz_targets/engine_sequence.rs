@@ -35,7 +35,7 @@ enum Step {
     Udp { dt: u32, src_last: u8, src_port: u16, dst_port: u16, payload: Vec<u8> },
     /// A sealed mgmt command; `seq_gap` lets the fuzzer try replays (0).
     Mgmt { dt: u32, seq_gap: u8, body: Vec<u8> },
-    /// Telemetry tick: prune flows and start a new interval.
+    /// Telemetry tick: prune flows, decay the sketch, start a new interval.
     Tick { dt: u32 },
 }
 
@@ -140,6 +140,7 @@ fuzz_target!(|steps: Vec<Step>| {
             Step::Tick { dt } => {
                 now += u64::from(dt);
                 engine.prune_flows(now, sec_core::config::FLOW_TIMEOUT_CYCLES as u64);
+                engine.decay_heavy_hitters();
                 engine.send_telemetry(0, &mut sink);
                 engine.start_interval();
             }

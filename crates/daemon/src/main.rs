@@ -20,7 +20,7 @@ use bench::VerdictCounts;
 use clap::{Parser, Subcommand};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sec_core::config::{CMS_RESET_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES};
+use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES};
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::time::TimeSource;
@@ -145,7 +145,7 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
     let mut counts = VerdictCounts::default();
     let mut frames = 0u64;
     let mut last_report = clock.now();
-    let mut last_cms_reset = last_report;
+    let mut last_cms_decay = last_report;
 
     while duration.is_none_or(|d| started.elapsed() < d) {
         let now = clock.now();
@@ -155,9 +155,9 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
         frames += seen as u64;
 
         let now = clock.now();
-        if now.saturating_sub(last_cms_reset) >= CMS_RESET_INTERVAL_CYCLES as u64 {
-            engine.reset_heavy_hitters();
-            last_cms_reset = now;
+        if now.saturating_sub(last_cms_decay) >= CMS_DECAY_INTERVAL_CYCLES as u64 {
+            engine.decay_heavy_hitters();
+            last_cms_decay = now;
         }
         if now.saturating_sub(last_report) >= REPORT_INTERVAL {
             let secs = (now - last_report) as f64 / 1e9;

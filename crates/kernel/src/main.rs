@@ -37,7 +37,7 @@ use crate::net_sink::VirtioNetSink;
 use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
 use sec_core::config::{
-    CMS_RESET_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, IP_ADDR, KERNEL_VERSION, MAC_ADDR,
+    CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, IP_ADDR, KERNEL_VERSION, MAC_ADDR,
     MANAGEMENT_PORT, TELEMETRY_INTERVAL_CYCLES, TELEMETRY_PORT, TOTAL_MEMORY_SIZE,
 };
 use sec_core::engine::{BootSecrets, Engine};
@@ -133,7 +133,7 @@ pub extern "C" fn kmain() -> ! {
     let clock = MCycle;
     let mut sink = VirtioNetSink;
     let mut last_report = clock.now();
-    let mut last_cms_reset = last_report;
+    let mut last_cms_decay = last_report;
     let mut heartbeat = Heartbeat::new();
 
     // Gather 32 bytes of per-boot entropy from every source the
@@ -174,9 +174,9 @@ pub extern "C" fn kmain() -> ! {
             NetDevice::flush();
         }
 
-        if now.wrapping_sub(last_cms_reset) > CMS_RESET_INTERVAL_CYCLES as u64 {
-            engine.reset_heavy_hitters();
-            last_cms_reset = now;
+        if now.wrapping_sub(last_cms_decay) > CMS_DECAY_INTERVAL_CYCLES as u64 {
+            engine.decay_heavy_hitters();
+            last_cms_decay = now;
         }
 
         let mut work_done = false;

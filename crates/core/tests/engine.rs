@@ -166,3 +166,26 @@ fn a_flood_of_blocked_traffic_raises_a_bounded_number_of_alerts() {
     assert_eq!(e.interval_stats().firewall, 50, "the global rate limit admits 50");
     assert!(sink.alert_reasons().len() <= 32, "{} alerts", sink.alert_reasons().len());
 }
+
+#[test]
+fn a_burst_straddling_a_decay_is_still_caught() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let attacker = [10, 0, 0, 77];
+    let mut now = 0;
+    let mut send_burst = |e: &mut sec_core::engine::Engine, now: &mut u64| {
+        let mut last = Verdict::Passed;
+        for _ in 0..90 {
+            *now += 1_000_000;
+            last = e.process(&mut udp(attacker, 5000, 80, b"burst"), *now, &mut sink);
+        }
+        last
+    };
+
+    let first = send_burst(&mut e, &mut now);
+    e.decay_heavy_hitters();
+    let second = send_burst(&mut e, &mut now);
+
+    assert_eq!(first, Verdict::Passed, "90 packets alone stay under the threshold");
+    assert_eq!(second, Verdict::Dropped(AlertReason::Ddos));
+}

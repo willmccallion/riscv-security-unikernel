@@ -49,7 +49,7 @@ flowchart TD
     RX["VirtIO RX"]
     MG{"UDP to :1337?"}
     ML["Mgmt rate limit → MAC + replay check<br/>→ apply command → signed ack"]
-    PB["① Penalty box / Count-Min Sketch<br/>ban sources above 100 packets per window"]
+    PB["① Penalty box / Count-Min Sketch<br/>ban sources above ~100 packets per second"]
     TB["② Global token bucket"]
     FT["③ Flow table"]
     TF["④ TCP flag heuristics<br/>Xmas · null scans"]
@@ -87,7 +87,7 @@ Management traffic is handled before any data-plane check, behind its own rate l
 ## Security Mechanisms
 
 ### Count-Min Sketch — heavy-hitter detection
-Counts packets per source IP across four salted hash rows. A source whose estimate passes 100 within the current window (`CMS_RESET_INTERVAL_CYCLES`) is banned in the penalty box. The salt is re-drawn from virtio-rng each window.
+Counts packets per source IP in a Count-Min Sketch keyed with a per-boot SipHash key, using conservative update. Counters are halved every half second, so a source's estimate tracks its recent packet rate; one above 100 per second is banned in the penalty box.
 
 ### Aho-Corasick DPI
 Single-pass scan for the built-in signatures `DROP TABLE`, `<script>`, `eval(` and `UNION SELECT`. Up to eight more patterns of up to 32 bytes can be added and removed at runtime. Matching is case-sensitive and per packet.

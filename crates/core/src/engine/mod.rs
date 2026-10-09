@@ -195,9 +195,10 @@ impl Engine {
         self.flows.prune(now, timeout);
     }
 
-    /// Starts a new heavy-hitter window.
-    pub const fn reset_heavy_hitters(&mut self) {
-        self.cms.reset();
+    /// Ages the heavy-hitter counts; call every
+    /// [`CMS_DECAY_INTERVAL_CYCLES`](crate::config::CMS_DECAY_INTERVAL_CYCLES).
+    pub fn decay_heavy_hitters(&mut self) {
+        self.cms.decay();
     }
 
     /// Sends the signed telemetry report for the current interval: ten
