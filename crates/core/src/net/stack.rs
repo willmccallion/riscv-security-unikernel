@@ -350,57 +350,36 @@ fn send_tcp_reply_inplace<S: PacketSink>(
     flags: u16,
     sink: &mut S,
 ) {
-    let old_src_mac = [
-        packet[ethernet::SRC_MAC_OFFSET],
-        packet[ethernet::SRC_MAC_OFFSET + 1],
-        packet[ethernet::SRC_MAC_OFFSET + 2],
-        packet[ethernet::SRC_MAC_OFFSET + 3],
-        packet[ethernet::SRC_MAC_OFFSET + 4],
-        packet[ethernet::SRC_MAC_OFFSET + 5],
-    ];
-    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&old_src_mac);
-    packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
-        .copy_from_slice(&MAC_ADDR);
-
-    let old_src_ip = [
-        packet[ipv4::SRC_IP_OFFSET],
-        packet[ipv4::SRC_IP_OFFSET + 1],
-        packet[ipv4::SRC_IP_OFFSET + 2],
-        packet[ipv4::SRC_IP_OFFSET + 3],
-    ];
-    packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR);
-    packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-        .copy_from_slice(&old_src_ip);
-
-    // Read the original ports byte-wise (see the comment in handle_tcp
-    // for why we no longer cast through `&TcpHeader`).
-    let (reply_dst_port, reply_src_port) = {
-        let orig = &packet[tcp_offset..tcp_offset + tcp::MIN_HEADER_SIZE];
-        let orig_src = u16::from_be_bytes([orig[0], orig[1]]);
-        let orig_dst = u16::from_be_bytes([orig[2], orig[3]]);
-        // The reply swaps source and destination.
-        (orig_src, orig_dst)
-    };
-
     /// Default TCP receive-window size advertised in SYN-ACK replies.
-    /// Matches what `TcpHeader::new` used; the SYN-cookie path does
-    /// not maintain per-flow state, so this is a fixed value.
+    /// The SYN-cookie path keeps no per-flow state, so this is fixed.
     const REPLY_WINDOW: u16 = 64240;
     /// Header length encoded in the data-offset nibble (5 × 4 = 20 bytes).
     const DATA_OFFSET_5: u16 = 5 << 12;
 
-    let offset_flags = DATA_OFFSET_5 | flags;
-    let reply = &mut packet[tcp_offset..tcp_offset + tcp::MIN_HEADER_SIZE];
+    let (reply_dst_port, reply_src_port) = {
+        let orig = &packet[tcp_offset..tcp_offset + tcp::MIN_HEADER_SIZE];
+        (
+            u16::from_be_bytes([orig[0], orig[1]]),
+            u16::from_be_bytes([orig[2], orig[3]]),
+        )
+    };
+    swap_addresses(packet);
+
+    let reply_end = tcp_offset + tcp::MIN_HEADER_SIZE;
+    let reply = &mut packet[tcp_offset..reply_end];
     reply[0..2].copy_from_slice(&reply_src_port.to_be_bytes());
     reply[2..4].copy_from_slice(&reply_dst_port.to_be_bytes());
     reply[4..8].copy_from_slice(&seq.to_be_bytes());
     reply[8..12].copy_from_slice(&ack.to_be_bytes());
-    reply[12..14].copy_from_slice(&offset_flags.to_be_bytes());
+    reply[12..14].copy_from_slice(&(DATA_OFFSET_5 | flags).to_be_bytes());
     reply[14..16].copy_from_slice(&REPLY_WINDOW.to_be_bytes());
-    reply[16..18].copy_from_slice(&[0, 0]); // checksum (caller may recompute)
-    reply[18..20].copy_from_slice(&[0, 0]); // urgent pointer
+    reply[16..20].copy_from_slice(&[0, 0, 0, 0]);
+    let csum = tcp_checksum(packet, tcp_offset..reply_end);
+    packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&csum.to_be_bytes());
 
-    sink.send(&packet[0..tcp_offset + tcp::MIN_HEADER_SIZE]);
+    let ihl = tcp_offset - ipv4::HEADER_OFFSET;
+    finish_ipv4_header(packet, ihl, reply_end - ipv4::HEADER_OFFSET);
+    sink.send(&packet[..reply_end]);
 }
 
 /// End of the IPv4 datagram within the frame, from its total-length field,
@@ -440,6 +419,29 @@ fn finish_ipv4_header(packet: &mut [u8], ihl: usize, total_len: usize) {
     packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&[0, 0]);
     let csum = checksum(&packet[ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ihl]);
     packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&csum.to_be_bytes());
+}
+
+/// TCP checksum of the segment at `segment`, over the IPv4 pseudo-header
+/// built from the addresses already written into `packet`.
+fn tcp_checksum(packet: &[u8], segment: core::ops::Range<usize>) -> u16 {
+    let mut sum: u32 = 0;
+    let mut add = |bytes: &[u8]| {
+        let (pairs, rest) = bytes.as_chunks::<2>();
+        for pair in pairs {
+            sum += u32::from(u16::from_be_bytes(*pair));
+        }
+        if let [last] = rest {
+            sum += u32::from(*last) << 8;
+        }
+    };
+    add(&packet[ipv4::SRC_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]);
+    add(&[0, IpProtocol::Tcp as u8]);
+    add(&(segment.len() as u16).to_be_bytes());
+    add(&packet[segment]);
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// Calculates the Internet checksum for protocol headers.
