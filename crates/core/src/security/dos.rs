@@ -268,8 +268,14 @@ impl TokenBucket {
         let delta = now.wrapping_sub(self.last_time);
         if self.cost > 0 && delta >= self.cost {
             let refill = delta / self.cost;
-            self.tokens = (self.tokens + refill).min(self.capacity);
-            self.last_time = now;
+            self.tokens = self.tokens.saturating_add(refill).min(self.capacity);
+            // Carry the time already spent toward the next token, unless the
+            // bucket is full and that progress would be discarded anyway.
+            self.last_time = if self.tokens == self.capacity {
+                now
+            } else {
+                self.last_time.wrapping_add(refill * self.cost)
+            };
         }
         if self.tokens > 0 {
             self.tokens -= 1;
@@ -341,6 +347,22 @@ mod token_bucket_tests {
         assert!(!b.allow(u64::MAX - 5));
         // 10 ticks after u64::MAX - 5 = wraps to 4.
         assert!(b.allow(4));
+    }
+
+    #[test]
+    fn refill_keeps_progress_toward_the_next_token() {
+        // Polled every 15 ticks at cost 10, the bucket earns 1.5 tokens
+        // per poll; over 3000 ticks that is 300 tokens plus capacity.
+        let mut b = TokenBucket::new(10, 10);
+        let mut allowed = 0;
+        for poll in 0..200u64 {
+            for _ in 0..3 {
+                if b.allow(poll * 15) {
+                    allowed += 1;
+                }
+            }
+        }
+        assert!(allowed >= 300, "only {allowed} tokens in 3000 ticks at cost 10");
     }
 
     #[test]
