@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host:
+    name: Lint and test (host crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Clippy
+        run: nix develop -c cargo clippy --workspace --exclude security-unikernel --all-targets -- -D warnings
+      - name: Tests
+        run: nix develop -c cargo test --workspace --exclude security-unikernel
+      - name: Docs
+        run: nix develop -c cargo doc --workspace --exclude security-unikernel --no-deps
+
+  kernel:
+    name: Kernel build, size and QEMU tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Generate a throwaway mgmt key
+        run: echo "KERNEL_MGMT_KEY=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+      - name: Clippy
+        working-directory: crates/kernel
+        run: nix develop -c cargo clippy --release -- -D warnings
+      - name: Size budget
+        run: nix develop -c make check-size
+      - name: End-to-end tests under QEMU
+        run: nix develop -c make qemu-test
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix develop -c make miri
+
+  fuzz:
+    name: Fuzz (short)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - process-packet
+          - mgmt-auth
+          - vm
+          - ahocorasick
+          - engine-frame
+          - engine-sequence
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - run: nix develop -c make fuzz-${{ matrix.target }} ARGS="-- -max_total_time=120"
