@@ -104,7 +104,7 @@ fuzz_target!(|steps: Vec<Step>| {
     let mut engine = Engine::new(KEY);
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
-        cms_seed: 1,
+        cms_key: [1; 16],
         mgmt_epoch: EPOCH,
     });
     let mut now: u64 = 0;

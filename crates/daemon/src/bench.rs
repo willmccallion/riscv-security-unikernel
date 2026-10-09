@@ -128,7 +128,7 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     let mut engine = Box::new(Engine::new(BENCH_KEY));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
-        cms_seed: rand::random(),
+        cms_key: rand::random(),
         mgmt_epoch: 1,
     });
 
@@ -148,7 +148,7 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
             next_telemetry += TELEMETRY_INTERVAL_CYCLES as u64;
         }
         if now >= next_cms_reset {
-            engine.reset_heavy_hitters(None);
+            engine.reset_heavy_hitters();
             next_cms_reset += CMS_RESET_INTERVAL_CYCLES as u64;
         }
         let buf = &mut scratch[..frame.len()];

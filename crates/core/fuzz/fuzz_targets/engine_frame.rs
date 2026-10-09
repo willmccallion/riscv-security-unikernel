@@ -50,7 +50,7 @@ fuzz_target!(|data: &[u8]| {
     let mut engine = Engine::new([0x5A; 16]);
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
-        cms_seed: 1,
+        cms_key: [1; 16],
         mgmt_epoch: 1,
     });
     let before = counters(engine.interval_stats());

@@ -42,6 +42,7 @@ use sec_core::config::{
 };
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::stack::SynCookieSecret;
+use sec_core::security::hash::derive_key;
 use sec_core::time::TimeSource;
 use sec_core::types::Singleton;
 
@@ -174,16 +175,7 @@ pub extern "C" fn kmain() -> ! {
         }
 
         if now.wrapping_sub(last_cms_reset) > CMS_RESET_INTERVAL_CYCLES as u64 {
-            // Reseed from fresh entropy on every reset interval so the
-            // attacker's window for collision precomputation against
-            // the current seed is bounded by the interval, not by the
-            // kernel's lifetime. If the RNG is absent (real hardware
-            // without one configured) we keep the boot-time seed —
-            // rotating it from `mcycle` would weaken, not strengthen.
-            let mut buf = [0u8; 8];
-            let fresh_seed = (rng_present && VirtioRng::read_into(&mut buf) == buf.len())
-                .then(|| u64::from_le_bytes(buf));
-            engine.reset_heavy_hitters(fresh_seed);
+            engine.reset_heavy_hitters();
             last_cms_reset = now;
         }
 
@@ -204,16 +196,19 @@ pub extern "C" fn kmain() -> ! {
 }
 
 /// Splits 32 bytes of boot entropy into the engine's per-boot secrets.
+///
+/// The epoch is broadcast in telemetry, so it and the sketch key are both
+/// derived from the second half under separate labels rather than taken
+/// from raw bytes, which would reveal part of the key.
 fn boot_secrets(entropy: &[u8; 32]) -> BootSecrets {
     let (syn_cookie, rest) = entropy.split_first_chunk::<16>().unwrap_or((&[0; 16], &[]));
-    let (cms_seed, rest) = rest.split_first_chunk::<8>().unwrap_or((&[0; 8], &[]));
-    let (epoch_a, rest) = rest.split_first_chunk::<4>().unwrap_or((&[0; 4], &[]));
-    let epoch_b = rest.first_chunk::<4>().unwrap_or(&[0; 4]);
+    let other = rest.first_chunk::<16>().unwrap_or(&[0; 16]);
+    let epoch = derive_key(other, b"mgmt epoch");
     // 0 is the verifier's "no epoch yet" value, so never use it.
-    let mgmt_epoch = (u32::from_le_bytes(*epoch_a) ^ u32::from_le_bytes(*epoch_b)).max(1);
+    let mgmt_epoch = u32::from_le_bytes([epoch[0], epoch[1], epoch[2], epoch[3]]).max(1);
     BootSecrets {
         syn_cookie: SynCookieSecret::new(*syn_cookie),
-        cms_seed: u64::from_le_bytes(*cms_seed),
+        cms_key: derive_key(other, b"heavy-hitter sketch"),
         mgmt_epoch,
     }
 }

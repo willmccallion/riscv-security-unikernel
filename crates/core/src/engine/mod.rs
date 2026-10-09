@@ -39,8 +39,8 @@ pub struct OperatorAddr {
 pub struct BootSecrets {
     /// Keys the SYN-cookie PRF.
     pub syn_cookie: SynCookieSecret,
-    /// Salts the heavy-hitter sketch.
-    pub cms_seed: u64,
+    /// Keys the heavy-hitter sketch's hash.
+    pub cms_key: [u8; 16],
     /// High 32 bits of every accepted mgmt counter for this boot.
     pub mgmt_epoch: u32,
 }
@@ -125,7 +125,7 @@ impl Engine {
             ac: dpi::AhoCorasick::new(),
             dyn_rules: dpi::DynamicRules::new(),
             fw: firewall::FirewallState::new(),
-            cms: sketch::CountMinSketch::new(),
+            cms: sketch::CountMinSketch::new([0; 16]),
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
             mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
@@ -166,7 +166,7 @@ impl Engine {
         let _ = self.fw.block_port(DEFAULT_BLOCKED_PORT);
 
         self.syn_secret = secrets.syn_cookie;
-        self.cms.reseed(secrets.cms_seed);
+        self.cms = sketch::CountMinSketch::new(secrets.cms_key);
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
@@ -195,11 +195,8 @@ impl Engine {
         self.flows.prune(now, timeout);
     }
 
-    /// Starts a new heavy-hitter window, optionally under a fresh seed.
-    pub fn reset_heavy_hitters(&mut self, new_seed: Option<u64>) {
-        if let Some(seed) = new_seed {
-            self.cms.reseed(seed);
-        }
+    /// Starts a new heavy-hitter window.
+    pub const fn reset_heavy_hitters(&mut self) {
         self.cms.reset();
     }
 

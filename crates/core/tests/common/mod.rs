@@ -56,7 +56,7 @@ pub fn engine() -> Engine {
     let mut e = Engine::new(KEY);
     e.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([7; 16]),
-        cms_seed: 0,
+        cms_key: [0; 16],
         mgmt_epoch: EPOCH,
     });
     e

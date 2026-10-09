@@ -106,7 +106,7 @@ fn new_engine(key: [u8; 16]) -> Box<Engine> {
     let mut engine = Box::new(Engine::new(key));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
-        cms_seed: rand::random(),
+        cms_key: rand::random(),
         mgmt_epoch: rand::random::<u32>().max(1),
     });
     engine
@@ -156,7 +156,7 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
 
         let now = clock.now();
         if now.saturating_sub(last_cms_reset) >= CMS_RESET_INTERVAL_CYCLES as u64 {
-            engine.reset_heavy_hitters(Some(rand::random()));
+            engine.reset_heavy_hitters();
             last_cms_reset = now;
         }
         if now.saturating_sub(last_report) >= REPORT_INTERVAL {
