@@ -17,7 +17,7 @@ license = "MIT OR Apache-2.0"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 sec-core = { path = ".." }
 
 [[bin]]
@@ -44,6 +44,13 @@ bench = false
 [[bin]]
 name = "ahocorasick_scan"
 path = "fuzz_targets/ahocorasick_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "engine_frame"
+path = "fuzz_targets/engine_frame.rs"
 test = false
 doc = false
 bench = false
