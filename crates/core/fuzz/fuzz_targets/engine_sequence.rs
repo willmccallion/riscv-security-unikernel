@@ -140,7 +140,7 @@ fuzz_target!(|steps: Vec<Step>| {
             Step::Tick { dt } => {
                 now += u64::from(dt);
                 engine.prune_flows(now, sec_core::config::FLOW_TIMEOUT_CYCLES as u64);
-                engine.decay_heavy_hitters();
+                engine.end_detection_interval(now, &mut sink);
                 engine.send_telemetry(0, &mut sink);
                 engine.start_interval();
             }

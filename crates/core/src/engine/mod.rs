@@ -198,9 +198,10 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
         self.flows.prune(now, timeout);
     }
 
-    /// Ages the heavy-hitter counts; call every
+    /// Closes one detection interval: ages the heavy-hitter counts and lets
+    /// interval-based detectors report. Call every
     /// [`CMS_DECAY_INTERVAL_CYCLES`](crate::config::CMS_DECAY_INTERVAL_CYCLES).
-    pub fn decay_heavy_hitters(&mut self) {
+    pub fn end_detection_interval<S: PacketSink>(&mut self, _now: u64, _sink: &mut S) {
         self.cms.decay();
     }
 

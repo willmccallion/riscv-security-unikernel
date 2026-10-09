@@ -183,7 +183,7 @@ fn a_burst_straddling_a_decay_is_still_caught() {
     };
 
     let first = send_burst(&mut e, &mut now);
-    e.decay_heavy_hitters();
+    e.end_detection_interval(now, &mut CaptureSink::default());
     let second = send_burst(&mut e, &mut now);
 
     assert_eq!(first, Verdict::Passed, "90 packets alone stay under the threshold");
