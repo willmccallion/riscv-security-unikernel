@@ -136,7 +136,7 @@ fn cms_detector_vs_load(path: &Path) -> Result<()> {
             let outcome = simulate(make().as_mut(), &sources, &schedule, interval_s);
             let sketch = make();
             rows.push(format!(
-                "{label},{},{},{},{load},{},{:.6},{},{:.1}",
+                "\"{label}\",{},{},{},{load},{},{:.6},{},{:.1}",
                 sketch.width(),
                 sketch.depth(),
                 sketch.memory_bytes(),

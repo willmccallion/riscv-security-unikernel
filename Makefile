@@ -16,7 +16,7 @@ RAM_LIMIT := 65536
 CARGO_NIGHTLY ?= cargo +nightly
 
 .PHONY: all kernel gui daemon daemon-bench daemon-speedtest run setup_net setup_net_many teardown_net_many \
-        bench check-size clean miri dev-key qemu-test qemu-fuzz \
+        bench check-size clean miri dev-key qemu-test qemu-fuzz sketch-study \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build \
         fuzz-engine-frame fuzz-engine-sequence
 
@@ -201,6 +201,12 @@ qemu-test: kernel
 QEMU_FUZZ_ARGS ?=
 qemu-fuzz: kernel
 	@cargo run -q -p qemu-harness --release --bin qemu-fuzz -- $(QEMU_FUZZ_ARGS)
+
+# Measure the sketches against exact ground truth and redraw the charts in
+# docs/sketches.
+sketch-study:
+	@cargo run -q -p sketch-lab --release
+	@python3 scripts/plot_sketches.py
 
 # Run criterion benchmarks (host-native, no QEMU required)
 bench:
