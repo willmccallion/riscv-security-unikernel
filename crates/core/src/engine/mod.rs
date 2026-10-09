@@ -242,19 +242,6 @@ impl Engine {
                 meta.dst_port = dst_port;
             }
 
-            if self.flows.update(
-                &meta.src_ip,
-                &meta.dst_ip,
-                meta.src_port,
-                meta.dst_port,
-                meta.protocol,
-                packet.len(),
-                now,
-            ) && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0
-            {
-                self.alert(&meta, AlertReason::Flow, sink);
-            }
-
             if self.pbox.is_banned(&meta.src_ip, now) {
                 drop = true;
             } else if self.cms.insert(&meta.src_ip) > HEAVY_HITTER_THRESHOLD {
@@ -270,6 +257,10 @@ impl Engine {
                 self.alert(&meta, AlertReason::Ddos, sink);
             }
             return Verdict::Dropped(AlertReason::Ddos);
+        }
+
+        if ip.is_some() {
+            self.track_flow(&meta, packet.len(), now, sink);
         }
 
         if let Some(flags) = ip.as_ref().and_then(|ip| tcp_flags(packet, ip))
@@ -337,6 +328,23 @@ impl Engine {
         } else {
             self.stats.passed += 1;
             Verdict::Passed
+        }
+    }
+
+    /// Records the packet against its flow, alerting on a sample of new
+    /// flows.
+    fn track_flow<S: PacketSink>(&mut self, meta: &AlertMeta, len: usize, now: u64, sink: &mut S) {
+        let is_new = self.flows.update(
+            &meta.src_ip,
+            &meta.dst_ip,
+            meta.src_port,
+            meta.dst_port,
+            meta.protocol,
+            len,
+            now,
+        );
+        if is_new && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0 {
+            self.alert(meta, AlertReason::Flow, sink);
         }
     }
 

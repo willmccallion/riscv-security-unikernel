@@ -120,3 +120,20 @@ fn icmp_echo_is_answered_even_when_its_checksum_equals_a_blocked_port() {
     assert_eq!(v, Verdict::Consumed);
     assert!(sink.alert_reasons().is_empty());
 }
+
+#[test]
+fn banned_source_does_not_create_flows() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let attacker = [10, 0, 0, 66];
+    for i in 0..150u64 {
+        let _ = e.process(&mut udp(attacker, 5000, 80, b"flood"), i * 1_000_000, &mut sink);
+    }
+    let flows_when_banned = e.active_flows();
+
+    for port in 0..50u16 {
+        let _ = e.process(&mut udp(attacker, 6000 + port, 80, b"x"), 200_000_000, &mut sink);
+    }
+
+    assert_eq!(e.active_flows(), flows_when_banned);
+}
