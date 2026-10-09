@@ -1,0 +1,18 @@
+[package]
+name = "sketch-lab"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Accuracy studies of the sec-core sketches against exact ground truth."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+rand = { workspace = true }
+sec-core = { workspace = true }

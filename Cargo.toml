@@ -7,6 +7,7 @@ members = [
     "crates/gui",
     "crates/benches",
     "crates/qemu-harness",
+    "crates/sketch-lab",
 ]
 # cargo-fuzz packages need nightly + libFuzzer instrumentation. Keep them
 # out of the default `cargo build` so contributors aren't forced onto
