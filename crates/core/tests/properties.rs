@@ -22,7 +22,8 @@
 )]
 
 use proptest::prelude::*;
-use sec_core::security::dos::{CountMinSketch, PenaltyBox, TokenBucket};
+use sec_core::security::dos::{PenaltyBox, TokenBucket};
+use sec_core::security::sketch::CountMinSketch;
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::{FlowKey, FlowTable};
 

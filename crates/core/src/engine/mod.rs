@@ -21,7 +21,7 @@ use crate::net::tcp::extract_ports;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
-use crate::security::{dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, vm};
+use crate::security::{dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
 
@@ -100,7 +100,7 @@ pub struct Engine {
     ac: dpi::AhoCorasick,
     dyn_rules: dpi::DynamicRules,
     fw: firewall::FirewallState,
-    cms: dos::CountMinSketch,
+    cms: sketch::CountMinSketch,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
     mgmt_limiter: dos::TokenBucket,
@@ -125,7 +125,7 @@ impl Engine {
             ac: dpi::AhoCorasick::new(),
             dyn_rules: dpi::DynamicRules::new(),
             fw: firewall::FirewallState::new(),
-            cms: dos::CountMinSketch::new(),
+            cms: sketch::CountMinSketch::new(),
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
             mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),

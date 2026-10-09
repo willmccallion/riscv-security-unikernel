@@ -8,7 +8,7 @@
 #![allow(missing_docs)]
 
 use benches::flow::FlowKey;
-use benches::{dos, dpi, flow, heuristic, vm};
+use benches::{dpi, flow, heuristic, sketch, vm};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 // ---------------------------------------------------------------------------
@@ -33,7 +33,7 @@ const NOP_SLED_PAYLOAD: &[u8] = &[
 // ---------------------------------------------------------------------------
 
 fn bench_cms_insert(c: &mut Criterion) {
-    let mut cms = dos::CountMinSketch::new();
+    let mut cms = sketch::CountMinSketch::new();
     let ip: [u8; 4] = [10, 0, 0, 1];
     c.bench_function("cms_insert", |b| {
         b.iter(|| {
@@ -43,7 +43,7 @@ fn bench_cms_insert(c: &mut Criterion) {
 }
 
 fn bench_cms_insert_varied(c: &mut Criterion) {
-    let mut cms = dos::CountMinSketch::new();
+    let mut cms = sketch::CountMinSketch::new();
     // 64 distinct source IPs to simulate realistic traffic
     let ips: Vec<[u8; 4]> = (0u8..64).map(|i| [10, 0, 0, i]).collect();
     c.bench_function("cms_insert_64_ips", |b| {
@@ -219,7 +219,7 @@ fn bench_heuristic_payload_nop_sled(c: &mut Criterion) {
 // ---------------------------------------------------------------------------
 
 fn bench_full_hot_path(c: &mut Criterion) {
-    let mut cms = dos::CountMinSketch::new();
+    let mut cms = sketch::CountMinSketch::new();
     let ac = build_ac();
     let mut vm_instance = vm::VM::new();
     let prog = udp_drop_program();

@@ -6,7 +6,7 @@
 
 /// Security alert reason codes and constants.
 pub mod alert;
-/// DDoS mitigation mechanisms including Count-Min Sketch and penalty box.
+/// DDoS mitigation: the penalty box and token bucket.
 pub mod dos;
 /// Deep packet inspection engine using Aho-Corasick pattern matching.
 pub mod dpi;
@@ -26,5 +26,7 @@ pub mod mgmt;
 pub mod mgmt_auth;
 /// Authenticated wire format for kernel-to-operator reports.
 pub mod report_auth;
+/// Probabilistic stream summaries used for heavy-hitter detection.
+pub mod sketch;
 /// Virtual machine for executing eBPF-like packet filter programs.
 pub mod vm;
