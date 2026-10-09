@@ -223,59 +223,61 @@ pub async fn start_background_task(
                 let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
                 stats.last_seen.store(now_secs, Ordering::Relaxed);
 
-                if len >= 80 && data[0] != alert_packet::ALERT_MESSAGE_TYPE {
-                    for i in 0..10 {
-                        let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
-                        match i {
-                            0 => {
-                                stats.passed.store(val, Ordering::Relaxed);
-                                stats.total_passed.fetch_add(val, Ordering::Relaxed);
+                match classify_datagram(data) {
+                    KernelDatagram::Telemetry => {
+                        for i in 0..10 {
+                            let val = u64::from_be_bytes(data[i*8..(i+1)*8].try_into().unwrap());
+                            match i {
+                                0 => {
+                                    stats.passed.store(val, Ordering::Relaxed);
+                                    stats.total_passed.fetch_add(val, Ordering::Relaxed);
+                                }
+                                1 => {
+                                    stats.ddos.store(val, Ordering::Relaxed);
+                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
+                                }
+                                2 => {
+                                    stats.fw.store(val, Ordering::Relaxed);
+                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
+                                }
+                                3 => {
+                                    stats.mal.store(val, Ordering::Relaxed);
+                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
+                                }
+                                4 => {
+                                    stats.bpf.store(val, Ordering::Relaxed);
+                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
+                                }
+                                5 => {
+                                    stats.heur.store(val, Ordering::Relaxed);
+                                    stats.total_dropped.fetch_add(val, Ordering::Relaxed);
+                                }
+                                6 => {
+                                    stats.memory.store(val, Ordering::Relaxed);
+                                }
+                                7 => {
+                                    stats.flows.store(val, Ordering::Relaxed);
+                                }
+                                8 => {
+                                    stats.mgmt.store(val, Ordering::Relaxed);
+                                }
+                                9 => {
+                                    observe_kernel_epoch(val as u32);
+                                }
+                                _ => {}
                             }
-                            1 => {
-                                stats.ddos.store(val, Ordering::Relaxed);
-                                stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                            }
-                            2 => {
-                                stats.fw.store(val, Ordering::Relaxed);
-                                stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                            }
-                            3 => {
-                                stats.mal.store(val, Ordering::Relaxed);
-                                stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                            }
-                            4 => {
-                                stats.bpf.store(val, Ordering::Relaxed);
-                                stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                            }
-                            5 => {
-                                stats.heur.store(val, Ordering::Relaxed);
-                                stats.total_dropped.fetch_add(val, Ordering::Relaxed);
-                            }
-                            6 => {
-                                stats.memory.store(val, Ordering::Relaxed);
-                            }
-                            7 => {
-                                stats.flows.store(val, Ordering::Relaxed);
-                            }
-                            8 => {
-                                stats.mgmt.store(val, Ordering::Relaxed);
-                            }
-                            9 => {
-                                observe_kernel_epoch(val as u32);
-                            }
-                            _ => {}
                         }
                     }
-                } else if data[0] == alert_packet::ALERT_MESSAGE_TYPE {
-                    let msg = parse_alert(data);
-                    let _ = log_tx.send(msg);
+                    KernelDatagram::Alert => {
+                        let _ = log_tx.send(parse_alert(data));
+                    }
+                    KernelDatagram::Unknown => {}
                 }
             }
             Ok((len, _)) = alert_socket.recv_from(&mut alert_buf) => {
                 let data = &alert_buf[..len];
-                if data[0] == alert_packet::ALERT_MESSAGE_TYPE {
-                    let msg = parse_alert(data);
-                    let _ = log_tx.send(msg);
+                if classify_datagram(data) == KernelDatagram::Alert {
+                    let _ = log_tx.send(parse_alert(data));
                 }
             }
             Some(cmd) = cmd_rx.recv() => {
@@ -390,6 +392,28 @@ pub async fn start_background_task(
                 }
             }
         }
+    }
+}
+
+/// What a datagram received from the kernel carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KernelDatagram {
+    /// Ten big-endian u64 telemetry counters.
+    Telemetry,
+    /// A security alert, starting with the alert message-type byte.
+    Alert,
+    /// Empty or unrecognised; must be ignored.
+    Unknown,
+}
+
+/// Size of the kernel's telemetry body: ten big-endian u64 counters.
+const TELEMETRY_LEN: usize = 80;
+
+fn classify_datagram(data: &[u8]) -> KernelDatagram {
+    match data.first() {
+        Some(&alert_packet::ALERT_MESSAGE_TYPE) => KernelDatagram::Alert,
+        Some(_) if data.len() >= TELEMETRY_LEN => KernelDatagram::Telemetry,
+        _ => KernelDatagram::Unknown,
     }
 }
 
@@ -772,6 +796,22 @@ mod tests {
 
         KERNEL_EPOCH.store(saved_epoch, Ordering::Relaxed);
         MGMT_SEQ.store(saved_seq, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn empty_datagram_is_ignored() {
+        assert_eq!(classify_datagram(&[]), KernelDatagram::Unknown);
+    }
+
+    #[test]
+    fn short_non_alert_datagram_is_ignored() {
+        assert_eq!(classify_datagram(&[0x00; TELEMETRY_LEN - 1]), KernelDatagram::Unknown);
+    }
+
+    #[test]
+    fn datagram_classification_matches_kernel_formats() {
+        assert_eq!(classify_datagram(&[0x00; TELEMETRY_LEN]), KernelDatagram::Telemetry);
+        assert_eq!(classify_datagram(&make_alert(1)), KernelDatagram::Alert);
     }
 
     #[test]
