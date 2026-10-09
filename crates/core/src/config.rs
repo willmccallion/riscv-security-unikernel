@@ -16,11 +16,15 @@ pub const IP_ADDR: [u8; 4] = [192, 168, 100, 2];
 /// 100k packets per second on a 1 GHz cycle counter.
 pub const RATE_LIMIT_TOKEN_COST_CYCLES: u64 = 10_000;
 
-/// Columns per row of the heavy-hitter Count-Min Sketch.
-pub const CMS_WIDTH: usize = 128;
+/// Columns per row of the kernel's heavy-hitter Count-Min Sketch.
+///
+/// 1024 x 3 (6 KB) keeps legitimate sources from being flagged up to
+/// about 200k packets per second of total traffic in the sketch-lab study,
+/// where the previous 128 x 4 failed at 20k.
+pub const CMS_WIDTH: usize = 1024;
 
-/// Rows (independent hashes) of the heavy-hitter Count-Min Sketch.
-pub const CMS_DEPTH: usize = 4;
+/// Rows (independent hashes) of the kernel's heavy-hitter Count-Min Sketch.
+pub const CMS_DEPTH: usize = 3;
 
 /// Estimated rate, in packets per second, above which a source is
 /// banned as a heavy hitter. See [`CMS_DECAY_INTERVAL_CYCLES`].

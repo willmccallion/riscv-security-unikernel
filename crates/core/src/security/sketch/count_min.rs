@@ -40,6 +40,13 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
         }
     }
 
+    /// Clears every counter and switches to hashing with `key`, in place,
+    /// so a large sketch is never copied through the stack.
+    pub fn rekey(&mut self, key: [u8; 16]) {
+        self.rows.iter_mut().flatten().for_each(|counter| *counter = 0);
+        self.key = key;
+    }
+
     /// Counts one occurrence of `item` and returns its new estimate.
     ///
     /// Uses conservative update: only the item's counters that sit at its

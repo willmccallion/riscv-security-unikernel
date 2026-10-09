@@ -166,7 +166,7 @@ impl Engine {
         let _ = self.fw.block_port(DEFAULT_BLOCKED_PORT);
 
         self.syn_secret = secrets.syn_cookie;
-        self.cms = sketch::CountMinSketch::new(secrets.cms_key);
+        self.cms.rekey(secrets.cms_key);
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
