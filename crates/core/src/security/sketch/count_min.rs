@@ -35,22 +35,41 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     }
 
     /// Counts one occurrence of `item` and returns its new estimate.
+    ///
+    /// Uses conservative update: only the item's counters that sit at its
+    /// current estimate are raised. The estimate is still never below the
+    /// true count, but counters shared with other items grow far less, so
+    /// estimates are much tighter than with [`Self::insert_classic`].
     pub fn insert(&mut self, item: &[u8]) -> u16 {
         let columns = self.positions(item);
-        let mut min = u16::MAX;
+        let estimate = self.estimate_at(&columns).saturating_add(1);
+        for (row, column) in self.rows.iter_mut().zip(columns) {
+            row[column] = row[column].max(estimate);
+        }
+        estimate
+    }
+
+    /// Counts one occurrence of `item` by incrementing every one of its
+    /// counters, the textbook update. Kept for comparison with
+    /// [`Self::insert`].
+    pub fn insert_classic(&mut self, item: &[u8]) -> u16 {
+        let columns = self.positions(item);
         for (row, column) in self.rows.iter_mut().zip(columns) {
             row[column] = row[column].saturating_add(1);
-            min = min.min(row[column]);
         }
-        min
+        self.estimate_at(&columns)
     }
 
     /// The current estimate for `item`, without counting it.
     pub fn estimate(&self, item: &[u8]) -> u16 {
+        self.estimate_at(&self.positions(item))
+    }
+
+    fn estimate_at(&self, columns: &[usize; DEPTH]) -> u16 {
         self.rows
             .iter()
-            .zip(self.positions(item))
-            .map(|(row, column)| row[column])
+            .zip(columns)
+            .map(|(row, &column)| row[column])
             .min()
             .unwrap_or(0)
     }
@@ -95,6 +114,27 @@ mod tests {
         let cms = CountMinSketch::<64, 3>::new([1; 16]);
 
         assert_eq!(cms.estimate(b"never"), 0);
+    }
+
+    #[test]
+    fn conservative_update_is_never_looser_than_classic() {
+        const DISTINCT: u16 = 37;
+        const INSERTS: u16 = 200;
+        let mut conservative = CountMinSketch::<8, 2>::new([3; 16]);
+        let mut classic = CountMinSketch::<8, 2>::new([3; 16]);
+        for i in 0..INSERTS {
+            let item = (i % DISTINCT).to_be_bytes();
+            let _ = conservative.insert(&item);
+            let _ = classic.insert_classic(&item);
+        }
+
+        for k in 0..DISTINCT {
+            let item = k.to_be_bytes();
+            let truth = (0..INSERTS).filter(|i| i % DISTINCT == k).count();
+            let tight = usize::from(conservative.estimate(&item));
+            assert!(truth <= tight, "conservative undercounted item {k}");
+            assert!(tight <= usize::from(classic.estimate(&item)), "item {k}");
+        }
     }
 
     #[test]
