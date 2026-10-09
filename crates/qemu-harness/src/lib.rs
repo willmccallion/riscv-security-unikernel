@@ -89,7 +89,14 @@ impl Kernel {
     }
 
     /// Sends one Ethernet frame to the kernel's NIC.
+    ///
+    /// Empty frames are refused: QEMU's `dgram` backend treats a
+    /// zero-length datagram as end-of-stream and stops delivering frames,
+    /// which would look like a dead kernel.
     pub fn send(&self, frame: &[u8]) -> Result<()> {
+        if frame.is_empty() {
+            bail!("refusing to send an empty frame; it would stall QEMU's netdev");
+        }
         let sent = self
             .socket
             .send_to(frame, &self.qemu_endpoint)
