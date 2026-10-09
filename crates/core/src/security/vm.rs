@@ -154,13 +154,9 @@ impl Instruction {
 
 /// What a program wants the caller to do with the current packet.
 ///
-/// Exists so the caller is not matching on a raw integer. The old
-/// contract was "u64; 0 means drop, anything else means pass" — which
-/// meant (a) `Ret imm=0xDEADBEEF` was silently treated as pass, and
-/// (b) the caller had no way to distinguish "program said pass" from
-/// "program forgot to Ret and fell off the end". A two-variant enum
-/// makes both cases explicit, and anything outside those variants is
-/// a [`VmRuntimeError`].
+/// Only `Ret 0` and `Ret 1` (or falling off the end) produce an action;
+/// any other return value is a [`VmRuntimeError`], so a garbage action
+/// code can never be mistaken for pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmAction {
     /// Drop the packet and raise the eBPF alert.
@@ -183,12 +179,9 @@ pub enum VmRuntimeError {
     /// `Ret`. The packet must be dropped and an alert raised.
     Timeout,
     /// The program executed a `Ret` with an immediate that did not
-    /// match any defined [`VmAction`]. Callers must drop-and-alert
-    /// rather than assuming pass; the doc-comment on `execute` used to
-    /// imply a richer protocol (the `imm` could carry a custom action
-    /// code), and any future extension that reads those codes would
-    /// silently mis-interpret programs uploaded before the extension
-    /// if this case were treated as pass today.
+    /// match any defined [`VmAction`]. Callers must drop and alert, so
+    /// that action codes added later cannot change what programs
+    /// uploaded today do.
     InvalidAction(u64),
 }
 
@@ -237,8 +230,7 @@ impl VM {
     ///
     /// `Ok(VmAction::Drop | Pass)` for the two valid outcomes of a
     /// `Ret` instruction (immediate 0 or 1), or `Ok(VmAction::Pass)` if
-    /// the program fell off the end without returning (preserves the
-    /// historical default for well-formed but Ret-less programs).
+    /// the program fell off the end without returning.
     /// `Err(VmRuntimeError::Timeout)` if the program burns through
     /// `MAX_CYCLES`; `Err(VmRuntimeError::InvalidAction(n))` if a `Ret`
     /// carried any other immediate. Callers must treat both errors as

@@ -17,7 +17,7 @@
 //!
 //! A receiver only accepts a packet if the epoch matches its own and
 //! the sequence is strictly greater than the last accepted sequence.
-//! This blocks three attacks the previous implementation was open to:
+//! This blocks three attacks:
 //!
 //! - **Forgery.** Without the pre-shared key an off-path attacker
 //!   cannot construct a valid MAC, so they cannot ban arbitrary IPs,

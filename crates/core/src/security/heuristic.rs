@@ -52,13 +52,8 @@ impl HeuristicEngine {
     /// Some reason string if suspicious pattern detected, None otherwise
     pub fn check_payload(payload: &[u8]) -> Option<&'static str> {
         use super::heuristic_constants::payload;
-        // x86 0x90 NOP sled detection. The previous implementation
-        // reset the counter on any non-NOP byte, so an attacker could
-        // bypass with a single junk byte every few NOPs (e.g.
-        // [0x00, 0x90, 0x90] repeated). Switch to a saturating-decay
-        // counter: still triggers on 8 contiguous NOPs, but also on
-        // payloads where NOPs strongly outnumber non-NOPs over a
-        // short window.
+        // A decaying score rather than a run length, so junk bytes spliced
+        // between NOPs (e.g. [0x00, 0x90, 0x90] repeated) still trip it.
         let mut nop_score: usize = 0;
         for &byte in payload {
             if byte == payload::NOP_OPCODE {

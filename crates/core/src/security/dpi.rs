@@ -285,11 +285,7 @@ impl DynamicRules {
     /// Adds a new pattern to the dynamic rules.
     ///
     /// Patterns are limited to 32 bytes and there can be at most 8
-    /// active patterns. The previous version of this function
-    /// returned `()` and silently dropped on overflow, so an operator
-    /// adding a 9th pattern saw no error and believed it was loaded.
-    /// Now an `Err` is returned so the caller can surface the
-    /// rejection.
+    /// active patterns. Adding a pattern already present is a no-op.
     ///
     /// # Errors
     ///

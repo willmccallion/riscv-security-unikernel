@@ -44,7 +44,7 @@ pub struct PenaltyBox {
     /// Round-robin pointer for eviction when every slot is still active.
     /// Without this, every overflow ban lands in slot 0, so an attacker
     /// who learns the table is full can pin one IP and watch every
-    /// subsequent ban evict it (audit HIGH-3).
+    /// subsequent ban evict it.
     next_evict: usize,
 }
 

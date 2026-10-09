@@ -103,11 +103,8 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     if packet.len() < arp::MIN_PACKET_SIZE {
         return;
     }
-    // hw_type and opcode are both 2-byte big-endian fields. The
-    // previous code read only the high byte of each, which works for
-    // Ethernet ARP (hw_type=0x0001 has high byte 0x00) but lets a
-    // non-Ethernet ARP (hw_type=0xFFFF, etc.) through because the
-    // mask happened to alias to opcode bits. Audit MED-1.
+    // Both fields are 2 bytes; checking only the high bytes would also
+    // answer non-Ethernet ARP.
     let hw_type = u16::from_be_bytes([
         packet[arp::HW_TYPE_OFFSET],
         packet[arp::HW_TYPE_OFFSET + 1],
@@ -308,9 +305,7 @@ fn handle_tcp<S: PacketSink>(
         let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
         let cookie = syn_secret.cookie(&src_ip, &dst_ip, src_port, dst_port);
 
-        // TCP sequence numbers wrap (RFC 793 §3.3); a SYN with
-        // seq=0xFFFFFFFF is legal, so the ACK must wrap to 0 instead
-        // of overflowing. Found by fuzzer crash 1.
+        // Sequence numbers wrap (RFC 793 §3.3): seq 0xFFFFFFFF acks as 0.
         send_tcp_reply_inplace(
             packet,
             offset,

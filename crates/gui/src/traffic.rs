@@ -58,10 +58,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 ///   2. `.mgmt-key.local` at the workspace root (same file the kernel
 ///      build reads, materialised by `make dev-key`).
 ///
-/// Exits the process on failure. The old debug-only fallback baked in a
-/// constant key that was identical across every checkout — a binary
-/// leaked from a developer laptop would then authenticate to any other
-/// debug-built kernel on the network.
+/// Exits the process on failure. There is deliberately no built-in
+/// fallback: a constant key would let any copy of the binary
+/// authenticate to any kernel built without an explicit one.
 fn load_mgmt_key() -> [u8; 16] {
     if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
         if let Some(key) = parse_hex_key(&hex) {
