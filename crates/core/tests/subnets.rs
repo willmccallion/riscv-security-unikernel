@@ -85,3 +85,29 @@ fn ordinary_traffic_bans_no_subnet() {
 
     assert!(!sink.alert_reasons().contains(&AlertReason::SubnetFlood));
 }
+
+#[test]
+fn the_appliances_own_subnets_are_never_banned() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut now = 0;
+    let own = sec_core::config::IP_ADDR;
+
+    run(&mut e, &mut sink, &hosts([own[0], own[1], own[2]], 20), 80, 2, &mut now);
+
+    let neighbour = e.process(&mut udp([own[0], own[1], own[2], 200], 5000, 80, b"x"), now + 1, &mut sink);
+    assert_eq!(neighbour, Verdict::Passed);
+    assert!(!sink.alert_reasons().contains(&AlertReason::SubnetFlood));
+}
+
+#[test]
+fn other_slash_24s_inside_the_appliances_slash_16_can_still_be_banned() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut now = 0;
+    let own = sec_core::config::IP_ADDR;
+
+    run(&mut e, &mut sink, &hosts([own[0], own[1], own[2].wrapping_add(1)], 20), 80, 2, &mut now);
+
+    assert!(sink.alert_reasons().contains(&AlertReason::SubnetFlood));
+}

@@ -419,12 +419,17 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
     }
 
     /// Counts a packet from `src_ip` against its /24 and /16, returning the
-    /// first that is over its threshold.
+    /// first that is over its threshold. Subnets containing the appliance
+    /// itself are never counted: banning one would cut off its own gateway,
+    /// neighbours and operators, whose hosts can still be banned singly.
     fn count_subnets(&mut self, src_ip: [u8; 4]) -> Option<HeavySubnet> {
         let levels = [(24, SUBNET_24_THRESHOLD), (16, SUBNET_16_THRESHOLD)];
         let mut heavy = None;
         for (len, threshold) in levels {
             let prefix = dos::Ipv4Prefix::new(src_ip, len)?;
+            if prefix.contains(IP_ADDR) {
+                continue;
+            }
             let network = prefix.network();
             let rate = self.prefixes.insert(&[len, network[0], network[1], network[2]]);
             if heavy.is_none() && rate > threshold {
