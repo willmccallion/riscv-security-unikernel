@@ -5,6 +5,7 @@
 //! visualization, event logging, packet inspection, and configuration
 //! interfaces for firewall rules, DPI signatures, and eBPF programs.
 
+use crate::live::view::LiveView;
 use crate::types::{
     CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, TrafficMode,
     UiEvent,
@@ -29,6 +30,8 @@ enum Tab {
     Sdn,
     /// eBPF program editor and compiler.
     Ebpf,
+    /// What the network monitor sees on the real network.
+    LiveNetwork,
 }
 
 /// A rule shown in the UI, with what the kernel said about it.
@@ -127,6 +130,8 @@ pub struct AegisApp {
     log_new_entry: bool,
     /// Currently selected log entry for detailed inspection.
     selected_log: Option<LogEntry>,
+    /// The live network view.
+    live: LiveView,
 }
 
 impl AegisApp {
@@ -137,10 +142,12 @@ impl AegisApp {
     /// * `stats` - Shared statistics structure
     /// * `events` - Receiver for log entries and command status updates
     /// * `cmd_tx` - Sender for GUI commands
+    /// * `live` - The live network view
     pub fn new(
         stats: Arc<NetStats>,
         events: std::sync::mpsc::Receiver<UiEvent>,
         cmd_tx: UnboundedSender<GuiCommand>,
+        live: LiveView,
     ) -> Self {
         Self {
             stats,
@@ -165,6 +172,7 @@ impl AegisApp {
             log_paused: false,
             log_new_entry: false,
             selected_log: None,
+            live,
         }
     }
 
@@ -890,6 +898,7 @@ impl eframe::App for AegisApp {
                 ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "DASHBOARD");
                 ui.selectable_value(&mut self.selected_tab, Tab::Sdn, "SDN / FIREWALL");
                 ui.selectable_value(&mut self.selected_tab, Tab::Ebpf, "eBPF STUDIO");
+                ui.selectable_value(&mut self.selected_tab, Tab::LiveNetwork, "LIVE NETWORK");
             });
             ui.add_space(4.0);
         });
@@ -898,6 +907,9 @@ impl eframe::App for AegisApp {
             Tab::Dashboard => self.ui_dashboard(ui),
             Tab::Sdn => self.ui_sdn(ui),
             Tab::Ebpf => self.ui_ebpf(ui),
+            Tab::LiveNetwork => {
+                egui::ScrollArea::vertical().show(ui, |ui| self.live.show(ui));
+            }
         });
     }
 }

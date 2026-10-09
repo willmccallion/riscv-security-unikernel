@@ -4,3 +4,4 @@
 mod format;
 pub mod link;
 pub mod model;
+pub mod view;

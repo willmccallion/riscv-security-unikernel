@@ -15,7 +15,7 @@ RAM_LIMIT := 65536
 # CARGO_NIGHTLY=cargo-nightly since it has no rustup proxy.
 CARGO_NIGHTLY ?= cargo +nightly
 
-.PHONY: all kernel gui daemon daemon-bench daemon-speedtest run setup_net setup_net_many teardown_net_many \
+.PHONY: all kernel gui gui-live daemon daemon-bench daemon-speedtest run setup_net setup_net_many teardown_net_many \
         bench check-size clean miri dev-key qemu-test qemu-fuzz sketch-study \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build \
         fuzz-engine-frame fuzz-engine-sequence
@@ -68,6 +68,12 @@ gui: $(KEY_DEP)
 	@sudo setcap cap_sys_admin,cap_net_admin+ep $(GUI_BIN)
 	@echo "[*] Running GUI..."
 	@$(KEY_CMD) $(GUI_BIN)
+
+# The dashboard's live network view alone, reading a monitor started with
+# `security-daemon monitor --serve`. Needs no management key or special
+# permissions.
+gui-live:
+	@cargo run -q -p security-dashboard --release -- --live $(GUI_ARGS)
 
 # Linux userspace daemon. In-memory engine throughput:
 #   make daemon-bench DAEMON_ARGS="--threads 8 --mix clean"
