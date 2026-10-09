@@ -7,6 +7,7 @@
 //! stack guard.
 
 pub mod frame;
+pub mod mgmt;
 
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, BufReader};

@@ -75,3 +75,15 @@ pub fn is_udp_from_kernel_to_port(frame: &[u8], dst_port: u16) -> bool {
         && frame[26..30] == KERNEL_IP
         && frame[36..38] == dst_port.to_be_bytes()
 }
+
+/// Returns the alert reason code if `frame` is a security alert from the
+/// kernel.
+pub fn alert_reason(frame: &[u8]) -> Option<u8> {
+    use sec_core::security::alert::alert_packet::{ALERT_MESSAGE_TYPE, REASON_OFFSET};
+    let is_alert = frame.len() > 42 + REASON_OFFSET
+        && frame[12..14] == ETHERTYPE_IPV4
+        && frame[23] == 17
+        && frame[26..30] == KERNEL_IP
+        && frame[42] == ALERT_MESSAGE_TYPE;
+    is_alert.then(|| frame[42 + REASON_OFFSET])
+}
