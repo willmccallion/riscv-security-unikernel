@@ -41,7 +41,8 @@ pub enum Hello {
     NotTls,
 }
 
-/// Reads the ClientHello at the start of a client's TLS stream.
+/// Reads the ClientHello at the start of a client's TLS-over-TCP stream,
+/// which wraps handshake messages in records.
 pub fn parse_client_hello(stream: &[u8]) -> Hello {
     const RECORD_HEADER: usize = 5;
     let (Some(&content_type), Some(&major)) = (stream.first(), stream.get(1)) else {
@@ -57,12 +58,28 @@ pub fn parse_client_hello(stream: &[u8]) -> Hello {
     let Some(record) = stream.get(RECORD_HEADER..needed) else {
         return Hello::Incomplete { needed };
     };
-    if record.first() != Some(&HANDSHAKE_CLIENT_HELLO) {
+    match parse_handshake(record) {
+        // A hello spanning several records is rare; only the first is read.
+        Hello::Incomplete { .. } => Hello::Unnamed,
+        hello => hello,
+    }
+}
+
+/// Reads the ClientHello handshake message at the start of `stream`,
+/// as QUIC carries it in CRYPTO frames, without TLS records.
+pub fn parse_handshake(stream: &[u8]) -> Hello {
+    const MESSAGE_HEADER: usize = 4;
+    let Some(header) = stream.get(..MESSAGE_HEADER) else {
+        return Hello::Incomplete { needed: MESSAGE_HEADER };
+    };
+    if header[0] != HANDSHAKE_CLIENT_HELLO {
         return Hello::NotTls;
     }
-    // A hello spanning several records is rare; only the first is read.
-    let body_len = record.get(1..4).map_or(0, |b| usize::from(b[0]) << 16 | usize::from(b[1]) << 8 | usize::from(b[2]));
-    let body = &record[4.min(record.len())..(4 + body_len).min(record.len())];
+    let body_len = usize::from(header[1]) << 16 | usize::from(header[2]) << 8 | usize::from(header[3]);
+    let needed = MESSAGE_HEADER + body_len;
+    let Some(body) = stream.get(MESSAGE_HEADER..needed) else {
+        return Hello::Incomplete { needed };
+    };
     extensions(body).map_or(Hello::NotTls, server_name)
 }
 
@@ -182,6 +199,18 @@ pub(super) mod tests {
         let partial = parse_client_hello(&whole[..1400]);
 
         assert_eq!(partial, Hello::Incomplete { needed: whole.len() });
+    }
+
+    #[test]
+    fn reads_a_bare_handshake_message_as_quic_carries_it() {
+        let record = client_hello(Some("www.youtube.com"), 30, false);
+        let message = &record[5..];
+
+        let partial = parse_handshake(&message[..40]);
+        let whole = parse_handshake(message);
+
+        assert_eq!(partial, Hello::Incomplete { needed: message.len() });
+        assert!(matches!(whole, Hello::Named(name) if name.name == "www.youtube.com"));
     }
 
     #[test]
