@@ -60,16 +60,19 @@ unsafe extern "C" {
     static _ebss: u8;
 }
 
+// Only hart 0 runs the kernel; every statics access assumes a single thread.
 global_asm!(
     r#"
     .section .text.entry
     .global _start
     _start:
+        csrr t0, mhartid
+        bnez t0, park
         la sp, _stack_top
         call kmain
-    spin:
+    park:
         wfi
-        j spin
+        j park
 "#
 );
 

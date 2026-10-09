@@ -50,3 +50,15 @@ fn telemetry_is_signed_with_the_report_key() {
 
     assert!(mgmt.verify_report(&telemetry).is_some(), "telemetry MAC does not verify");
 }
+
+#[test]
+#[ignore = "needs a built kernel and qemu; run via `make qemu-test`"]
+fn kernel_runs_on_one_hart_when_the_machine_has_four() {
+    let kernel = Kernel::boot_with(&default_kernel_elf(), &["-smp", "4"]).expect("kernel boots");
+
+    let alive = kernel.is_alive().unwrap();
+
+    assert!(alive, "serial:\n{}", kernel.serial_snapshot());
+    let banners = kernel.serial_snapshot().matches("[ RISC-V Security Unikernel").count();
+    assert_eq!(banners, 1, "more than one hart ran kmain");
+}
