@@ -134,8 +134,7 @@ fn observe_kernel_epoch(epoch: u32) {
     if prev != epoch {
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u32)
-            .unwrap_or(1);
+            .map_or(1, |d| d.as_millis() as u32);
         MGMT_SEQ.store(seed, Ordering::Relaxed);
     }
 }
@@ -210,7 +209,7 @@ pub async fn start_background_task(
     let mut reports = ReportVerifier::new(report_key(&mgmt_key));
     let mut pending = PendingAcks::default();
 
-    let target_ip: std::net::IpAddr = "192.168.100.2".parse().unwrap();
+    let target_ip = std::net::IpAddr::from(sec_core::config::IP_ADDR);
     let target_80 = SocketAddr::new(target_ip, 80);
 
     let mut rng = StdRng::from_entropy();
@@ -336,7 +335,7 @@ enum ReportKind {
     Unknown,
 }
 
-fn classify_report(body: &[u8]) -> ReportKind {
+const fn classify_report(body: &[u8]) -> ReportKind {
     match body.first() {
         Some(&telemetry_packet::MESSAGE_TYPE) => ReportKind::Telemetry,
         Some(&alert_packet::ALERT_MESSAGE_TYPE) => ReportKind::Alert,
@@ -431,7 +430,7 @@ async fn send_traffic(
 ///
 /// Alert packets contain a reason code, source IP address, and optional
 /// payload data. This function extracts this information and creates a
-/// LogEntry with appropriate formatting and color coding.
+/// `LogEntry` with appropriate formatting and color coding.
 ///
 /// # Arguments
 ///
@@ -439,11 +438,9 @@ async fn send_traffic(
 ///
 /// # Returns
 ///
-/// A LogEntry with parsed alert information and formatted message.
+/// A `LogEntry` with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
-    // The GUI binds 0.0.0.0:1337 for alerts, so anyone on the segment
-    // can send a one-byte `\x02` and reach this function. Short-circuit
-    // before any fixed-offset index would panic the whole dashboard.
+    // Verified reports can still be short; check before any fixed offset.
     if data.len() < alert_packet::ALERT_BODY_LEN {
         return LogEntry {
             timestamp: 0.0,
@@ -672,7 +669,7 @@ fn build_add_dpi_body(pattern: &[u8]) -> Option<Vec<u8>> {
 fn build_upload_bpf_body(bytecode: &[u8]) -> Option<Vec<u8>> {
     use sec_core::security::mgmt::mgmt_packet::upload_bpf;
     if bytecode.is_empty()
-        || bytecode.len() % upload_bpf::INSTR_SIZE != 0
+        || !bytecode.len().is_multiple_of(upload_bpf::INSTR_SIZE)
         || bytecode.len() / upload_bpf::INSTR_SIZE > upload_bpf::MAX_INSTR_COUNT
     {
         return None;

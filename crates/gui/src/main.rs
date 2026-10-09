@@ -5,6 +5,10 @@
 //! and allows dynamic configuration of firewall rules, DPI signatures,
 //! and eBPF packet filters.
 
+// Every egui widget call returns a Response; ignoring most of them is how
+// immediate-mode UI code is written.
+#![allow(unused_results)]
+
 mod acks;
 mod app;
 /// Per-namespace UDP sender pool for realistic multi-source traffic.

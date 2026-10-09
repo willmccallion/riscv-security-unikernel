@@ -20,10 +20,13 @@
 //! pool. That keeps the GUI usable on machines where the netns setup
 //! hasn't been run.
 
+// setns(2) has no safe wrapper in std.
+#![allow(unsafe_code)]
+
 use std::fs::File;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
-use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 
 /// How many outstanding sends we queue per namespace thread before
@@ -113,7 +116,7 @@ impl NsPool {
     }
 
     /// Number of namespace senders in the pool.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.senders.len()
     }
 
@@ -122,8 +125,6 @@ impl NsPool {
     /// worker thread has died — both are fine for test traffic.
     pub fn send(&self, idx: usize, dst: SocketAddr, payload: Vec<u8>) {
         let sender = &self.senders[idx % self.senders.len()];
-        match sender.try_send((dst, payload)) {
-            Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
-        }
+        let _ = sender.try_send((dst, payload));
     }
 }

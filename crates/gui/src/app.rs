@@ -243,35 +243,35 @@ impl AegisApp {
             .spacing([15.0, 15.0])
             .min_col_width(220.0)
             .show(ui, |ui| {
-                self.stat_card(
+                Self::stat_card(
                     ui,
                     "THROUGHPUT",
                     total_pps,
                     total_req_count,
                     egui::Color32::WHITE,
                 );
-                self.stat_card(
+                Self::stat_card(
                     ui,
                     "PASSED TRAFFIC",
                     pass_pps,
                     total_pass_count,
                     egui::Color32::GREEN,
                 );
-                self.stat_card(
+                Self::stat_card(
                     ui,
                     "MITIGATED ATTACKS",
                     drop_pps,
                     total_drop_count,
                     egui::Color32::RED,
                 );
-                self.stat_card(
+                Self::stat_card(
                     ui,
                     "ACTIVE FLOWS",
                     flows_count,
                     0,
                     egui::Color32::LIGHT_BLUE,
                 );
-                self.stat_card(
+                Self::stat_card(
                     ui,
                     "MGMT TRAFFIC",
                     mgmt_pps,
@@ -382,7 +382,7 @@ impl AegisApp {
                             top: 4.0,
                             bottom: 4.0,
                         })
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(35)))
+                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(35)))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 // Colored left accent bar
@@ -536,7 +536,6 @@ impl AegisApp {
     /// * `total` - Cumulative total count
     /// * `color` - Text color for the rate value
     fn stat_card(
-        &self,
         ui: &mut egui::Ui,
         title: &str,
         rate: u64,
@@ -547,7 +546,7 @@ impl AegisApp {
             .fill(egui::Color32::from_gray(25))
             .rounding(4.0)
             .inner_margin(15.0)
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(45)))
+            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45)))
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.label(
@@ -853,8 +852,7 @@ impl eframe::App for AegisApp {
                 let last = self.stats.last_seen.load(Ordering::Relaxed);
                 let sys_now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
+                    .map_or(0, |d| d.as_secs());
                 let connected = sys_now.saturating_sub(last) < 3;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if connected {
@@ -999,7 +997,7 @@ fn compile_ebpf(code: &str) -> Option<Vec<u8>> {
 }
 
 /// Encodes one VM instruction in the 7-byte wire format the kernel decodes.
-fn encode(op: Opcode, reg_a: u8, reg_b: u8, imm: u32) -> [u8; 7] {
+const fn encode(op: Opcode, reg_a: u8, reg_b: u8, imm: u32) -> [u8; 7] {
     let imm = imm.to_be_bytes();
     [op as u8, reg_a, reg_b, imm[0], imm[1], imm[2], imm[3]]
 }

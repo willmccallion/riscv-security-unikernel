@@ -34,7 +34,7 @@ pub struct LogEntry {
     pub dst_port: u16,
     /// IP protocol number (6 = TCP, 17 = UDP, ...).
     pub protocol: u8,
-    /// Total observed packet length in bytes (saturated to u16::MAX).
+    /// Total observed packet length in bytes (saturated to `u16::MAX`).
     pub packet_len: u16,
     /// Human-readable description of the security event.
     pub msg: String,
@@ -79,7 +79,7 @@ pub struct NetStats {
 }
 
 /// Traffic generation mode for testing security mechanisms.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TrafficMode {
     /// No traffic generation.
     Idle,
@@ -92,7 +92,7 @@ pub enum TrafficMode {
 }
 
 /// Log display mode.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LogMode {
     /// Show only intercepted/blocked packets.
     Alerts,

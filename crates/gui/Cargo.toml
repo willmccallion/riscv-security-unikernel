@@ -1,39 +1,15 @@
-[lints.rust]
-# ── Inherited from workspace ───────────────────────────────────────────────────
-unused_must_use = "warn"
-rust_2018_idioms = { level = "warn", priority = -1 }
-
-[lints.clippy]
-# ── Inherited from workspace ───────────────────────────────────────────────────
-undocumented_unsafe_blocks = "warn"
-# Pedantic baseline — keeps the control plane code clean and idiomatic.
-pedantic = { level = "warn", priority = -1 }
-
-# egui widget methods are naturally named after the module they live in.
-module_name_repetitions = "allow"
-# Most GUI callbacks and eframe trait methods don't benefit from must_use.
-must_use_candidate = "allow"
-# eframe/egui return types make this noisy without adding safety value.
-missing_errors_doc = "allow"
-# Tokio async blocks have legitimate complex cognition; don't split them artificially.
-cognitive_complexity = "allow"
-# Dashboard and background task functions are long by nature of UI/async code.
-too_many_lines = "allow"
-# "DDoS" is a proper noun; doc_markdown fires on it across all doc comments.
-doc_markdown = "allow"
-# u64→f64 casts for display metrics (packet rates, memory) are intentional.
-cast_precision_loss = "allow"
-# Channel endpoint pairs (log_tx_sync/log_rx_sync) are legitimately similar names.
-similar_names = "allow"
-# stat_card is logically associated with AegisApp even though it doesn't read self.
-unused_self = "allow"
-# Hex dump formatting via map+collect is readable; fold+write! is not worth it here.
-format_collect = "allow"
+[lints]
+workspace = true
 
 [package]
 name = "security-dashboard"
-version = "1.0.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "egui control plane for the security unikernel: telemetry, alerts, rules and a traffic generator."
 
 [dependencies]
 sec-core = { workspace = true }
