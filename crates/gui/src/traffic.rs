@@ -5,7 +5,9 @@
 //! and generating test traffic patterns for security testing.
 
 use crate::netns::NsPool;
-use crate::types::{GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, TrafficMode};
+use crate::types::{
+    GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, MgmtCommand, NetStats, TrafficMode,
+};
 use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::ManagementMessageType;
@@ -283,36 +285,11 @@ pub async fn start_background_task(
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     GuiCommand::SetMode(m) => mode = m,
-                    GuiCommand::BanIp(ip_str) => {
-                        if let Ok(ip) = ip_str.parse::<std::net::Ipv4Addr>() {
-                            let body = build_ban_ip_body(ip);
-                            send_sealed(&socket_pool[0], &mgmt_key, &body).await;
-
-                            let entry = LogEntry {
-                                timestamp: 0.0,
-                                src_ip: "Localhost".to_string(),
-                                dst_ip: String::new(),
-                                src_port: 0,
-                                dst_port: 0,
-                                protocol: 0,
-                                packet_len: 0,
-                                msg: format!("MANUAL BAN: {ip_str}"),
-                                color: egui::Color32::from_rgb(255, 0, 255),
-                            };
-                            let _ = log_tx.send(entry);
+                    GuiCommand::Mgmt(command) => {
+                        if let MgmtCommand::BanIp(ip) = &command {
+                            let _ = log_tx.send(manual_ban_entry(*ip));
                         }
-                    }
-                    GuiCommand::BlockPort(port) => {
-                        let body = build_block_port_body(port);
-                        send_sealed(&socket_pool[0], &mgmt_key, &body).await;
-                    }
-                    GuiCommand::AddDpiPattern(pattern) => {
-                        if let Some(body) = build_add_dpi_body(&pattern) {
-                            send_sealed(&socket_pool[0], &mgmt_key, &body).await;
-                        }
-                    }
-                    GuiCommand::UploadBpf(bytecode) => {
-                        if let Some(body) = build_upload_bpf_body(&bytecode) {
+                        if let Some(body) = mgmt_body(&command) {
                             send_sealed(&socket_pool[0], &mgmt_key, &body).await;
                         }
                     }
@@ -546,6 +523,31 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         packet_len,
         msg,
         color,
+    }
+}
+
+/// Encodes `command` as an unsealed mgmt body, or `None` if the kernel
+/// would reject it outright.
+fn mgmt_body(command: &MgmtCommand) -> Option<Vec<u8>> {
+    match command {
+        MgmtCommand::BanIp(ip) => Some(build_ban_ip_body(*ip).to_vec()),
+        MgmtCommand::BlockPort(port) => Some(build_block_port_body(*port).to_vec()),
+        MgmtCommand::AddDpiPattern(pattern) => build_add_dpi_body(pattern),
+        MgmtCommand::UploadBpf(bytecode) => build_upload_bpf_body(bytecode),
+    }
+}
+
+fn manual_ban_entry(ip: std::net::Ipv4Addr) -> LogEntry {
+    LogEntry {
+        timestamp: 0.0,
+        src_ip: "Localhost".to_string(),
+        dst_ip: String::new(),
+        src_port: 0,
+        dst_port: 0,
+        protocol: 0,
+        packet_len: 0,
+        msg: format!("MANUAL BAN: {ip}"),
+        color: egui::Color32::from_rgb(255, 0, 255),
     }
 }
 

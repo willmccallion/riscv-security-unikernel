@@ -5,7 +5,7 @@
 //! visualization, event logging, packet inspection, and configuration
 //! interfaces for firewall rules, DPI signatures, and eBPF programs.
 
-use crate::types::{GuiCommand, LogEntry, LogMode, NetStats, TrafficMode};
+use crate::types::{GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, TrafficMode};
 use eframe::egui;
 use sec_core::net::constants::IpProtocol;
 use sec_core::security::vm::Opcode;
@@ -374,8 +374,9 @@ impl AegisApp {
                             if ui
                                 .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
                                 .clicked()
+                                && let Ok(ip) = log.src_ip.parse()
                             {
-                                self.send(GuiCommand::BanIp(log.src_ip.clone()));
+                                self.send(GuiCommand::Mgmt(MgmtCommand::BanIp(ip)));
                             }
                         });
                     });
@@ -509,7 +510,7 @@ impl AegisApp {
                     if ui.button("BLOCK PORT").clicked()
                         && let Ok(port) = self.sdn_port.trim().parse::<u16>()
                     {
-                        self.send(GuiCommand::BlockPort(port));
+                        self.send(GuiCommand::Mgmt(MgmtCommand::BlockPort(port)));
                         if !self.blocked_ports.contains(&port) {
                             self.blocked_ports.push(port);
                         }
@@ -539,7 +540,9 @@ impl AegisApp {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.sdn_sig);
                     if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
-                        self.send(GuiCommand::AddDpiPattern(self.sdn_sig.as_bytes().to_vec()));
+                        self.send(GuiCommand::Mgmt(MgmtCommand::AddDpiPattern(
+                            self.sdn_sig.as_bytes().to_vec(),
+                        )));
                         let sig = self.sdn_sig.clone();
                         if !self.dpi_signatures.contains(&sig) {
                             self.dpi_signatures.push(sig);
@@ -600,7 +603,7 @@ impl AegisApp {
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
                     if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
-                        self.send(GuiCommand::UploadBpf(bytecode));
+                        self.send(GuiCommand::Mgmt(MgmtCommand::UploadBpf(bytecode)));
                         let prog = self.ebpf_code.trim().to_string();
                         self.ebpf_programs.push(prog);
                     } else {

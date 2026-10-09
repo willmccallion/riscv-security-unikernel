@@ -100,16 +100,18 @@ pub enum LogMode {
 }
 
 /// Commands that can be sent from the GUI to the background network task.
-///
-/// Every variant that reaches the kernel management plane is sealed with
-/// the pre-shared MAC key and a monotonic counter by `traffic.rs` before
-/// it goes on the wire. The GUI never constructs raw management packets
-/// directly — the kernel rejects anything without a valid MAC.
 pub enum GuiCommand {
     /// Change the traffic generation mode.
     SetMode(TrafficMode),
-    /// Manually ban an IP address in the kernel's penalty box.
-    BanIp(String),
+    /// Seal and send a command to the kernel's management plane.
+    Mgmt(MgmtCommand),
+}
+
+/// A management-plane command. `traffic.rs` seals every one with the
+/// pre-shared MAC key and a monotonic counter before it goes on the wire.
+pub enum MgmtCommand {
+    /// Ban an IP address in the kernel's penalty box.
+    BanIp(std::net::Ipv4Addr),
     /// Install a firewall rule blocking the given destination port.
     BlockPort(u16),
     /// Add a DPI signature pattern (capped to 32 bytes at the kernel).
