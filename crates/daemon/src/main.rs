@@ -13,6 +13,7 @@ mod bench;
 mod clock;
 mod key;
 mod monitor;
+mod privileges;
 mod synth;
 
 /// The daemon's engine: a 65536 x 4 per-source sketch (512 KB), which
