@@ -2,6 +2,8 @@
 
 use super::decode::{self, LinkType, Packet, Transport};
 use super::dns;
+use super::quic;
+use super::tls::ServerName;
 use super::flows::{FlowTable, PacketRole};
 use super::hosts::{HostActivity, HostTable, Locality, PacketEnd};
 use super::names::{HelloAssembler, HostName, NameSource, NameTable};
@@ -125,10 +127,16 @@ impl Monitor {
     }
 
     /// Learns names from DNS and mDNS responses, and from the server name
-    /// in a TLS client's hello.
+    /// in a TLS client's hello, over TCP or QUIC.
     fn learn_names(&mut self, packet: &Packet<'_>, role: Option<&PacketRole>, at: UnixNanos) {
         match packet.transport {
             Transport::Udp(udp) => {
+                if let Some(role) = role.filter(|r| r.from_client) {
+                    let crypto = quic::client_initial_crypto(udp.payload);
+                    if let Some(hello) = self.hellos.observe_quic(role.client, role.server, &crypto, at) {
+                        self.learn_server_name(role.server.addr, &hello, at);
+                    }
+                }
                 let source = match udp.src_port {
                     DNS_PORT => NameSource::Dns,
                     MDNS_PORT => NameSource::Mdns,
@@ -140,14 +148,17 @@ impl Monitor {
             }
             Transport::Tcp(tcp) => {
                 let Some(role) = role.filter(|r| r.from_client) else { return };
-                let Some(hello) = self.hellos.observe(role.client, role.server, tcp.sequence, tcp.payload, at) else {
-                    return;
-                };
-                let source = if hello.encrypted_hello { NameSource::TlsCoverName } else { NameSource::TlsServerName };
-                self.names.learn(role.server.addr, &hello.name, source, at);
+                if let Some(hello) = self.hellos.observe_tcp(role.client, role.server, tcp.sequence, tcp.payload, at) {
+                    self.learn_server_name(role.server.addr, &hello, at);
+                }
             }
             Transport::Icmp | Transport::Fragment | Transport::Other(_) => {}
         }
+    }
+
+    fn learn_server_name(&mut self, server: IpAddr, hello: &ServerName, at: UnixNanos) {
+        let source = if hello.encrypted_hello { NameSource::TlsCoverName } else { NameSource::TlsServerName };
+        self.names.learn(server, &hello.name, source, at);
     }
 
     fn end(&self, addr: IpAddr) -> PacketEnd {

@@ -4,6 +4,7 @@
 use super::dns::{DnsResponse, NamedAddress};
 use super::flows::Endpoint;
 use super::time::UnixNanos;
+use super::quic::CryptoData;
 use super::tls::{self, Hello, ServerName};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -105,10 +106,20 @@ impl NameTable {
     }
 }
 
-/// The start of one client stream, reassembled by sequence number until
-/// its ClientHello can be read.
+/// How a client carries its TLS handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Carrier {
+    /// TLS records over TCP, placed by sequence number.
+    Tcp,
+    /// Handshake messages in QUIC CRYPTO frames, placed by stream offset.
+    Quic,
+}
+
+/// The start of one client's handshake stream, reassembled until its
+/// ClientHello can be read.
 #[derive(Debug)]
 struct PendingHello {
+    /// For TCP, the sequence number of the stream's first byte.
     first_sequence: u32,
     bytes: Vec<u8>,
     received: Vec<bool>,
@@ -116,17 +127,28 @@ struct PendingHello {
 }
 
 impl PendingHello {
-    fn write(&mut self, sequence: u32, payload: &[u8]) {
-        let offset = sequence.wrapping_sub(self.first_sequence) as usize;
+    const fn new(first_sequence: u32, started: UnixNanos) -> Self {
+        Self {
+            first_sequence,
+            bytes: Vec::new(),
+            received: Vec::new(),
+            started,
+        }
+    }
+
+    /// Places `data` at `offset` in the stream; anything past
+    /// [`MAX_HELLO_BYTES`] is dropped.
+    fn write_at(&mut self, offset: u64, data: &[u8]) {
+        let Ok(offset) = usize::try_from(offset) else { return };
         if offset >= MAX_HELLO_BYTES {
             return;
         }
-        let end = (offset + payload.len()).min(MAX_HELLO_BYTES);
+        let end = offset.saturating_add(data.len()).min(MAX_HELLO_BYTES);
         if self.bytes.len() < end {
             self.bytes.resize(end, 0);
             self.received.resize(end, false);
         }
-        self.bytes[offset..end].copy_from_slice(&payload[..end - offset]);
+        self.bytes[offset..end].copy_from_slice(&data[..end - offset]);
         self.received[offset..end].fill(true);
     }
 
@@ -134,58 +156,89 @@ impl PendingHello {
         let len = self.received.iter().take_while(|&&r| r).count();
         &self.bytes[..len]
     }
+
+    fn read(&self, carrier: Carrier) -> Hello {
+        match carrier {
+            Carrier::Tcp => tls::parse_client_hello(self.contiguous()),
+            Carrier::Quic => tls::parse_handshake(self.contiguous()),
+        }
+    }
 }
 
-/// Reassembles the first bytes of TLS client streams to read their
-/// server names, bounded in number, size and age.
+type HelloKey = (Carrier, Endpoint, Endpoint);
+
+/// Reassembles the start of clients' TLS handshakes, over TCP or QUIC,
+/// to read their server names; bounded in number, size and age.
 #[derive(Debug, Default)]
 pub struct HelloAssembler {
-    pending: HashMap<(Endpoint, Endpoint), PendingHello>,
+    pending: HashMap<HelloKey, PendingHello>,
 }
 
 impl HelloAssembler {
-    /// Feeds a segment the client sent the server; returns the server
+    /// Feeds a TCP segment the client sent the server; returns the server
     /// name once the ClientHello is complete. Only streams that begin like
     /// a TLS handshake are buffered.
-    pub fn observe(&mut self, client: Endpoint, server: Endpoint, sequence: u32, payload: &[u8], at: UnixNanos) -> Option<ServerName> {
+    pub fn observe_tcp(&mut self, client: Endpoint, server: Endpoint, sequence: u32, payload: &[u8], at: UnixNanos) -> Option<ServerName> {
         if payload.is_empty() {
             return None;
         }
-        let key = (client, server);
+        let key = (Carrier::Tcp, client, server);
         if !self.pending.contains_key(&key) {
             let looks_like_handshake = payload.starts_with(&[22, 3]);
-            if !looks_like_handshake || self.pending.len() >= MAX_PENDING_HELLOS {
+            if !looks_like_handshake || !self.start(key, PendingHello::new(sequence, at)) {
                 return None;
             }
-            let _ = self.pending.insert(
-                key,
-                PendingHello {
-                    first_sequence: sequence,
-                    bytes: Vec::new(),
-                    received: Vec::new(),
-                    started: at,
-                },
-            );
         }
         let pending = self.pending.get_mut(&key)?;
-        pending.write(sequence, payload);
-        match tls::parse_client_hello(pending.contiguous()) {
-            Hello::Incomplete { needed } if needed <= MAX_HELLO_BYTES => None,
-            Hello::Named(name) => {
-                let _ = self.pending.remove(&key);
-                Some(name)
-            }
-            Hello::Incomplete { .. } | Hello::Unnamed | Hello::NotTls => {
-                let _ = self.pending.remove(&key);
-                None
-            }
+        let offset = sequence.wrapping_sub(pending.first_sequence);
+        pending.write_at(u64::from(offset), payload);
+        self.advance(key)
+    }
+
+    /// Feeds the CRYPTO data of a client's QUIC Initial packets; returns
+    /// the server name once the ClientHello is complete.
+    pub fn observe_quic(&mut self, client: Endpoint, server: Endpoint, fragments: &[CryptoData], at: UnixNanos) -> Option<ServerName> {
+        if fragments.is_empty() {
+            return None;
         }
+        let key = (Carrier::Quic, client, server);
+        if !self.pending.contains_key(&key) && !self.start(key, PendingHello::new(0, at)) {
+            return None;
+        }
+        let pending = self.pending.get_mut(&key)?;
+        for fragment in fragments {
+            pending.write_at(fragment.offset, &fragment.bytes);
+        }
+        self.advance(key)
     }
 
     /// Gives up on hellos still incomplete after ten seconds.
     pub fn expire(&mut self, now: UnixNanos) {
         self.pending
             .retain(|_, pending| now < pending.started.saturating_add(HELLO_TIMEOUT));
+    }
+
+    /// Starts assembling a new hello; `false` if too many are pending.
+    fn start(&mut self, key: HelloKey, pending: PendingHello) -> bool {
+        if self.pending.len() >= MAX_PENDING_HELLOS {
+            return false;
+        }
+        let _ = self.pending.insert(key, pending);
+        true
+    }
+
+    /// Reads the hello assembled so far, finishing with it unless more
+    /// bytes are still to come.
+    fn advance(&mut self, key: HelloKey) -> Option<ServerName> {
+        let hello = self.pending.get(&key)?.read(key.0);
+        if matches!(hello, Hello::Incomplete { needed } if needed <= MAX_HELLO_BYTES) {
+            return None;
+        }
+        let _ = self.pending.remove(&key);
+        match hello {
+            Hello::Named(name) => Some(name),
+            Hello::Incomplete { .. } | Hello::Unnamed | Hello::NotTls => None,
+        }
     }
 }
 
@@ -251,9 +304,9 @@ mod tests {
         let base = u32::MAX - 100;
         let second_offset = u32::try_from(1400).unwrap();
 
-        let from_first = assembler.observe(client, server, base, &hello[..1400], at(0));
-        let from_retransmit = assembler.observe(client, server, base, &hello[..1400], at(0));
-        let from_second = assembler.observe(client, server, base.wrapping_add(second_offset), &hello[1400..], at(0));
+        let from_first = assembler.observe_tcp(client, server, base, &hello[..1400], at(0));
+        let from_retransmit = assembler.observe_tcp(client, server, base, &hello[..1400], at(0));
+        let from_second = assembler.observe_tcp(client, server, base.wrapping_add(second_offset), &hello[1400..], at(0));
 
         assert_eq!((from_first, from_retransmit), (None, None));
         assert_eq!(from_second.unwrap().name, "www.example.com");
@@ -261,11 +314,41 @@ mod tests {
     }
 
     #[test]
+    fn a_quic_hello_arriving_out_of_order_is_reassembled() {
+        let (client, server) = endpoints();
+        let record = client_hello(Some("rr1.googlevideo.com"), 1600, false);
+        let message = &record[5..];
+        let fragment = |start: usize, end: usize| CryptoData {
+            offset: u64::try_from(start).unwrap(),
+            bytes: message[start..end].to_vec(),
+        };
+        let mut assembler = HelloAssembler::default();
+
+        let early = assembler.observe_quic(client, server, &[fragment(1000, message.len()), fragment(500, 1000)], at(0));
+        let done = assembler.observe_quic(client, server, &[fragment(0, 500)], at(0));
+
+        assert_eq!(early, None);
+        assert_eq!(done.unwrap().name, "rr1.googlevideo.com");
+    }
+
+    #[test]
+    fn crypto_offsets_beyond_the_buffer_are_ignored() {
+        let (client, server) = endpoints();
+        let mut assembler = HelloAssembler::default();
+        let far = CryptoData {
+            offset: u64::MAX,
+            bytes: vec![1; 10],
+        };
+
+        assert_eq!(assembler.observe_quic(client, server, &[far], at(0)), None);
+    }
+
+    #[test]
     fn non_tls_streams_are_never_buffered() {
         let (client, server) = endpoints();
         let mut assembler = HelloAssembler::default();
 
-        let name = assembler.observe(client, server, 0, b"GET / HTTP/1.1\r\n", at(0));
+        let name = assembler.observe_tcp(client, server, 0, b"GET / HTTP/1.1\r\n", at(0));
 
         assert_eq!(name, None);
         assert!(assembler.pending.is_empty());
@@ -276,7 +359,7 @@ mod tests {
         let (client, server) = endpoints();
         let hello = client_hello(Some("example.com"), 1800, false);
         let mut assembler = HelloAssembler::default();
-        let _ = assembler.observe(client, server, 0, &hello[..1000], at(0));
+        let _ = assembler.observe_tcp(client, server, 0, &hello[..1000], at(0));
 
         assembler.expire(at(10));
 
