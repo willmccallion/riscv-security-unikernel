@@ -5,10 +5,11 @@
 //! - Penalty box for IP address banning
 //! - Token bucket rate limiting
 //!
-//! The time-sensitive structures ([`PenaltyBox`], [`TokenBucket`]) are
-//! time-source agnostic: callers pass a `now` value (cycles on the
-//! RISC-V unikernel, nanoseconds on the Linux daemon) alongside the
-//! duration/cost constants, which must share the same unit.
+//! [`PenaltyBox`](crate::security::dos::PenaltyBox) and
+//! [`TokenBucket`](crate::security::dos::TokenBucket) are time-source
+//! agnostic: callers pass a `now` value (cycles on the RISC-V unikernel,
+//! nanoseconds on the Linux daemon) alongside the duration/cost constants,
+//! which must share the same unit.
 
 /// Width of the Count-Min Sketch hash table.
 const CMS_WIDTH: usize = 128;

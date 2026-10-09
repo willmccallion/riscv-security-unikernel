@@ -68,7 +68,7 @@ impl MgmtAuth {
     ///
     /// The kernel embeds the key at compile time via `build.rs`; the
     /// host-side GUI loads it from the same source. The epoch starts
-    /// at zero — the kernel must call [`set_epoch`] during init with
+    /// at zero — the kernel must call [`Self::set_epoch`] during init with
     /// per-boot entropy before any mgmt packet can verify, so a packet
     /// captured before a reboot can never replay against the new boot.
     pub const fn new(key: [u8; 16]) -> Self {

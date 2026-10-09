@@ -945,8 +945,8 @@ fn format_metric(val: u64) -> String {
 /// Compiles a simple eBPF-like program to bytecode.
 ///
 /// Supports a limited instruction set for packet filtering:
-/// - "DROP ALL" - Drops all packets
-/// - "BLOCK <TCP|UDP> DST <port>" - Drops packets of that protocol to a
+/// - `DROP ALL` - Drops all packets
+/// - `BLOCK <TCP|UDP> DST <port>` - Drops packets of that protocol to a
 ///   destination port. Assumes a 20-byte IPv4 header; the VM has no
 ///   indirect loads to skip IP options.
 ///
