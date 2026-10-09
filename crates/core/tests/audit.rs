@@ -801,3 +801,49 @@ fn ddos_alert_fires_on_first_drop() {
     assert!(should_emit_ddos_alert(1, 0));
     assert!(should_emit_ddos_alert(99, 0));
 }
+
+#[test]
+fn firewall_unblock_removes_only_that_port() {
+    let mut fw = FirewallState::new();
+    for port in [22, 23, 80] {
+        fw.block_port(port).unwrap();
+    }
+
+    fw.unblock_port(23);
+
+    assert!(fw.is_blocked(22) && !fw.is_blocked(23) && fw.is_blocked(80));
+}
+
+#[test]
+fn firewall_unblock_frees_a_slot_in_a_full_table() {
+    let mut fw = FirewallState::new();
+    for port in 0..16 {
+        fw.block_port(port).unwrap();
+    }
+
+    fw.unblock_port(5);
+
+    assert_eq!(fw.block_port(100), Ok(()));
+}
+
+#[test]
+fn dynamic_rules_remove_deletes_only_that_pattern() {
+    let mut rules = DynamicRules::new();
+    rules.add(b"alpha").unwrap();
+    rules.add(b"beta").unwrap();
+    rules.add(b"gamma").unwrap();
+
+    rules.remove(b"beta");
+
+    assert!(rules.check(b"xx alpha xx") && !rules.check(b"xx beta xx") && rules.check(b"gamma"));
+}
+
+#[test]
+fn penalty_box_unban_lifts_an_active_ban() {
+    let mut pbox = PenaltyBox::new();
+    pbox.ban(&[10, 0, 0, 1], 1_000, 0);
+
+    pbox.unban(&[10, 0, 0, 1]);
+
+    assert!(!pbox.is_banned(&[10, 0, 0, 1], 1));
+}

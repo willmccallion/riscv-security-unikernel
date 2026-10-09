@@ -92,6 +92,16 @@ impl PenaltyBox {
         self.entries[idx] = BanEntry { ip, expiry };
     }
 
+    /// Lifts any ban on `ip_bytes` (network byte order).
+    pub fn unban(&mut self, ip_bytes: &[u8; 4]) {
+        let ip = u32::from_be_bytes(*ip_bytes);
+        for entry in &mut self.entries {
+            if entry.ip == ip {
+                entry.expiry = 0;
+            }
+        }
+    }
+
     /// Checks if an IP address is currently banned.
     ///
     /// # Arguments
