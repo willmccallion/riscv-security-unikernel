@@ -54,6 +54,8 @@ pub struct TcpSegment<'a> {
     pub src_port: u16,
     /// Destination port.
     pub dst_port: u16,
+    /// Sequence number of the first payload byte.
+    pub sequence: u32,
     /// The flag bits.
     pub flags: TcpFlags,
     /// Data after the header, without link-layer padding.
@@ -249,6 +251,7 @@ fn decode_tcp(segment: &[u8]) -> Option<TcpSegment<'_>> {
     Some(TcpSegment {
         src_port: read_u16(segment, 0)?,
         dst_port: read_u16(segment, 2)?,
+        sequence: read_array::<4>(segment, 4).map(u32::from_be_bytes)?,
         flags: TcpFlags::new(*segment.get(13)?),
         payload: segment.get(header_len..)?,
     })
@@ -306,6 +309,7 @@ mod tests {
         let mut t = vec![0u8; 20];
         t[0..2].copy_from_slice(&src_port.to_be_bytes());
         t[2..4].copy_from_slice(&dst_port.to_be_bytes());
+        t[4..8].copy_from_slice(&7u32.to_be_bytes());
         t[12] = 5 << 4;
         t[13] = flags;
         t.extend_from_slice(payload);
@@ -330,7 +334,7 @@ mod tests {
         assert_eq!(packet.src, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         assert_eq!(packet.dst, IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)));
         let Transport::Tcp(segment) = packet.transport else { panic!("not TCP") };
-        assert_eq!((segment.src_port, segment.dst_port), (51000, 443));
+        assert_eq!((segment.src_port, segment.dst_port, segment.sequence), (51000, 443, 7));
         assert!(segment.flags.is_connection_attempt());
     }
 

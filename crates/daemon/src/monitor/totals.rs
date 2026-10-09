@@ -157,6 +157,7 @@ mod tests {
     const TCP: Transport<'static> = Transport::Tcp(TcpSegment {
         src_port: 1,
         dst_port: 2,
+        sequence: 0,
         flags: TcpFlags::new(0x10),
         payload: &[],
     });

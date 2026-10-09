@@ -299,6 +299,7 @@ mod tests {
             transport: Transport::Tcp(TcpSegment {
                 src_port,
                 dst_port,
+                sequence: 0,
                 flags: TcpFlags::new(flags),
                 payload: &[],
             }),
