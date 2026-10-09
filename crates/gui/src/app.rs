@@ -37,6 +37,8 @@ struct Rule<T> {
     /// The command that installed it; `None` for rules built into the kernel.
     command: Option<CommandId>,
     status: CommandStatus,
+    /// The command removing it, while one is outstanding or failed.
+    removal: Option<(CommandId, CommandStatus)>,
 }
 
 impl<T> Rule<T> {
@@ -45,8 +47,39 @@ impl<T> Rule<T> {
             item,
             command: None,
             status: CommandStatus::Applied,
+            removal: None,
         }
     }
+
+    const fn issued(item: T, command: CommandId) -> Self {
+        Self {
+            item,
+            command: Some(command),
+            status: CommandStatus::Pending,
+            removal: None,
+        }
+    }
+
+    /// Applies a status update; returns `true` once the rule's removal has
+    /// been applied and the row should go.
+    fn update(&mut self, id: CommandId, status: CommandStatus) -> bool {
+        if self.command == Some(id) {
+            self.status = status;
+        }
+        match &mut self.removal {
+            Some((removal, _)) if *removal == id && status == CommandStatus::Applied => true,
+            Some((removal, removal_status)) if *removal == id => {
+                *removal_status = status;
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Applies a status update to every rule in `rules`, dropping removed ones.
+fn update_rules<T>(rules: &mut Vec<Rule<T>>, id: CommandId, status: CommandStatus) {
+    rules.retain_mut(|rule| !rule.update(id, status));
 }
 
 /// Main application state and UI implementation.
@@ -153,17 +186,9 @@ impl AegisApp {
     }
 
     fn apply_status(&mut self, id: CommandId, status: CommandStatus) {
-        let rules = self
-            .blocked_ports
-            .iter_mut()
-            .map(|r| (&r.command, &mut r.status))
-            .chain(self.dpi_signatures.iter_mut().map(|r| (&r.command, &mut r.status)))
-            .chain(self.ebpf_programs.iter_mut().map(|r| (&r.command, &mut r.status)));
-        for (command, rule_status) in rules {
-            if *command == Some(id) {
-                *rule_status = status;
-            }
-        }
+        update_rules(&mut self.blocked_ports, id, status);
+        update_rules(&mut self.dpi_signatures, id, status);
+        update_rules(&mut self.ebpf_programs, id, status);
     }
 
     fn drain_events(&mut self) {
@@ -443,7 +468,10 @@ impl AegisApp {
                                 .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
                                 .clicked()
                             {
-                                ban_target = log.src_ip.parse().ok();
+                                ban_target = log.src_ip.parse().ok().map(MgmtCommand::BanIp);
+                            }
+                            if ui.button("UNBAN IP").clicked() {
+                                ban_target = log.src_ip.parse().ok().map(MgmtCommand::UnbanIp);
                             }
                         });
                     });
@@ -490,8 +518,8 @@ impl AegisApp {
                 self.selected_log = None;
             }
         }
-        if let Some(ip) = ban_target {
-            let _ = self.issue(MgmtCommand::BanIp(ip));
+        if let Some(command) = ban_target {
+            let _ = self.issue(command);
         }
     }
 
@@ -580,12 +608,9 @@ impl AegisApp {
                     if ui.button("BLOCK PORT").clicked()
                         && let Ok(port) = self.sdn_port.trim().parse::<u16>()
                     {
-                        let command = Some(self.issue(MgmtCommand::BlockPort(port)));
-                        let status = CommandStatus::Pending;
-                        match self.blocked_ports.iter_mut().find(|r| r.item == port) {
-                            Some(rule) => (rule.command, rule.status) = (command, status),
-                            None => self.blocked_ports.push(Rule { item: port, command, status }),
-                        }
+                        let command = self.issue(MgmtCommand::BlockPort(port));
+                        self.blocked_ports.retain(|r| r.item != port);
+                        self.blocked_ports.push(Rule::issued(port, command));
                         self.sdn_port.clear();
                     }
                 });
@@ -596,12 +621,25 @@ impl AegisApp {
                     .id_source("fw_list")
                     .max_height(200.0)
                     .show(ui, |ui| {
+                        let mut unblock = None;
                         for rule in &self.blocked_ports {
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::RED, "BLOCK");
                                 ui.label(format!("TCP/UDP dst:{}", rule.item));
-                                status_badge(ui, rule.status);
+                                rule_status(ui, rule);
+                                if rule.status == CommandStatus::Applied
+                                    && rule.removal.is_none()
+                                    && ui.small_button("remove").clicked()
+                                {
+                                    unblock = Some(rule.item);
+                                }
                             });
+                        }
+                        if let Some(port) = unblock {
+                            let id = self.issue(MgmtCommand::UnblockPort(port));
+                            if let Some(rule) = self.blocked_ports.iter_mut().find(|r| r.item == port) {
+                                rule.removal = Some((id, CommandStatus::Pending));
+                            }
                         }
                     });
             });
@@ -614,13 +652,9 @@ impl AegisApp {
                     ui.text_edit_singleline(&mut self.sdn_sig);
                     if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
                         let sig = std::mem::take(&mut self.sdn_sig);
-                        let command =
-                            Some(self.issue(MgmtCommand::AddDpiPattern(sig.as_bytes().to_vec())));
-                        let status = CommandStatus::Pending;
-                        match self.dpi_signatures.iter_mut().find(|r| r.item == sig) {
-                            Some(rule) => (rule.command, rule.status) = (command, status),
-                            None => self.dpi_signatures.push(Rule { item: sig, command, status }),
-                        }
+                        let command = self.issue(MgmtCommand::AddDpiPattern(sig.as_bytes().to_vec()));
+                        self.dpi_signatures.retain(|r| r.item != sig);
+                        self.dpi_signatures.push(Rule::issued(sig, command));
                         self.sdn_sig.clear();
                     }
                 });
@@ -631,12 +665,28 @@ impl AegisApp {
                     .id_source("dpi_list")
                     .max_height(200.0)
                     .show(ui, |ui| {
+                        let mut remove = None;
                         for rule in &self.dpi_signatures {
                             ui.horizontal(|ui| {
                                 ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
                                 ui.monospace(format!("\"{}\"", rule.item));
-                                status_badge(ui, rule.status);
+                                rule_status(ui, rule);
+                                // Built-in signatures live in the kernel's automaton
+                                // and cannot be removed at runtime.
+                                if rule.command.is_some()
+                                    && rule.status == CommandStatus::Applied
+                                    && rule.removal.is_none()
+                                    && ui.small_button("remove").clicked()
+                                {
+                                    remove = Some(rule.item.clone());
+                                }
                             });
+                        }
+                        if let Some(sig) = remove {
+                            let id = self.issue(MgmtCommand::RemoveDpiPattern(sig.as_bytes().to_vec()));
+                            if let Some(rule) = self.dpi_signatures.iter_mut().find(|r| r.item == sig) {
+                                rule.removal = Some((id, CommandStatus::Pending));
+                            }
                         }
                     });
             });
@@ -678,12 +728,9 @@ impl AegisApp {
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
                     if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
-                        let command = Some(self.issue(MgmtCommand::UploadBpf(bytecode)));
-                        self.ebpf_programs.push(Rule {
-                            item: self.ebpf_code.trim().to_string(),
-                            command,
-                            status: CommandStatus::Pending,
-                        });
+                        let command = self.issue(MgmtCommand::UploadBpf(bytecode));
+                        self.ebpf_programs
+                            .push(Rule::issued(self.ebpf_code.trim().to_string(), command));
                     } else {
                         let entry = LogEntry {
                             timestamp: self.start_time.elapsed().as_secs_f64(),
@@ -703,7 +750,19 @@ impl AegisApp {
 
             // Right: active programs list
             cols[1].group(|ui| {
-                ui.label(egui::RichText::new("Uploaded Programs").strong());
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Uploaded Programs").strong());
+                    if ui.small_button("unload").clicked() {
+                        let id = self.issue(MgmtCommand::UnloadBpf);
+                        if let Some(active) = self
+                            .ebpf_programs
+                            .iter_mut()
+                            .rfind(|r| r.status == CommandStatus::Applied)
+                        {
+                            active.removal = Some((id, CommandStatus::Pending));
+                        }
+                    }
+                });
                 ui.add_space(5.0);
                 ui.separator();
                 ui.add_space(5.0);
@@ -725,7 +784,9 @@ impl AegisApp {
                                         format!("[{}]", i + 1),
                                     );
                                     ui.monospace(&rule.item);
-                                    if Some(i) == active {
+                                    if rule.removal.is_some() {
+                                        rule_status(ui, rule);
+                                    } else if Some(i) == active {
                                         ui.colored_label(egui::Color32::GREEN, "ACTIVE");
                                     } else if rule.status == CommandStatus::Applied {
                                         ui.colored_label(egui::Color32::GRAY, "replaced");
@@ -827,6 +888,20 @@ impl eframe::App for AegisApp {
             Tab::Sdn => self.ui_sdn(ui),
             Tab::Ebpf => self.ui_ebpf(ui),
         });
+    }
+}
+
+/// Shows a rule's status, or its removal's while one is in flight or failed.
+fn rule_status<T>(ui: &mut egui::Ui, rule: &Rule<T>) {
+    match rule.removal {
+        Some((_, CommandStatus::Pending)) => {
+            ui.colored_label(egui::Color32::GRAY, "removing");
+        }
+        Some((_, failed)) => {
+            ui.colored_label(egui::Color32::RED, "removal failed:");
+            status_badge(ui, failed);
+        }
+        None => status_badge(ui, rule.status),
     }
 }
 

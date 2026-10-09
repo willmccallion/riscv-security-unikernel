@@ -604,6 +604,21 @@ fn mgmt_body(command: &MgmtCommand) -> Option<Vec<u8>> {
         MgmtCommand::BlockPort(port) => Some(build_block_port_body(*port).to_vec()),
         MgmtCommand::AddDpiPattern(pattern) => build_add_dpi_body(pattern),
         MgmtCommand::UploadBpf(bytecode) => build_upload_bpf_body(bytecode),
+        MgmtCommand::UnbanIp(ip) => {
+            let mut body = build_ban_ip_body(*ip);
+            body[0] = ManagementMessageType::UnbanIp as u8;
+            Some(body.to_vec())
+        }
+        MgmtCommand::UnblockPort(port) => {
+            let mut body = build_block_port_body(*port);
+            body[0] = ManagementMessageType::UnblockPort as u8;
+            Some(body.to_vec())
+        }
+        MgmtCommand::RemoveDpiPattern(pattern) => build_add_dpi_body(pattern).map(|mut body| {
+            body[0] = ManagementMessageType::RemoveDpiPattern as u8;
+            body
+        }),
+        MgmtCommand::UnloadBpf => Some(vec![ManagementMessageType::UnloadBpfProgram as u8]),
     }
 }
 
@@ -878,6 +893,19 @@ mod tests {
         let data = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 0, 1, 0x01, 99];
 
         assert_eq!(parse_ack(&data), None);
+    }
+
+    #[test]
+    fn undo_commands_share_their_counterparts_operands() {
+        let ip = std::net::Ipv4Addr::new(10, 0, 0, 42);
+
+        let unban = mgmt_body(&MgmtCommand::UnbanIp(ip)).unwrap();
+        let unblock = mgmt_body(&MgmtCommand::UnblockPort(8443)).unwrap();
+        let remove = mgmt_body(&MgmtCommand::RemoveDpiPattern(b"abc".to_vec())).unwrap();
+
+        assert_eq!(unban, [ManagementMessageType::UnbanIp as u8, 10, 0, 0, 42]);
+        assert_eq!(unblock, [ManagementMessageType::UnblockPort as u8, 0x20, 0xFB]);
+        assert_eq!(remove, [ManagementMessageType::RemoveDpiPattern as u8, 3, b'a', b'b', b'c']);
     }
 
     #[test]

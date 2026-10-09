@@ -157,4 +157,12 @@ pub enum MgmtCommand {
     AddDpiPattern(Vec<u8>),
     /// Upload a compiled eBPF program (7 bytes per instruction, 64 max).
     UploadBpf(Vec<u8>),
+    /// Lift a ban on an IP address.
+    UnbanIp(std::net::Ipv4Addr),
+    /// Remove a firewall rule.
+    UnblockPort(u16),
+    /// Remove a runtime-added DPI signature.
+    RemoveDpiPattern(Vec<u8>),
+    /// Uninstall the eBPF program.
+    UnloadBpf,
 }
