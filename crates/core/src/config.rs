@@ -29,8 +29,10 @@ pub const CMS_DEPTH: usize = 3;
 /// Columns per row of the kernel's subnet (/24 and /16) Count-Min Sketch.
 pub const PREFIX_SKETCH_WIDTH: usize = 256;
 
-/// Rows of the kernel's subnet Count-Min Sketch.
-pub const PREFIX_SKETCH_DEPTH: usize = 2;
+/// Rows of the kernel's subnet Count-Min Sketch. A legitimate subnet is
+/// banned only if it shares every row's counter with an attacking one, so
+/// each row cuts those collateral bans 256-fold.
+pub const PREFIX_SKETCH_DEPTH: usize = 3;
 
 /// Estimated packets per second above which a /24 is banned. Only traffic
 /// from sources that passed their own heavy-hitter check counts.
