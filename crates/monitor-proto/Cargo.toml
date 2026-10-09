@@ -1,0 +1,17 @@
+[package]
+name = "monitor-proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Messages the security daemon's network monitor streams to its viewers."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

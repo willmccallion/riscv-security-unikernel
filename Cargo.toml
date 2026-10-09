@@ -8,6 +8,7 @@ members = [
     "crates/benches",
     "crates/qemu-harness",
     "crates/sketch-lab",
+    "crates/monitor-proto",
 ]
 # cargo-fuzz packages need nightly + libFuzzer instrumentation. Keep them
 # out of the default `cargo build` so contributors aren't forced onto
@@ -88,6 +89,7 @@ broken_intra_doc_links = "deny"
 
 [workspace.dependencies]
 sec-core = { path = "crates/core", version = "0.1.0", default-features = false }
+monitor-proto = { path = "crates/monitor-proto" }
 
 anyhow             = "1.0"
 tracing            = "0.1"
