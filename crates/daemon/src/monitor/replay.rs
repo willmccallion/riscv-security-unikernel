@@ -4,7 +4,7 @@ use super::command::Sandboxing;
 use super::net::{IpPrefix, LocalNetworks};
 use super::pcap::PcapReader;
 use super::pipeline::Monitor;
-use super::report;
+use super::report::{self, Detail};
 use crate::privileges;
 use anyhow::{Context, Result};
 use std::fs::File;
@@ -14,7 +14,7 @@ use std::path::Path;
 /// Replays `path` as fast as it can be read, using the file's timestamps,
 /// and prints a summary for every second of capture time. The process is
 /// confined as `sandboxing` says once the file is open.
-pub fn run(path: &Path, local_networks: &[IpPrefix], sandboxing: Sandboxing) -> Result<()> {
+pub fn run(path: &Path, local_networks: &[IpPrefix], sandboxing: Sandboxing, detail: Detail) -> Result<()> {
     privileges::drop_all()?;
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut reader = PcapReader::new(BufReader::new(file)).with_context(|| format!("in {}", path.display()))?;
@@ -29,11 +29,11 @@ pub fn run(path: &Path, local_networks: &[IpPrefix], sandboxing: Sandboxing) -> 
     let mut frame = Vec::new();
     while let Some(record) = reader.next_record(&mut frame).with_context(|| format!("in {}", path.display()))? {
         if let Some(summary) = monitor.observe(link, &frame, record.wire_len, record.at) {
-            report::print_summary(&summary);
+            report::print_summary(&summary, detail);
         }
     }
     if let Some(summary) = monitor.finish() {
-        report::print_summary(&summary);
+        report::print_summary(&summary, detail);
     }
     Ok(())
 }

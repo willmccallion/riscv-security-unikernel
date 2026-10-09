@@ -3,6 +3,7 @@
 
 use super::config::MonitorConfig;
 use super::net::IpPrefix;
+use super::report::Detail;
 use super::{live, replay};
 use crate::sandbox;
 use anyhow::{Result, bail};
@@ -34,6 +35,9 @@ pub struct MonitorArgs {
     /// only for kernels without Landlock.
     #[arg(long)]
     pub no_sandbox: bool,
+    /// Also show what could not be decoded and how naming went.
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 /// Whether the monitor confines itself before reading untrusted input.
@@ -86,6 +90,8 @@ pub struct MonitorOptions {
     pub extra_local_networks: Vec<IpPrefix>,
     /// Whether to confine the process before reading untrusted input.
     pub sandboxing: Sandboxing,
+    /// How much each summary shows.
+    pub detail: Detail,
 }
 
 impl MonitorOptions {
@@ -107,10 +113,12 @@ impl MonitorOptions {
         let mut extra_local_networks = file.local_networks;
         extra_local_networks.extend(args.local_networks);
         let sandboxing = if args.no_sandbox { Sandboxing::Unconfined } else { Sandboxing::Confine };
+        let detail = if args.verbose { Detail::Verbose } else { Detail::Normal };
         Ok(Self {
             source,
             extra_local_networks,
             sandboxing,
+            detail,
         })
     }
 }
@@ -124,9 +132,9 @@ pub fn run(args: MonitorArgs) -> Result<()> {
     let options = MonitorOptions::resolve(args, file)?;
     match &options.source {
         Source::Interfaces { names, duration } => {
-            live::run(names, *duration, &options.extra_local_networks, options.sandboxing)
+            live::run(names, *duration, &options.extra_local_networks, options.sandboxing, options.detail)
         }
-        Source::PcapFile(path) => replay::run(path, &options.extra_local_networks, options.sandboxing),
+        Source::PcapFile(path) => replay::run(path, &options.extra_local_networks, options.sandboxing, options.detail),
     }
 }
 

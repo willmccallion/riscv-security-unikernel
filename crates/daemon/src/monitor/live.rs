@@ -3,7 +3,7 @@
 use super::command::Sandboxing;
 use super::net::{IpPrefix, LocalNetworks};
 use super::pipeline::{Monitor, Summary};
-use super::report;
+use super::report::{self, Detail};
 use super::time::UnixNanos;
 use crate::af_packet::{self, Outgoing, RxRing};
 use crate::{netif, privileges};
@@ -24,6 +24,7 @@ pub fn run(
     duration: Option<Duration>,
     extra_local_networks: &[IpPrefix],
     sandboxing: Sandboxing,
+    detail: Detail,
 ) -> Result<()> {
     let mut rings = interfaces
         .iter()
@@ -58,15 +59,15 @@ pub fn run(
         }
         closed.extend(monitor.tick(UnixNanos::now()));
         if !closed.is_empty() {
-            report_closed(&closed, interfaces, &rings)?;
+            report_closed(&closed, interfaces, &rings, detail)?;
         }
     }
     Ok(())
 }
 
-fn report_closed(closed: &[Summary], interfaces: &[String], rings: &[RxRing]) -> Result<()> {
+fn report_closed(closed: &[Summary], interfaces: &[String], rings: &[RxRing], detail: Detail) -> Result<()> {
     for summary in closed {
-        report::print_summary(summary);
+        report::print_summary(summary, detail);
     }
     for (name, ring) in interfaces.iter().zip(rings) {
         let drops = ring.stats()?.drops;

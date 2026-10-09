@@ -1,6 +1,6 @@
 //! The monitor's processing core, independent of where frames come from.
 
-use super::decode::{self, LinkType, Packet, Transport};
+use super::decode::{self, LinkType, NotIp, Packet, Transport};
 use super::dns;
 use super::quic;
 use super::tls::ServerName;
@@ -10,6 +10,7 @@ use super::names::{HelloAssembler, HostName, NameSource, NameTable};
 use super::net::LocalNetworks;
 use super::time::UnixNanos;
 use super::totals::TrafficTotals;
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -23,6 +24,26 @@ const HOSTS_PER_SUMMARY: usize = 256;
 const NAME_CAPACITY: usize = 65_536;
 const DNS_PORT: u16 = 53;
 const MDNS_PORT: u16 = 5353;
+
+/// What the monitor could not decode, and how naming went, over one
+/// interval; shown with `--verbose`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Diagnostics {
+    /// Frames that were not IP, by why.
+    pub not_ip: BTreeMap<NotIp, u64>,
+    /// DNS responses read.
+    pub dns_responses: u64,
+    /// mDNS responses read.
+    pub mdns_responses: u64,
+    /// Client TCP segments that began like a TLS handshake.
+    pub tls_hellos_seen: u64,
+    /// Server names read from TLS over TCP.
+    pub tls_names: u64,
+    /// Client QUIC Initial packets decrypted.
+    pub quic_initials: u64,
+    /// Server names read from QUIC.
+    pub quic_names: u64,
+}
 
 /// A host listed in a summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +73,8 @@ pub struct Summary {
     /// table was full; non-zero means the traffic exceeds what the monitor
     /// can follow.
     pub untracked: u64,
+    /// Decoding and naming counts.
+    pub diagnostics: Diagnostics,
 }
 
 /// Turns timestamped frames into per-interval summaries.
@@ -70,6 +93,7 @@ pub struct Monitor {
     hosts: HostTable,
     names: NameTable,
     hellos: HelloAssembler,
+    diagnostics: Diagnostics,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +115,7 @@ impl Monitor {
             hosts: HostTable::new(HOST_CAPACITY),
             names: NameTable::new(NAME_CAPACITY),
             hellos: HelloAssembler::default(),
+            diagnostics: Diagnostics::default(),
         }
     }
 
@@ -112,13 +137,13 @@ impl Monitor {
             start: at.floor_to(self.interval),
             totals: TrafficTotals::default(),
         });
-        match decode::decode(link, frame) {
-            Some(packet) => {
-                let direction = self.local.direction(packet.src, packet.dst);
-                open.totals.record(&packet, direction, wire_len);
-                self.track(&packet, wire_len, at);
-            }
-            None => open.totals.record_non_ip(wire_len),
+        if let Some(packet) = decode::decode(link, frame) {
+            let direction = self.local.direction(packet.src, packet.dst);
+            open.totals.record(&packet, direction, wire_len);
+            self.track(&packet, wire_len, at);
+        } else {
+            open.totals.record_non_ip(wire_len);
+            *self.diagnostics.not_ip.entry(decode::classify_rejected(link, frame)).or_default() += 1;
         }
         closed
     }
@@ -138,22 +163,31 @@ impl Monitor {
             Transport::Udp(udp) => {
                 if let Some(role) = role.filter(|r| r.from_client) {
                     let crypto = quic::client_initial_crypto(udp.payload);
+                    if !crypto.is_empty() {
+                        self.diagnostics.quic_initials += 1;
+                    }
                     if let Some(hello) = self.hellos.observe_quic(role.client, role.server, &crypto, at) {
+                        self.diagnostics.quic_names += 1;
                         self.learn_server_name(role.server.addr, &hello, at);
                     }
                 }
-                let source = match udp.src_port {
-                    DNS_PORT => NameSource::Dns,
-                    MDNS_PORT => NameSource::Mdns,
+                let (source, counter) = match udp.src_port {
+                    DNS_PORT => (NameSource::Dns, &mut self.diagnostics.dns_responses),
+                    MDNS_PORT => (NameSource::Mdns, &mut self.diagnostics.mdns_responses),
                     _ => return,
                 };
                 if let Some(response) = dns::parse_response(udp.payload) {
+                    *counter += 1;
                     self.names.learn_from_dns(&response, source, at);
                 }
             }
             Transport::Tcp(tcp) => {
                 let Some(role) = role.filter(|r| r.from_client) else { return };
+                if tcp.payload.starts_with(&[22, 3]) {
+                    self.diagnostics.tls_hellos_seen += 1;
+                }
                 if let Some(hello) = self.hellos.observe_tcp(role.client, role.server, tcp.sequence, tcp.payload, at) {
+                    self.diagnostics.tls_names += 1;
                     self.learn_server_name(role.server.addr, &hello, at);
                 }
             }
@@ -213,6 +247,7 @@ impl Monitor {
             hosts_omitted,
             active_flows: self.flows.active_count(),
             untracked: self.flows.take_untracked() + self.hosts.take_untracked(),
+            diagnostics: std::mem::take(&mut self.diagnostics),
         }
     }
 }
@@ -286,6 +321,7 @@ mod tests {
         let summary = m.finish().unwrap();
         assert_eq!(summary.totals.non_ip.packets, 1);
         assert_eq!(summary.totals.ip().packets, 0);
+        assert_eq!(summary.diagnostics.not_ip.get(&NotIp::EtherType(0x0806)), Some(&1));
     }
 
     #[test]
@@ -322,6 +358,7 @@ mod tests {
         let _ = m.observe(LinkType::Ethernet, &frame, 90, UnixNanos::new(SECOND));
         let summary = m.finish().unwrap();
 
+        assert_eq!(summary.diagnostics.dns_responses, 1);
         let resolver = summary.hosts.iter().find(|h| h.activity.addr.to_string() == "1.1.1.1").unwrap();
         assert_eq!(resolver.name.as_ref().map(|n| &*n.name), Some("one.one"));
     }

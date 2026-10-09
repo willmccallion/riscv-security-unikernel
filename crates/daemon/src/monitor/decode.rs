@@ -7,6 +7,7 @@
 //! is read as "to the end of the frame": segmentation offload hands
 //! capture sockets outgoing TCP super-packets that leave it unset.
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// How frames on an interface or in a capture file begin.
@@ -139,6 +140,68 @@ pub fn decode(link: LinkType, frame: &[u8]) -> Option<Packet<'_>> {
         LinkType::RawIp => decode_ip(frame),
         LinkType::LinuxSll => decode_ethertype(read_u16(frame, SLL_PROTOCOL_OFFSET)?, frame.get(SLL_HEADER_LEN..)?),
         LinkType::LinuxSll2 => decode_ethertype(read_u16(frame, SLL2_PROTOCOL_OFFSET)?, frame.get(SLL2_HEADER_LEN..)?),
+    }
+}
+
+/// Why a frame did not decode as an IP packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NotIp {
+    /// Too short to hold its link header.
+    Truncated,
+    /// A link-layer protocol other than IP, by EtherType; values below
+    /// 0x0600 are 802.3 lengths, used by LLC protocols such as STP.
+    EtherType(u16),
+    /// Labelled IPv4 or IPv6, but malformed.
+    MalformedIp,
+    /// A frame on a bare-IP link whose first byte names no IP version.
+    UnknownRaw(u8),
+}
+
+impl fmt::Display for NotIp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated => f.write_str("truncated"),
+            Self::EtherType(0x0806) => f.write_str("ARP"),
+            Self::EtherType(0x88CC) => f.write_str("LLDP"),
+            Self::EtherType(0x888E) => f.write_str("EAPOL"),
+            Self::EtherType(length) if *length < 0x0600 => f.write_str("802.3/LLC"),
+            Self::EtherType(other) => write!(f, "EtherType {other:#06x}"),
+            Self::MalformedIp => f.write_str("malformed IP"),
+            Self::UnknownRaw(first) => write!(f, "bare frame starting {first:#04x}"),
+        }
+    }
+}
+
+/// Says why `frame`, which [`decode`] rejected, is not an IP packet.
+pub fn classify_rejected(link: LinkType, frame: &[u8]) -> NotIp {
+    let (ethertype, rest) = match link {
+        LinkType::RawIp => {
+            return match frame.first() {
+                None => NotIp::Truncated,
+                Some(&first) if first >> 4 == 4 || first >> 4 == 6 => NotIp::MalformedIp,
+                Some(&first) => NotIp::UnknownRaw(first),
+            };
+        }
+        LinkType::Ethernet => (read_u16(frame, 12), frame.get(ETHERNET_HEADER_LEN..)),
+        LinkType::LinuxSll => (read_u16(frame, SLL_PROTOCOL_OFFSET), frame.get(SLL_HEADER_LEN..)),
+        LinkType::LinuxSll2 => (read_u16(frame, SLL2_PROTOCOL_OFFSET), frame.get(SLL2_HEADER_LEN..)),
+    };
+    let (Some(mut ethertype), Some(mut rest)) = (ethertype, rest) else {
+        return NotIp::Truncated;
+    };
+    for _ in 0..MAX_VLAN_TAGS {
+        if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
+            break;
+        }
+        let (Some(inner), Some(after)) = (read_u16(rest, 2), rest.get(VLAN_TAG_LEN..)) else {
+            return NotIp::Truncated;
+        };
+        ethertype = inner;
+        rest = after;
+    }
+    match ethertype {
+        ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => NotIp::MalformedIp,
+        other => NotIp::EtherType(other),
     }
 }
 
@@ -415,6 +478,24 @@ mod tests {
         assert_eq!(decode(LinkType::Ethernet, &arp), None);
         assert_eq!(decode(LinkType::Ethernet, &truncated), None);
         assert_eq!(decode(LinkType::RawIp, &[]), None);
+    }
+
+    #[test]
+    fn rejected_frames_are_classified() {
+        let arp = ethertype_frame(0x0806, &[0; 28]);
+        let stp = ethertype_frame(0x0026, &[0; 38]);
+        let bad_ip = ethertype_frame(ETHERTYPE_IPV4, &[0x45, 0, 0]);
+
+        assert_eq!(classify_rejected(LinkType::Ethernet, &arp).to_string(), "ARP");
+        assert_eq!(classify_rejected(LinkType::Ethernet, &stp).to_string(), "802.3/LLC");
+        assert_eq!(classify_rejected(LinkType::Ethernet, &bad_ip), NotIp::MalformedIp);
+        assert_eq!(classify_rejected(LinkType::Ethernet, &[0; 5]), NotIp::Truncated);
+        assert_eq!(classify_rejected(LinkType::RawIp, &[0x00, 0x01]), NotIp::UnknownRaw(0));
+        assert_eq!(classify_rejected(LinkType::RawIp, &[0x60]), NotIp::MalformedIp);
+    }
+
+    fn ethertype_frame(ethertype: u16, payload: &[u8]) -> Vec<u8> {
+        ethernet(ethertype, payload)
     }
 
     #[test]
