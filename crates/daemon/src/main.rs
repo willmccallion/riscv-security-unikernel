@@ -14,10 +14,10 @@ mod clock;
 mod key;
 mod synth;
 
-/// The daemon's engine: a 65536 x 4 heavy-hitter sketch (512 KB), which
+/// The daemon's engine: a 65536 x 4 per-source sketch (512 KB), which
 /// flags no legitimate source past 500k packets per second in the
-/// sketch-lab study.
-pub type DaemonEngine = sec_core::engine::Engine<65_536, 4>;
+/// sketch-lab study, and a 16384 x 4 per-subnet one (128 KB).
+pub type DaemonEngine = sec_core::engine::Engine<65_536, 4, 16_384, 4>;
 
 use af_packet::{RxRing, TxSocket};
 use anyhow::{Context, Result};

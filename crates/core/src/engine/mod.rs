@@ -9,8 +9,9 @@
 mod report;
 
 use crate::config::{
-    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH, SOURCE_COUNTER_REGISTERS,
-    SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM,
+    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH, PREFIX_SKETCH_DEPTH,
+    PREFIX_SKETCH_WIDTH, SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM,
+    SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
     IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
     MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_TOKEN_COST_CYCLES, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
@@ -22,7 +23,7 @@ use crate::net::tcp::extract_ports;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
-use crate::security::hash::siphash24;
+use crate::security::hash::{derive_key, siphash24};
 use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
@@ -98,10 +99,16 @@ struct BpfSlot {
 /// Every security subsystem, plus the state the pipeline carries between
 /// packets.
 ///
-/// The heavy-hitter sketch's dimensions are type parameters so the kernel
-/// can use a small one (the defaults) and the Linux daemon a large one.
+/// The per-source and per-subnet sketches' dimensions are type parameters
+/// so the kernel can use small ones (the defaults) and the Linux daemon
+/// large ones.
 #[derive(Debug)]
-pub struct Engine<const SKETCH_WIDTH: usize = { CMS_WIDTH }, const SKETCH_DEPTH: usize = { CMS_DEPTH }> {
+pub struct Engine<
+    const SKETCH_WIDTH: usize = { CMS_WIDTH },
+    const SKETCH_DEPTH: usize = { CMS_DEPTH },
+    const PREFIX_WIDTH: usize = { PREFIX_SKETCH_WIDTH },
+    const PREFIX_DEPTH: usize = { PREFIX_SKETCH_DEPTH },
+> {
     ac: dpi::AhoCorasick,
     dyn_rules: dpi::DynamicRules,
     fw: firewall::FirewallState,
@@ -110,6 +117,8 @@ pub struct Engine<const SKETCH_WIDTH: usize = { CMS_WIDTH }, const SKETCH_DEPTH:
     /// sketch shares.
     source_key: [u8; 16],
     sources: sketch::HyperLogLog<SOURCE_COUNTER_REGISTERS>,
+    /// Packet rates per /24 and /16, keyed by the prefix.
+    prefixes: sketch::CountMinSketch<PREFIX_WIDTH, PREFIX_DEPTH>,
     source_surge: anomaly::SurgeDetector,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
@@ -126,7 +135,9 @@ pub struct Engine<const SKETCH_WIDTH: usize = { CMS_WIDTH }, const SKETCH_DEPTH:
     stats: IntervalStats,
 }
 
-impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, SKETCH_DEPTH> {
+impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: usize, const PREFIX_DEPTH: usize>
+    Engine<SKETCH_WIDTH, SKETCH_DEPTH, PREFIX_WIDTH, PREFIX_DEPTH>
+{
     /// Creates an engine whose mgmt plane verifies with `mgmt_key`.
     ///
     /// [`Self::init`] must run before the first packet.
@@ -138,6 +149,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
             cms: sketch::CountMinSketch::new([0; 16]),
             source_key: [0; 16],
             sources: sketch::HyperLogLog::new([0; 16]),
+            prefixes: sketch::CountMinSketch::new([0; 16]),
             source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
@@ -181,6 +193,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
         self.syn_secret = secrets.syn_cookie;
         self.cms.rekey(secrets.cms_key);
         self.source_key = secrets.cms_key;
+        self.prefixes.rekey(derive_key(&secrets.cms_key, b"subnet sketch"));
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
@@ -214,6 +227,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
     /// [`CMS_DECAY_INTERVAL_CYCLES`](crate::config::CMS_DECAY_INTERVAL_CYCLES).
     pub fn end_detection_interval<S: PacketSink>(&mut self, sink: &mut S) {
         self.cms.decay();
+        self.prefixes.decay();
         let distinct_sources = self.sources.estimate();
         self.sources.clear();
         if let Some(sources) = self.source_surge.observe(distinct_sources) {
@@ -282,6 +296,16 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
                 drop = true;
             } else if self.cms.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
                 self.pbox.ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
+                drop = true;
+            } else if let Some(subnet) = self.count_subnets(meta.src_ip) {
+                self.pbox.ban_prefix(subnet.prefix, IP_BAN_DURATION_CYCLES as u64, now);
+                let alert = AlertMeta {
+                    src_ip: subnet.prefix.network(),
+                    prefix_len: subnet.prefix.prefix_len(),
+                    value: u32::from(subnet.rate),
+                    ..meta
+                };
+                self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
                 drop = true;
             }
         }
@@ -380,6 +404,22 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
             self.alert(meta, AlertReason::MgmtAuthFail, now, sink);
         }
         Verdict::Management
+    }
+
+    /// Counts a packet from `src_ip` against its /24 and /16, returning the
+    /// first that is over its threshold.
+    fn count_subnets(&mut self, src_ip: [u8; 4]) -> Option<HeavySubnet> {
+        let levels = [(24, SUBNET_24_THRESHOLD), (16, SUBNET_16_THRESHOLD)];
+        let mut heavy = None;
+        for (len, threshold) in levels {
+            let prefix = dos::Ipv4Prefix::new(src_ip, len)?;
+            let network = prefix.network();
+            let rate = self.prefixes.insert(&[len, network[0], network[1], network[2]]);
+            if heavy.is_none() && rate > threshold {
+                heavy = Some(HeavySubnet { prefix, rate });
+            }
+        }
+        heavy
     }
 
     /// Records the packet against its flow, alerting on a sample of new
@@ -570,6 +610,13 @@ fn pattern_operand(body: &[u8]) -> Option<&[u8]> {
 fn ip_operand(body: &[u8]) -> Option<[u8; 4]> {
     use mgmt_packet::ban_ip::IP_OFFSET;
     body.get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?.try_into().ok()
+}
+
+/// A subnet whose packet rate passed its threshold.
+#[derive(Debug, Clone, Copy)]
+struct HeavySubnet {
+    prefix: dos::Ipv4Prefix,
+    rate: u16,
 }
 
 /// The IPv4 header fields the pipeline acts on.

@@ -26,6 +26,19 @@ pub const CMS_WIDTH: usize = 1024;
 /// Rows (independent hashes) of the kernel's heavy-hitter Count-Min Sketch.
 pub const CMS_DEPTH: usize = 3;
 
+/// Columns per row of the kernel's subnet (/24 and /16) Count-Min Sketch.
+pub const PREFIX_SKETCH_WIDTH: usize = 256;
+
+/// Rows of the kernel's subnet Count-Min Sketch.
+pub const PREFIX_SKETCH_DEPTH: usize = 2;
+
+/// Estimated packets per second above which a /24 is banned. Only traffic
+/// from sources that passed their own heavy-hitter check counts.
+pub const SUBNET_24_THRESHOLD: u16 = 1_000;
+
+/// Estimated packets per second above which a /16 is banned.
+pub const SUBNET_16_THRESHOLD: u16 = 5_000;
+
 /// HyperLogLog registers counting distinct sources per detection interval
 /// (one byte each; about 6.5% error at 256).
 pub const SOURCE_COUNTER_REGISTERS: usize = 256;

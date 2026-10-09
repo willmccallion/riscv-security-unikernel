@@ -40,6 +40,10 @@ pub enum AlertReason {
     /// interval, typical of a flood from spoofed addresses. The value is
     /// the estimated number of sources; nothing is banned.
     SourceSurge = 13,
+    /// A /24 or /16 sent more than its threshold, though no single host in
+    /// it did; the subnet was banned. The alert's source is the network,
+    /// with its prefix length, and the value its estimated packet rate.
+    SubnetFlood = 14,
 }
 
 impl AlertReason {
@@ -73,6 +77,7 @@ impl AlertReason {
             11 => Some(Self::BpfTimeout),
             12 => Some(Self::BpfInvalidAction),
             13 => Some(Self::SourceSurge),
+            14 => Some(Self::SubnetFlood),
             _ => None,
         }
     }
