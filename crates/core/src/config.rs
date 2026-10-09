@@ -34,6 +34,15 @@ pub const MGMT_BUCKET_CAPACITY: u64 = 16;
 /// the mgmt port can cause.
 pub const MGMT_TOKEN_COST_CYCLES: u64 = 10_000_000;
 
+/// Alerts that may go out in one burst before the alert rate limit applies.
+pub const ALERT_BUCKET_CAPACITY: u64 = 32;
+
+/// Time-source units per alert token: about 1000 alerts per second at
+/// 1 GHz. Keeps a flood of dropped traffic from becoming an equal flood
+/// of alerts on the mgmt network; drop counters in telemetry still
+/// count every packet.
+pub const ALERT_TOKEN_COST_CYCLES: u64 = 1_000_000;
+
 /// UDP port number for telemetry broadcasts.
 pub const TELEMETRY_PORT: u16 = 8888;
 

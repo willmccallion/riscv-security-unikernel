@@ -9,6 +9,7 @@
 mod report;
 
 use crate::config::{
+    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES,
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
     IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
     MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_TOKEN_COST_CYCLES, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
@@ -103,6 +104,7 @@ pub struct Engine {
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
     mgmt_limiter: dos::TokenBucket,
+    alert_limiter: dos::TokenBucket,
     vm: VM,
     bpf: BpfSlot,
     flows: flow::FlowTable,
@@ -127,6 +129,7 @@ impl Engine {
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
             mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
+            alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES),
             vm: VM::new(),
             bpf: BpfSlot {
                 program: [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE],
@@ -262,7 +265,7 @@ impl Engine {
         if drop || !self.limiter.allow(now) {
             self.stats.ddos += 1;
             if should_emit_ddos_alert(self.stats.ddos, DDOS_ALERT_SAMPLE_RATE) {
-                self.alert(&meta, AlertReason::Ddos, sink);
+                self.alert(&meta, AlertReason::Ddos, now, sink);
             }
             return Verdict::Dropped(AlertReason::Ddos);
         }
@@ -275,7 +278,7 @@ impl Engine {
             && heuristic::HeuristicEngine::check_tcp_flags(flags).is_some()
         {
             self.stats.heuristic += 1;
-            return self.drop_with_alert(&meta, AlertReason::Heuristic, sink);
+            return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
         }
 
         if self.bpf.len > 0 {
@@ -288,13 +291,13 @@ impl Engine {
             };
             if let Some(reason) = drop_reason {
                 self.stats.ebpf += 1;
-                return self.drop_with_alert(&meta, reason, sink);
+                return self.drop_with_alert(&meta, reason, now, sink);
             }
         }
 
         if dst_port != 0 && self.fw.is_blocked(dst_port) {
             self.stats.firewall += 1;
-            return self.drop_with_alert(&meta, AlertReason::Firewall, sink);
+            return self.drop_with_alert(&meta, AlertReason::Firewall, now, sink);
         }
 
         let syn_secret = &self.syn_secret;
@@ -304,7 +307,7 @@ impl Engine {
 
         if heuristic::HeuristicEngine::check_payload(payload).is_some() {
             self.stats.heuristic += 1;
-            return self.drop_with_alert(&meta, AlertReason::Heuristic, sink);
+            return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
         }
 
         if payload.len() < 4 {
@@ -313,7 +316,7 @@ impl Engine {
 
         if self.ac.scan(payload) || self.dyn_rules.check(payload) {
             self.stats.malware += 1;
-            self.alert(&meta, AlertReason::Malware, sink);
+            self.alert(&meta, AlertReason::Malware, now, sink);
             Verdict::Dropped(AlertReason::Malware)
         } else {
             self.stats.passed += 1;
@@ -349,7 +352,7 @@ impl Engine {
             let outcome = self.dispatch_mgmt(command.body, now);
             self.send_ack(command.seq, command.body, outcome, sink);
         } else {
-            self.alert(meta, AlertReason::MgmtAuthFail, sink);
+            self.alert(meta, AlertReason::MgmtAuthFail, now, sink);
         }
         Verdict::Management
     }
@@ -367,7 +370,7 @@ impl Engine {
             now,
         );
         if is_new && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0 {
-            self.alert(meta, AlertReason::Flow, sink);
+            self.alert(meta, AlertReason::Flow, now, sink);
         }
     }
 
@@ -375,14 +378,17 @@ impl Engine {
         &mut self,
         meta: &AlertMeta,
         reason: AlertReason,
+        now: u64,
         sink: &mut S,
     ) -> Verdict {
-        self.alert(meta, reason, sink);
+        self.alert(meta, reason, now, sink);
         Verdict::Dropped(reason)
     }
 
-    fn alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, sink: &mut S) {
-        self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
+    fn alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, now: u64, sink: &mut S) {
+        if self.alert_limiter.allow(now) {
+            self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
+        }
     }
 
     fn send_ack<S: PacketSink>(&mut self, seq: u32, body: &[u8], outcome: MgmtOutcome, sink: &mut S) {

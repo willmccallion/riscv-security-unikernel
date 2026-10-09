@@ -152,3 +152,17 @@ fn telemetry_is_a_signed_report_carrying_the_epoch() {
     let epoch = u64::from_be_bytes(body[epoch_slot..epoch_slot + 8].try_into().unwrap());
     assert_eq!(epoch, u64::from(common::EPOCH));
 }
+
+#[test]
+fn a_flood_of_blocked_traffic_raises_a_bounded_number_of_alerts() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    for i in 0..500u16 {
+        let src = [10, 3, (i >> 8) as u8, i as u8];
+        let _ = e.process(&mut udp(src, 5000, DEFAULT_BLOCKED_PORT, b"x"), u64::from(i), &mut sink);
+    }
+
+    assert_eq!(e.interval_stats().firewall, 50, "the global rate limit admits 50");
+    assert!(sink.alert_reasons().len() <= 32, "{} alerts", sink.alert_reasons().len());
+}
