@@ -12,7 +12,9 @@
 
 use anyhow::{Context, Result, bail};
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 
 /// Rejected system calls fail with "operation not permitted".
 const DENY: u32 = libc::SECCOMP_RET_ERRNO | libc::EPERM as u32;
@@ -210,8 +212,9 @@ fn seccomp_filter(writes: WriteAccess) -> Vec<libc::sock_filter> {
             WriteAccess::StdioAndViewers { fds_from } => filter.extend(allow_stdio_or_from(call, fds_from)),
         }
     }
-    if let WriteAccess::StdioAndViewers { .. } = writes {
+    if let WriteAccess::StdioAndViewers { fds_from } = writes {
         filter.extend(allow(libc::SYS_accept4));
+        filter.extend(allow_send_to_connected_from(fds_from));
     }
     filter.extend(allow_unless_argument_has(libc::SYS_mmap, 2, PROT_EXEC));
     filter.push(ret(DENY));
@@ -298,6 +301,24 @@ const fn allow_stdio_or_from(call: libc::c_long, fds_from: u32) -> [libc::sock_f
     ]
 }
 
+/// Allows `sendto`, which the standard library uses to write to sockets,
+/// on descriptors numbered `fds_from` or above and only without a
+/// destination address, as on a connected viewer; refuses it otherwise.
+const fn allow_send_to_connected_from(fds_from: u32) -> [libc::sock_filter; 9] {
+    const DESTINATION_ARG: u32 = 4;
+    [
+        jump_if_equal(syscall_number(libc::SYS_sendto), 0, 8),
+        load(argument_offset(0)),
+        jump_if_at_least(fds_from, 0, 5),
+        load(argument_offset(DESTINATION_ARG)),
+        jump_if_equal(0, 0, 3),
+        load(argument_offset(DESTINATION_ARG) + 4),
+        jump_if_equal(0, 0, 1),
+        ret(ALLOW),
+        ret(DENY),
+    ]
+}
+
 /// Allows `call` unless argument `index` has any of `bits` set.
 const fn allow_unless_argument_has(call: libc::c_long, index: u32, bits: u32) -> [libc::sock_filter; 5] {
     [
@@ -320,6 +341,12 @@ pub fn check() -> Result<()> {
     if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
         bail!("prctl(PR_SET_NO_NEW_PRIVS): {}", io::Error::last_os_error());
     }
+    let (_capture_reader, mut capture_stand_in) = std::io::pipe().context("create a pipe")?;
+    let (viewer_end, mut monitor_end) = UnixStream::pair().context("create a socket pair")?;
+    let fds_from = u32::try_from(viewer_end.as_raw_fd().min(monitor_end.as_raw_fd())).context("descriptor out of range")?;
+    // Plain read(2): the recvfrom a UnixStream uses is rightly refused.
+    let mut viewer_end = std::fs::File::from(OwnedFd::from(viewer_end));
+
     let abi = landlock_abi()?;
     restrict_with_landlock(abi)?;
     println!("sandbox-check: Landlock ABI v{abi} applied");
@@ -327,19 +354,40 @@ pub fn check() -> Result<()> {
         ("read /etc/passwd", std::fs::read("/etc/passwd").map(drop)),
         ("run a program", std::process::Command::new("true").status().map(drop)),
     ]);
-    install_seccomp_filter(&seccomp_filter(WriteAccess::StdioOnly))?;
-    println!("sandbox-check: seccomp filter added");
+    install_seccomp_filter(&seccomp_filter(WriteAccess::StdioAndViewers { fds_from }))?;
+    println!("sandbox-check: seccomp filter added, as when serving viewers");
     allowed.extend(attempt(&[
         ("read /etc/passwd", std::fs::read("/etc/passwd").map(drop)),
         ("run a program", std::process::Command::new("true").status().map(drop)),
         ("open a network socket", open_socket()),
         ("create executable memory", map_executable_memory()),
+        ("write below the viewers (where capture sockets are)", capture_stand_in.write_all(b"x")),
     ]));
+    let streamed = stream_to_viewer(&mut monitor_end, &mut viewer_end);
+    match &streamed {
+        Ok(()) => println!("  works: streaming a summary line to a connected viewer"),
+        Err(e) => println!("  BROKEN: streaming to a connected viewer ({e})"),
+    }
     if !allowed.is_empty() {
         bail!("the sandbox let through: {}", allowed.join(", "));
     }
-    println!("sandbox-check: everything above was refused, as it should be");
+    streamed.context("the sandbox blocks streaming to viewers")?;
+    println!("sandbox-check: everything above was refused, and viewers still work");
     Ok(())
+}
+
+/// Writes a line from the monitor's end of a connection and reads it back
+/// at the viewer's, as a served viewer would receive it.
+fn stream_to_viewer(monitor_end: &mut UnixStream, viewer_end: &mut std::fs::File) -> io::Result<()> {
+    const LINE: &[u8] = b"{\"type\":\"summary\"}\n";
+    monitor_end.write_all(LINE)?;
+    let mut received = [0u8; LINE.len()];
+    viewer_end.read_exact(&mut received)?;
+    if received == LINE {
+        Ok(())
+    } else {
+        Err(io::Error::other("the viewer received something else"))
+    }
 }
 
 /// Reports each attempt's outcome; returns those that were allowed.
@@ -462,7 +510,17 @@ mod tests {
         assert_eq!(verdict_serving(libc::SYS_write, [3, 0, 0, 0, 0, 0]), DENY, "a capture socket");
         assert_eq!(verdict_serving(libc::SYS_write, [6, 0, 0, 0, 0, 0]), DENY, "the highest capture socket");
         assert_eq!(verdict_serving(libc::SYS_accept4, [8, 0, 0, 0, 0, 0]), ALLOW);
-        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 0, 0, 0, 0]), DENY);
+    }
+
+    #[test]
+    fn serving_allows_sendto_only_to_connected_viewers() {
+        let some_address = 0x7FFF_0000_1000;
+
+        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, 0, 0]), ALLOW);
+        assert_eq!(verdict_serving(libc::SYS_sendto, [3, 0, 100, 0, 0, 0]), DENY, "a capture socket");
+        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, some_address, 16]), DENY);
+        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, 1 << 40, 16]), DENY, "high half only");
+        assert_eq!(verdict(libc::SYS_sendto, [9, 0, 100, 0, 0, 0]), DENY, "not serving");
     }
 
     #[test]
