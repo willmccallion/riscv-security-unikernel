@@ -19,12 +19,12 @@ use crate::config::{
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
-use crate::net::tcp::extract_ports;
+use crate::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
 use crate::security::hash::{derive_key, siphash24};
-use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
+use crate::security::{anomaly, dos, scan, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
 
@@ -119,6 +119,7 @@ pub struct Engine<
     sources: sketch::HyperLogLog<SOURCE_COUNTER_REGISTERS>,
     /// Packet rates per /24 and /16, keyed by the prefix.
     prefixes: sketch::CountMinSketch<PREFIX_WIDTH, PREFIX_DEPTH>,
+    port_scans: scan::PortScanDetector,
     source_surge: anomaly::SurgeDetector,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
@@ -150,6 +151,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
             source_key: [0; 16],
             sources: sketch::HyperLogLog::new([0; 16]),
             prefixes: sketch::CountMinSketch::new([0; 16]),
+            port_scans: scan::PortScanDetector::new([0; 16]),
             source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
@@ -194,6 +196,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
         self.cms.rekey(secrets.cms_key);
         self.source_key = secrets.cms_key;
         self.prefixes.rekey(derive_key(&secrets.cms_key, b"subnet sketch"));
+        self.port_scans.rekey(derive_key(&secrets.cms_key, b"port scans"));
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
@@ -228,6 +231,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
     pub fn end_detection_interval<S: PacketSink>(&mut self, sink: &mut S) {
         self.cms.decay();
         self.prefixes.decay();
+        self.port_scans.end_interval();
         let distinct_sources = self.sources.estimate();
         self.sources.clear();
         if let Some(sources) = self.source_surge.observe(distinct_sources) {
@@ -306,6 +310,14 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
                     ..meta
                 };
                 self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
+                drop = true;
+            } else if let Some(scan) = self.count_connection_attempt(packet, ip, meta.dst_port) {
+                self.pbox.ban(&scan.source, IP_BAN_DURATION_CYCLES as u64, now);
+                let alert = AlertMeta {
+                    value: scan.distinct_ports,
+                    ..meta
+                };
+                self.detector_alert(&alert, AlertReason::PortScan, sink);
                 drop = true;
             }
         }
@@ -420,6 +432,18 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
             }
         }
         heavy
+    }
+
+    /// Feeds a TCP connection attempt (SYN without ACK) to the port-scan
+    /// detector. Replies and established traffic never count, so a server
+    /// answering many client ports is not mistaken for a scanner.
+    fn count_connection_attempt(&mut self, packet: &[u8], ip: &Ipv4Fields, dst_port: u16) -> Option<scan::ConfirmedScan> {
+        let flags = u16::from(tcp_flags(packet, ip)?);
+        let is_connection_attempt = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
+        if !is_connection_attempt {
+            return None;
+        }
+        self.port_scans.observe(ip.src_ip, dst_port)
     }
 
     /// Records the packet against its flow, alerting on a sample of new

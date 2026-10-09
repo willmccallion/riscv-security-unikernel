@@ -524,6 +524,10 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[SUBNET] {ip} banned at ~{} pps", measured.unwrap_or(0)),
             egui::Color32::YELLOW,
         ),
+        Some(AlertReason::PortScan) => (
+            format!("[SCAN] {ip} banned after trying {} ports", measured.unwrap_or(0)),
+            egui::Color32::YELLOW,
+        ),
         Some(AlertReason::BpfInvalidAction) => (
             format!("[BPF INVALID] Installed program returned unknown action from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),

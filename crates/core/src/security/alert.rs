@@ -44,6 +44,9 @@ pub enum AlertReason {
     /// it did; the subnet was banned. The alert's source is the network,
     /// with its prefix length, and the value its estimated packet rate.
     SubnetFlood = 14,
+    /// A source opened connections to many distinct ports within one
+    /// window and was banned. The value is the distinct ports counted.
+    PortScan = 15,
 }
 
 impl AlertReason {
@@ -78,6 +81,7 @@ impl AlertReason {
             12 => Some(Self::BpfInvalidAction),
             13 => Some(Self::SourceSurge),
             14 => Some(Self::SubnetFlood),
+            15 => Some(Self::PortScan),
             _ => None,
         }
     }
