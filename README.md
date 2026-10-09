@@ -176,6 +176,24 @@ Medians on an Intel Core i7-14700K:
 
 ---
 
+## Linux Daemon
+
+`security-daemon` runs the same `sec_core` engine as a Linux program, so the pipeline can be measured on real hardware and real traffic.
+
+```bash
+make daemon-bench DAEMON_ARGS="--threads 8 --mix clean"   # in-memory throughput
+make daemon-speedtest                                      # live AF_PACKET test over a veth pair, no sudo
+sudo ./target/release/security-daemon run --iface eth0     # inspect a real interface (needs CAP_NET_RAW)
+```
+
+`run` captures through a memory-mapped `TPACKET_V3` ring and sends replies and signed reports back out of the interface, so the GUI can drive it like the kernel. It takes on the kernel's identity from `sec_core::config` (192.168.100.2, `52:54:00:12:34:56`). `bench` tells the engine traffic arrives at `--offered-pps` (default 10k) while measuring the real CPU cost per frame.
+
+On an Intel Core i7-14700K, one engine handles about **1.1 Mpps** of clean traffic with every frame running the full pipeline (about 890 ns per frame, mostly the Aho-Corasick scan), and attack traffic that is dropped early at about 10 Mpps. Engines are independent, so throughput scales with threads (about 11 Mpps on 16).
+
+The heavy-hitter sketch is sized for the 64 KB kernel: with 128 counters per row it separates sources only while total traffic stays under about 12.8k packets per window. Beyond that every counter passes the threshold and the detector bans everyone, which is what `daemon-speedtest` shows at line rate.
+
+---
+
 ## Testing
 
 ```bash
