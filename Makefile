@@ -15,7 +15,7 @@ RAM_LIMIT := 65536
 # CARGO_NIGHTLY=cargo-nightly since it has no rustup proxy.
 CARGO_NIGHTLY ?= cargo +nightly
 
-.PHONY: all kernel gui daemon run setup_net setup_net_many teardown_net_many \
+.PHONY: all kernel gui daemon daemon-bench daemon-speedtest run setup_net setup_net_many teardown_net_many \
         bench check-size clean miri dev-key qemu-test qemu-fuzz \
         fuzz-process-packet fuzz-mgmt-auth fuzz-vm fuzz-ahocorasick fuzz-build \
         fuzz-engine-frame fuzz-engine-sequence
@@ -69,10 +69,30 @@ gui: $(KEY_DEP)
 	@echo "[*] Running GUI..."
 	@$(KEY_CMD) $(GUI_BIN)
 
-# Linux userspace daemon (stub)
+# Linux userspace daemon. In-memory engine throughput:
+#   make daemon-bench DAEMON_ARGS="--threads 8 --mix clean"
+DAEMON_BIN := target/release/security-daemon
+DAEMON_ARGS ?=
+DAEMON_SECONDS ?= 10
+FLOOD_THREADS ?= 2
+
 daemon:
-	@echo "[*] Running Linux daemon (stub)..."
-	@cargo run -p security-daemon --release
+	@cargo build -q -p security-daemon --release
+
+daemon-bench: daemon
+	@$(DAEMON_BIN) bench $(DAEMON_ARGS)
+
+# Live AF_PACKET speed test: a veth pair inside a private network
+# namespace (no sudo needed), with `run` on one end and `flood` on the
+# other.
+daemon-speedtest: daemon $(KEY_DEP)
+	@$(KEY_CMD) unshare -rn sh -c '\
+		ip link add sec-d0 type veth peer name sec-d1 && \
+		ip link set sec-d0 up && ip link set sec-d1 up && \
+		($(DAEMON_BIN) run --iface sec-d0 --duration-secs $$(( $(DAEMON_SECONDS) + 2 )) & ) && \
+		sleep 1 && \
+		$(DAEMON_BIN) flood --iface sec-d1 --duration-secs $(DAEMON_SECONDS) --threads $(FLOOD_THREADS) && \
+		sleep 2'
 
 # Runtime
 setup_net:
