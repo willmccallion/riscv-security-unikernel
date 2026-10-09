@@ -241,26 +241,25 @@ impl VirtioNet {
                 let id = (*rx).used.ring[ring_idx].id as usize;
                 let len = (*rx).used.ring[ring_idx].len as usize;
 
-                // The device writes `len` into the used ring. A
-                // misbehaving or buggy device could report a length past
-                // the end of our 1536-byte buffer; accepting it would
-                // hand every downstream parser a `from_raw_parts_mut`
-                // slice that extends into unmapped memory. Drop the
-                // descriptor and recycle the slot instead.
-                if id >= QUEUE_SIZE || len > BUF_SIZE {
-                    RX_IDX = RX_IDX.wrapping_add(1);
+                RX_IDX = RX_IDX.wrapping_add(1);
+                // An id we never posted has no buffer to hand back.
+                if id >= QUEUE_SIZE {
+                    return None;
+                }
+                LAST_RX_ID = id as u16;
+
+                // A runt (header only) or a length past the end of our
+                // buffer carries no usable frame; return the buffer to the
+                // device so the two-descriptor ring cannot run dry.
+                if len <= NET_HDR_SIZE || len > BUF_SIZE {
+                    Self::recycle_rx_buffer();
                     return None;
                 }
 
-                RX_IDX = RX_IDX.wrapping_add(1);
-                LAST_RX_ID = id as u16;
-
-                if len > NET_HDR_SIZE {
-                    let buf_ptr = addr_of_mut!((*rx).buffers[id]).cast::<u8>();
-                    let data_ptr = buf_ptr.add(NET_HDR_SIZE);
-                    let data_len = len - NET_HDR_SIZE;
-                    return Some(core::slice::from_raw_parts_mut(data_ptr, data_len));
-                }
+                let buf_ptr = addr_of_mut!((*rx).buffers[id]).cast::<u8>();
+                let data_ptr = buf_ptr.add(NET_HDR_SIZE);
+                let data_len = len - NET_HDR_SIZE;
+                return Some(core::slice::from_raw_parts_mut(data_ptr, data_len));
             }
         }
         None
