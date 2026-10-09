@@ -64,6 +64,8 @@ pub struct Monitor {
     local: LocalNetworks,
     interval: Duration,
     current: Option<OpenInterval>,
+    /// The end of the last interval closed; nothing is counted before it.
+    closed_until: UnixNanos,
     flows: FlowTable,
     hosts: HostTable,
     names: NameTable,
@@ -84,6 +86,7 @@ impl Monitor {
             local,
             interval,
             current: None,
+            closed_until: UnixNanos::new(0),
             flows: FlowTable::new(FLOW_CAPACITY),
             hosts: HostTable::new(HOST_CAPACITY),
             names: NameTable::new(NAME_CAPACITY),
@@ -98,11 +101,13 @@ impl Monitor {
 
     /// Counts a frame of `link` type captured at `at` whose wire length
     /// was `wire_len`. Returns the previous interval's summary if this
-    /// frame begins a new one. A frame stamped earlier than the open
-    /// interval, as captures from several queues or interfaces can be,
-    /// counts toward the open interval.
+    /// frame begins a new one. A frame stamped before the open interval,
+    /// or inside one already closed, counts toward the next one open: the
+    /// kernel hands over frames in blocks, so a frame can arrive after
+    /// the wall clock has closed the interval it was captured in.
     pub fn observe(&mut self, link: LinkType, frame: &[u8], wire_len: u32, at: UnixNanos) -> Option<Summary> {
         let closed = self.tick(at);
+        let at = at.max(self.closed_until);
         let open = self.current.get_or_insert_with(|| OpenInterval {
             start: at.floor_to(self.interval),
             totals: TrafficTotals::default(),
@@ -173,6 +178,7 @@ impl Monitor {
             return None;
         }
         self.current = None;
+        self.closed_until = open.start.saturating_add(self.interval);
         let summary = self.summarise(open);
         self.flows.expire(now);
         self.hosts.expire(now);
@@ -318,5 +324,19 @@ mod tests {
 
         let resolver = summary.hosts.iter().find(|h| h.activity.addr.to_string() == "1.1.1.1").unwrap();
         assert_eq!(resolver.name.as_ref().map(|n| &*n.name), Some("one.one"));
+    }
+
+    #[test]
+    fn a_frame_arriving_after_its_interval_closed_never_reopens_it() {
+        let mut m = monitor();
+        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(12 * SECOND + 1));
+        let closed = m.tick(UnixNanos::new(13 * SECOND + 5)).unwrap();
+
+        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(12 * SECOND + 995_000_000));
+        let next = m.finish().unwrap();
+
+        assert_eq!(closed.start, UnixNanos::new(12 * SECOND));
+        assert_eq!(next.start, UnixNanos::new(13 * SECOND), "the late frame joins the next second");
+        assert_eq!(next.totals.inbound.packets, 1);
     }
 }
