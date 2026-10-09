@@ -6,10 +6,12 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Linux userspace daemon reusing sec-core security logic (stub)."
+description = "Linux userspace daemon running the sec-core pipeline; in-memory benchmark for now."
 
 [lints]
 workspace = true
 
 [dependencies]
+clap = { workspace = true }
+rand = { workspace = true }
 sec-core = { workspace = true }
