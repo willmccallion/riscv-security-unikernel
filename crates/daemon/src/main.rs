@@ -13,6 +13,7 @@ mod bench;
 mod clock;
 mod key;
 mod monitor;
+mod netif;
 mod privileges;
 mod synth;
 
@@ -74,6 +75,20 @@ enum Command {
         #[arg(long)]
         duration_secs: Option<u64>,
     },
+    /// Watch real traffic on an interface, receive-only (needs
+    /// `CAP_NET_RAW`, which is dropped once capture starts).
+    Monitor {
+        /// Interface to capture on.
+        #[arg(long)]
+        iface: String,
+        /// Another network to treat as local, such as the rest of a home
+        /// network; may be repeated. The interface's own are always local.
+        #[arg(long = "local-network", value_name = "PREFIX")]
+        local_networks: Vec<monitor::net::IpPrefix>,
+        /// Stop after this many seconds; run until killed if omitted.
+        #[arg(long)]
+        duration_secs: Option<u64>,
+    },
     /// Send synthetic traffic out of an interface (needs `CAP_NET_RAW`).
     Flood {
         /// Interface to send on.
@@ -103,6 +118,15 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Run { iface, duration_secs } => run_live(&iface, duration_secs.map(Duration::from_secs)),
+        Command::Monitor {
+            iface,
+            local_networks,
+            duration_secs,
+        } => monitor::live::run(&monitor::live::MonitorOptions {
+            interface: iface,
+            extra_local_networks: local_networks,
+            duration: duration_secs.map(Duration::from_secs),
+        }),
         Command::Flood { iface, mix, duration_secs, threads } => {
             run_flood(&iface, mix, Duration::from_secs(duration_secs), threads)
         }
