@@ -7,6 +7,8 @@
 
 use crate::types::{GuiCommand, LogEntry, LogMode, NetStats, TrafficMode};
 use eframe::egui;
+use sec_core::net::constants::IpProtocol;
+use sec_core::security::vm::Opcode;
 use egui_plot::{Line, Plot, PlotPoints};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -650,7 +652,7 @@ impl AegisApp {
                         .color(egui::Color32::GRAY)
                         .size(11.0),
                 );
-                ui.monospace("BLOCK TCP DST <port>");
+                ui.monospace("BLOCK <TCP|UDP> DST <port>");
                 ui.monospace("DROP ALL");
             });
         });
@@ -771,7 +773,9 @@ fn format_metric(val: u64) -> String {
 ///
 /// Supports a limited instruction set for packet filtering:
 /// - "DROP ALL" - Drops all packets
-/// - "BLOCK <protocol> DST <port>" - Blocks packets to a destination port
+/// - "BLOCK <TCP|UDP> DST <port>" - Drops packets of that protocol to a
+///   destination port. Assumes a 20-byte IPv4 header; the VM has no
+///   indirect loads to skip IP options.
 ///
 /// # Arguments
 ///
@@ -781,31 +785,110 @@ fn format_metric(val: u64) -> String {
 ///
 /// Some bytecode vector if compilation succeeds, None otherwise.
 fn compile_ebpf(code: &str) -> Option<Vec<u8>> {
+    const PROTOCOL_OFFSET: u32 = 23;
+    const DST_PORT_OFFSET: u32 = 36;
+    const PASS_INDEX: u32 = 8;
+    const DROP_INDEX: u32 = 9;
+
     if code.trim() == "DROP ALL" {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&[0x0D, 0, 0]);
-        buf.extend_from_slice(&0u32.to_be_bytes());
-        return Some(buf);
+        return Some(encode(Opcode::Ret, 0, 0, 0).to_vec());
     }
 
     let parts: Vec<&str> = code.split_whitespace().collect();
-    if parts.len() >= 4
-        && parts[0] == "BLOCK"
-        && parts[2] == "DST"
-        && let Ok(port) = parts[3].parse::<u32>()
-    {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&[0x02, 0, 0]);
-        buf.extend_from_slice(&36u32.to_be_bytes());
-        buf.extend_from_slice(&[0x06, 0, 0]);
-        buf.extend_from_slice(&port.to_be_bytes());
-        buf.extend_from_slice(&[0x0B, 0, 0]);
-        buf.extend_from_slice(&4u32.to_be_bytes());
-        buf.extend_from_slice(&[0x0D, 0, 0]);
-        buf.extend_from_slice(&1u32.to_be_bytes());
-        buf.extend_from_slice(&[0x0D, 0, 0]);
-        buf.extend_from_slice(&0u32.to_be_bytes());
-        return Some(buf);
+    let [block, protocol, dst, port] = parts.as_slice() else {
+        return None;
+    };
+    if *block != "BLOCK" || *dst != "DST" {
+        return None;
     }
-    None
+    let protocol = match *protocol {
+        "TCP" => IpProtocol::Tcp,
+        "UDP" => IpProtocol::Udp,
+        _ => return None,
+    };
+    let port = port.parse::<u16>().ok()?;
+
+    let program = [
+        encode(Opcode::Ldb, 0, 0, PROTOCOL_OFFSET),
+        encode(Opcode::Ldi, 1, 0, protocol as u32),
+        encode(Opcode::Eq, 0, 1, 0),
+        encode(Opcode::Jf, 0, 0, PASS_INDEX),
+        encode(Opcode::Ldh, 2, 0, DST_PORT_OFFSET),
+        encode(Opcode::Ldi, 3, 0, u32::from(port)),
+        encode(Opcode::Eq, 2, 3, 0),
+        encode(Opcode::Jt, 0, 0, DROP_INDEX),
+        encode(Opcode::Ret, 0, 0, 1),
+        encode(Opcode::Ret, 0, 0, 0),
+    ];
+    Some(program.concat())
+}
+
+/// Encodes one VM instruction in the 7-byte wire format the kernel decodes.
+fn encode(op: Opcode, reg_a: u8, reg_b: u8, imm: u32) -> [u8; 7] {
+    let imm = imm.to_be_bytes();
+    [op as u8, reg_a, reg_b, imm[0], imm[1], imm[2], imm[3]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sec_core::security::vm::{Instruction, VM, VmAction, validate};
+
+    fn decode(bytecode: &[u8]) -> Vec<Instruction> {
+        let (chunks, rest) = bytecode.as_chunks::<7>();
+        assert!(rest.is_empty(), "bytecode is whole instructions");
+        chunks
+            .iter()
+            .map(|c| Instruction::new(c[0], c[1], c[2], u32::from_be_bytes([c[3], c[4], c[5], c[6]])))
+            .collect()
+    }
+
+    fn frame(protocol: IpProtocol, dst_port: u16) -> Vec<u8> {
+        let mut f = vec![0u8; 60];
+        f[12] = 0x08;
+        f[14] = 0x45;
+        f[23] = protocol as u8;
+        f[36..38].copy_from_slice(&dst_port.to_be_bytes());
+        f
+    }
+
+    fn run(code: &str, packet: &[u8]) -> VmAction {
+        let program = decode(&compile_ebpf(code).expect("compiles"));
+        validate(&program).expect("kernel accepts the program");
+        VM::new().execute(&program, packet).expect("program returns")
+    }
+
+    #[test]
+    fn block_drops_matching_protocol_and_port() {
+        let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Tcp, 80));
+
+        assert_eq!(action, VmAction::Drop);
+    }
+
+    #[test]
+    fn block_passes_other_ports() {
+        let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Tcp, 443));
+
+        assert_eq!(action, VmAction::Pass);
+    }
+
+    #[test]
+    fn block_passes_other_protocols_on_the_same_port() {
+        let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Udp, 80));
+
+        assert_eq!(action, VmAction::Pass);
+    }
+
+    #[test]
+    fn block_rejects_unknown_protocol_and_out_of_range_port() {
+        assert!(compile_ebpf("BLOCK ICMP DST 80").is_none());
+        assert!(compile_ebpf("BLOCK TCP DST 70000").is_none());
+    }
+
+    #[test]
+    fn drop_all_drops_everything() {
+        let action = run("DROP ALL", &frame(IpProtocol::Udp, 1337));
+
+        assert_eq!(action, VmAction::Drop);
+    }
 }
