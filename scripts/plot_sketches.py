@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("svg")
+matplotlib.rcParams["svg.hashsalt"] = "sketch-lab"
 import matplotlib.pyplot as plt  # noqa: E402
 
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("docs/sketches")
@@ -45,7 +46,7 @@ def error_vs_memory():
     style(ax, "Count-Min estimate error on a Zipf(1.1) stream",
           "sketch memory (bytes)", "mean overestimate (packets)")
     fig.tight_layout()
-    fig.savefig(ROOT / "cms_error_vs_memory.svg")
+    fig.savefig(ROOT / "cms_error_vs_memory.svg", metadata={"Date": None})
 
 
 def false_positives_vs_load():
@@ -68,7 +69,7 @@ def false_positives_vs_load():
     style(ax, "Legitimate sources banned as total traffic grows",
           "total traffic (packets per second)", "legitimate sources banned (%)")
     fig.tight_layout()
-    fig.savefig(ROOT / "cms_false_positives_vs_load.svg")
+    fig.savefig(ROOT / "cms_false_positives_vs_load.svg", metadata={"Date": None})
 
 
 error_vs_memory()
