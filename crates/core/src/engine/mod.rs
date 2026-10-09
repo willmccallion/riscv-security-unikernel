@@ -17,7 +17,7 @@ use crate::config::{
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
-use crate::net::tcp::TcpHeader;
+use crate::net::tcp::extract_ports;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
@@ -573,7 +573,7 @@ fn parse_ipv4(packet: &[u8]) -> Option<Ipv4Fields> {
 fn transport_ports(packet: &[u8], ip: &Ipv4Fields) -> Option<(u16, u16)> {
     match IpProtocol::from_u8(ip.protocol)? {
         IpProtocol::Tcp | IpProtocol::Udp => {
-            packet.get(ip.l4_offset..).and_then(TcpHeader::extract_ports)
+            packet.get(ip.l4_offset..).and_then(extract_ports)
         }
         IpProtocol::Icmp => None,
     }

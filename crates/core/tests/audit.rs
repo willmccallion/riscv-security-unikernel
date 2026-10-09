@@ -19,7 +19,7 @@
 use sec_core::net::PacketSink;
 use sec_core::net::constants::{SYN_COOKIE_MAGIC, arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
-use sec_core::net::tcp::{TCP_ACK, TCP_SYN, TcpHeader};
+use sec_core::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
@@ -233,7 +233,7 @@ fn non_syn_tcp_returns_payload_to_caller() {
     );
 }
 
-/// `TcpHeader::extract_ports` is the helper the kernel uses to read
+/// `extract_ports` is the helper the kernel uses to read
 /// the destination port before invoking `process_packet`, so it must
 /// produce the right values for raw TCP segments.
 #[test]
@@ -241,7 +241,7 @@ fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
     let frame = build_tcp_frame([10, 0, 0, 5], 4444, 23, TCP_SYN, 0, &[]);
     let l4_offset = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
     let (sp, dp) =
-        TcpHeader::extract_ports(&frame[l4_offset..]).expect("ports must extract from frame");
+        extract_ports(&frame[l4_offset..]).expect("ports must extract from frame");
     assert_eq!(sp, 4444);
     assert_eq!(dp, 23);
 }
@@ -294,10 +294,8 @@ fn process_packet_emits_syn_ack_for_syn() {
 /// sits at an offset that is not 4-byte aligned within the frame
 /// buffer. IHL=9 puts a 36-byte IP header in the frame, which lands
 /// the TCP header at byte 50 — odd-aligned relative to the start of
-/// the IP header. Earlier code cast the TCP-header pointer through
-/// `&TcpHeader`; on RV64GC silicon without a misaligned-access trap
-/// handler that would jump to garbage. Byte-wise parsing must keep
-/// behaviour identical to the IHL=5 path.
+/// the IP header. Byte-wise parsing must behave exactly as on the
+/// IHL=5 path.
 #[test]
 fn process_packet_handles_syn_with_extended_ip_options() {
     const IHL_WORDS: usize = 9;

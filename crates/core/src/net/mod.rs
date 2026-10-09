@@ -8,7 +8,7 @@
 pub mod constants;
 /// Network protocol stack for packet processing and protocol handling.
 pub mod stack;
-/// TCP header definitions and utilities for SYN cookie generation.
+/// TCP header flags and port extraction.
 pub mod tcp;
 
 /// Egress side for frames emitted by the network stack.
