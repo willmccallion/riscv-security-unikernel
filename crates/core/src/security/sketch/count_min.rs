@@ -54,7 +54,13 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     /// true count, but counters shared with other items grow far less, so
     /// estimates are much tighter than with [`Self::insert_classic`].
     pub fn insert(&mut self, item: &[u8]) -> u16 {
-        let columns = self.positions(item);
+        self.insert_hash(siphash24(&self.key, item))
+    }
+
+    /// Like [`Self::insert`], for an item whose keyed 64-bit hash the
+    /// caller has already computed, so one hash can feed several sketches.
+    pub fn insert_hash(&mut self, hash: u64) -> u16 {
+        let columns = Self::columns(hash);
         let estimate = self.estimate_at(&columns).saturating_add(1);
         for (row, column) in self.rows.iter_mut().zip(columns) {
             row[column] = row[column].max(estimate);
@@ -66,7 +72,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     /// counters, the textbook update. Kept for comparison with
     /// [`Self::insert`].
     pub fn insert_classic(&mut self, item: &[u8]) -> u16 {
-        let columns = self.positions(item);
+        let columns = Self::columns(siphash24(&self.key, item));
         for (row, column) in self.rows.iter_mut().zip(columns) {
             row[column] = row[column].saturating_add(1);
         }
@@ -75,7 +81,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
 
     /// The current estimate for `item`, without counting it.
     pub fn estimate(&self, item: &[u8]) -> u16 {
-        self.estimate_at(&self.positions(item))
+        self.estimate_at(&Self::columns(siphash24(&self.key, item)))
     }
 
     fn estimate_at(&self, columns: &[usize; DEPTH]) -> u16 {
@@ -95,14 +101,13 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
         }
     }
 
-    /// The column `item` maps to in each row: consecutive `log2(WIDTH)`-bit
-    /// slices of one keyed hash.
+    /// The column an item with keyed hash `hash` maps to in each row:
+    /// consecutive `log2(WIDTH)`-bit slices of the hash.
     ///
     /// Deriving rows as `h1 + i·h2` instead would make any two items that
     /// share `h1` and `h2` modulo `WIDTH` collide in every row at once, a
     /// `1/WIDTH²` chance per pair no matter how many rows there are.
-    fn positions(&self, item: &[u8]) -> [usize; DEPTH] {
-        let mut hash = siphash24(&self.key, item);
+    fn columns(mut hash: u64) -> [usize; DEPTH] {
         let mut columns = [0; DEPTH];
         for column in &mut columns {
             *column = (hash as usize) & (WIDTH - 1);
@@ -188,7 +193,7 @@ mod tests {
         let cms = CountMinSketch::<16, 4>::new([5; 16]);
         let mut columns = [[0u8; 4]; ITEMS];
         for (i, slot) in columns.iter_mut().enumerate() {
-            *slot = cms.positions(&(i as u32).to_be_bytes()).map(|c| c as u8);
+            *slot = CountMinSketch::<16, 4>::columns(siphash24(&cms.key, &(i as u32).to_be_bytes())).map(|c| c as u8);
         }
 
         let mut full_collisions = 0;
