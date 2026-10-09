@@ -9,7 +9,8 @@
 mod report;
 
 use crate::config::{
-    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH,
+    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH, SOURCE_COUNTER_REGISTERS,
+    SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM,
     DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
     IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
     MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_TOKEN_COST_CYCLES, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
@@ -21,7 +22,8 @@ use crate::net::tcp::extract_ports;
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
-use crate::security::{dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
+use crate::security::hash::siphash24;
+use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
 
@@ -104,6 +106,11 @@ pub struct Engine<const SKETCH_WIDTH: usize = { CMS_WIDTH }, const SKETCH_DEPTH:
     dyn_rules: dpi::DynamicRules,
     fw: firewall::FirewallState,
     cms: sketch::CountMinSketch<SKETCH_WIDTH, SKETCH_DEPTH>,
+    /// Keys the one hash of each source address that every per-source
+    /// sketch shares.
+    source_key: [u8; 16],
+    sources: sketch::HyperLogLog<SOURCE_COUNTER_REGISTERS>,
+    source_surge: anomaly::SurgeDetector,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
     mgmt_limiter: dos::TokenBucket,
@@ -129,6 +136,9 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
             dyn_rules: dpi::DynamicRules::new(),
             fw: firewall::FirewallState::new(),
             cms: sketch::CountMinSketch::new([0; 16]),
+            source_key: [0; 16],
+            sources: sketch::HyperLogLog::new([0; 16]),
+            source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
             pbox: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
             mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
@@ -170,6 +180,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
 
         self.syn_secret = secrets.syn_cookie;
         self.cms.rekey(secrets.cms_key);
+        self.source_key = secrets.cms_key;
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
@@ -201,8 +212,18 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
     /// Closes one detection interval: ages the heavy-hitter counts and lets
     /// interval-based detectors report. Call every
     /// [`CMS_DECAY_INTERVAL_CYCLES`](crate::config::CMS_DECAY_INTERVAL_CYCLES).
-    pub fn end_detection_interval<S: PacketSink>(&mut self, _now: u64, _sink: &mut S) {
+    pub fn end_detection_interval<S: PacketSink>(&mut self, sink: &mut S) {
         self.cms.decay();
+        let distinct_sources = self.sources.estimate();
+        self.sources.clear();
+        if let Some(sources) = self.source_surge.observe(distinct_sources) {
+            let meta = AlertMeta {
+                prefix_len: 0,
+                value: sources as u32,
+                ..AlertMeta::empty()
+            };
+            self.detector_alert(&meta, AlertReason::SourceSurge, sink);
+        }
     }
 
     /// Sends the signed telemetry report for the current interval: ten
@@ -255,9 +276,11 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
                 return self.handle_mgmt(envelope, src_mac, &meta, now, sink);
             }
 
+            let source_hash = siphash24(&self.source_key, &meta.src_ip);
+            let _ = self.sources.insert_hash(source_hash);
             if self.pbox.is_banned(&meta.src_ip, now) {
                 drop = true;
-            } else if self.cms.insert(&meta.src_ip) > HEAVY_HITTER_THRESHOLD {
+            } else if self.cms.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
                 self.pbox.ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
                 drop = true;
             }
@@ -384,6 +407,13 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize> Engine<SKETCH_WIDTH, 
     ) -> Verdict {
         self.alert(meta, reason, now, sink);
         Verdict::Dropped(reason)
+    }
+
+    /// Sends an alert raised at the end of a detection interval. Detectors
+    /// report at most once per interval each, so these skip the per-packet
+    /// alert limit, which a flood of routine alerts could otherwise drain.
+    fn detector_alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, sink: &mut S) {
+        self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
     }
 
     fn alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, now: u64, sink: &mut S) {

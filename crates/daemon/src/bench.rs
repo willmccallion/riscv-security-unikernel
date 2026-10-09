@@ -159,7 +159,7 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
             next_telemetry += TELEMETRY_INTERVAL_CYCLES as u64;
         }
         if now >= next_cms_decay {
-            engine.end_detection_interval(now, &mut NullSink);
+            engine.end_detection_interval(&mut NullSink);
             next_cms_decay += CMS_DECAY_INTERVAL_CYCLES as u64;
         }
         let buf = &mut scratch[..frame.len()];

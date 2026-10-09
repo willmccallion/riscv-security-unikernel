@@ -36,6 +36,10 @@ pub enum AlertReason {
     /// than silently passed, so future action-code extensions cannot
     /// be pre-poisoned by programs uploaded before the extension.
     BpfInvalidAction = 12,
+    /// Far more distinct sources than usual arrived in one detection
+    /// interval, typical of a flood from spoofed addresses. The value is
+    /// the estimated number of sources; nothing is banned.
+    SourceSurge = 13,
 }
 
 impl AlertReason {
@@ -68,6 +72,7 @@ impl AlertReason {
             8 => Some(Self::MgmtAuthFail),
             11 => Some(Self::BpfTimeout),
             12 => Some(Self::BpfInvalidAction),
+            13 => Some(Self::SourceSurge),
             _ => None,
         }
     }

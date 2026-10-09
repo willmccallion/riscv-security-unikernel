@@ -183,9 +183,35 @@ fn a_burst_straddling_a_decay_is_still_caught() {
     };
 
     let first = send_burst(&mut e, &mut now);
-    e.end_detection_interval(now, &mut CaptureSink::default());
+    e.end_detection_interval(&mut CaptureSink::default());
     let second = send_burst(&mut e, &mut now);
 
     assert_eq!(first, Verdict::Passed, "90 packets alone stay under the threshold");
     assert_eq!(second, Verdict::Dropped(AlertReason::Ddos));
+}
+
+#[test]
+fn a_sudden_surge_of_distinct_sources_is_reported_once() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut now = 0;
+    let mut interval = |e: &mut sec_core::engine::Engine, sources: u32, sink: &mut CaptureSink| {
+        for s in 0..sources {
+            now += 50_000;
+            let src = (s | 0x0B00_0000).to_be_bytes();
+            let _ = e.process(&mut udp(src, 5000, 80, b"x"), now, sink);
+        }
+        e.end_detection_interval(sink);
+    };
+    for _ in 0..8 {
+        interval(&mut e, 200, &mut sink);
+    }
+    let quiet = sink.alert_reasons().contains(&AlertReason::SourceSurge);
+
+    interval(&mut e, 5_000, &mut sink);
+    interval(&mut e, 5_000, &mut sink);
+
+    assert!(!quiet, "steady traffic raised a surge alert");
+    let surges = sink.alert_reasons().iter().filter(|&&r| r == AlertReason::SourceSurge).count();
+    assert_eq!(surges, 1);
 }

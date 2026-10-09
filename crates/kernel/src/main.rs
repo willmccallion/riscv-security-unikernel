@@ -177,7 +177,7 @@ pub extern "C" fn kmain() -> ! {
         }
 
         if now.wrapping_sub(last_cms_decay) > CMS_DECAY_INTERVAL_CYCLES as u64 {
-            engine.end_detection_interval(now, &mut sink);
+            engine.end_detection_interval(&mut sink);
             last_cms_decay = now;
         }
 

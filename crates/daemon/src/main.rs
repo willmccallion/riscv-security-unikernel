@@ -163,7 +163,7 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
 
         let now = clock.now();
         if now.saturating_sub(last_cms_decay) >= CMS_DECAY_INTERVAL_CYCLES as u64 {
-            engine.end_detection_interval(now, &mut tx);
+            engine.end_detection_interval(&mut tx);
             last_cms_decay = now;
         }
         if now.saturating_sub(last_report) >= REPORT_INTERVAL {

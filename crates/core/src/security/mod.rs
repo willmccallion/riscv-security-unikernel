@@ -6,6 +6,8 @@
 
 /// Security alert reason codes and constants.
 pub mod alert;
+/// Change detection over per-interval measurements.
+pub mod anomaly;
 /// DDoS mitigation: the penalty box and token bucket.
 pub mod dos;
 /// Deep packet inspection engine using Aho-Corasick pattern matching.

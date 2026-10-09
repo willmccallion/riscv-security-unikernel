@@ -26,6 +26,19 @@ pub const CMS_WIDTH: usize = 1024;
 /// Rows (independent hashes) of the kernel's heavy-hitter Count-Min Sketch.
 pub const CMS_DEPTH: usize = 3;
 
+/// HyperLogLog registers counting distinct sources per detection interval
+/// (one byte each; about 6.5% error at 256).
+pub const SOURCE_COUNTER_REGISTERS: usize = 256;
+
+/// A detection interval with this many times the usual number of distinct
+/// sources is reported as a surge, typical of a flood from spoofed
+/// addresses.
+pub const SOURCE_SURGE_FACTOR: f64 = 4.0;
+
+/// Distinct sources per detection interval below which no surge is
+/// reported, however sharp the rise.
+pub const SOURCE_SURGE_MINIMUM: f64 = 1000.0;
+
 /// Estimated rate, in packets per second, above which a source is
 /// banned as a heavy hitter. See [`CMS_DECAY_INTERVAL_CYCLES`].
 pub const HEAVY_HITTER_THRESHOLD: u16 = 100;
