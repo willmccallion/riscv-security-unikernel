@@ -6,7 +6,6 @@
 
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::PacketSink;
-use crate::net::constants::MAX_ICMP_REPLY_LEN;
 use crate::net::constants::{
     ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp,
 };
@@ -204,47 +203,19 @@ fn handle_ipv4<'a, S: PacketSink>(
 
     if IpProtocol::from_u8(protocol) == Some(IpProtocol::Icmp) {
         let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        // Need at least 4 bytes (type + code + 2-byte checksum) to write
-        // the echo reply header back into the buffer. RFC 792 actually
-        // requires 8 (type/code/csum/id/seq), but only the first four
-        // are written, so 4 is the OOB bound. Found by fuzzer crash 2.
+        // Type, code and checksum are rewritten in place.
         const ICMP_HEADER_MIN: usize = 4;
-        if offset + ICMP_HEADER_MIN <= packet.len()
+        if let Some(ip_end) = ipv4_end(packet, usize::from(ihl))
+            && offset + ICMP_HEADER_MIN <= ip_end
             && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
         {
-            let old_src_mac = [
-                packet[ethernet::SRC_MAC_OFFSET],
-                packet[ethernet::SRC_MAC_OFFSET + 1],
-                packet[ethernet::SRC_MAC_OFFSET + 2],
-                packet[ethernet::SRC_MAC_OFFSET + 3],
-                packet[ethernet::SRC_MAC_OFFSET + 4],
-                packet[ethernet::SRC_MAC_OFFSET + 5],
-            ];
-            packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&old_src_mac);
-            packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
-                .copy_from_slice(&MAC_ADDR);
-
-            let old_src_ip = [
-                packet[ipv4::SRC_IP_OFFSET],
-                packet[ipv4::SRC_IP_OFFSET + 1],
-                packet[ipv4::SRC_IP_OFFSET + 2],
-                packet[ipv4::SRC_IP_OFFSET + 3],
-            ];
-            packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-                .copy_from_slice(&IP_ADDR);
-            packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-                .copy_from_slice(&old_src_ip);
-
+            swap_addresses(packet);
             packet[offset] = IcmpType::EchoReply as u8;
-            packet[offset + 2] = 0;
-            packet[offset + 3] = 0;
-
-            let len = packet.len().min(MAX_ICMP_REPLY_LEN);
-            let csum = checksum(&packet[offset..len]);
-            packet[offset + 2] = (csum >> 8) as u8;
-            packet[offset + 3] = (csum & 0xFF) as u8;
-
-            sink.send(&packet[0..len]);
+            packet[offset + 2..offset + 4].copy_from_slice(&[0, 0]);
+            let csum = checksum(&packet[offset..ip_end]);
+            packet[offset + 2..offset + 4].copy_from_slice(&csum.to_be_bytes());
+            finish_ipv4_header(packet, usize::from(ihl), ip_end - ipv4::HEADER_OFFSET);
+            sink.send(&packet[..ip_end]);
             return None;
         }
     }
@@ -430,6 +401,45 @@ fn send_tcp_reply_inplace<S: PacketSink>(
     reply[18..20].copy_from_slice(&[0, 0]); // urgent pointer
 
     sink.send(&packet[0..tcp_offset + tcp::MIN_HEADER_SIZE]);
+}
+
+/// End of the IPv4 datagram within the frame, from its total-length field,
+/// or `None` if that length is shorter than the header or longer than the
+/// frame.
+fn ipv4_end(packet: &[u8], ihl: usize) -> Option<usize> {
+    let total = usize::from(u16::from_be_bytes([packet[16], packet[17]]));
+    let end = ipv4::HEADER_OFFSET + total;
+    (total >= ihl && end <= packet.len()).then_some(end)
+}
+
+/// Turns a received frame around: the sender's MAC and IP become the
+/// destination, ours the source.
+fn swap_addresses(packet: &mut [u8]) {
+    let mut peer_mac = [0u8; ethernet::MAC_ADDR_SIZE];
+    peer_mac.copy_from_slice(
+        &packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
+    );
+    packet[..ethernet::MAC_ADDR_SIZE].copy_from_slice(&peer_mac);
+    packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
+        .copy_from_slice(&MAC_ADDR);
+
+    let mut peer_ip = [0u8; ipv4::IP_ADDR_SIZE];
+    peer_ip.copy_from_slice(&packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE]);
+    packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR);
+    packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&peer_ip);
+}
+
+/// Sets the total length and a fresh TTL on an outgoing IPv4 header of
+/// `ihl` bytes, then recomputes its checksum.
+fn finish_ipv4_header(packet: &mut [u8], ihl: usize, total_len: usize) {
+    const TOTAL_LEN_OFFSET: usize = ipv4::HEADER_OFFSET + 2;
+    const TTL_OFFSET: usize = ipv4::HEADER_OFFSET + 8;
+    const CHECKSUM_OFFSET: usize = ipv4::HEADER_OFFSET + 10;
+    packet[TOTAL_LEN_OFFSET..TOTAL_LEN_OFFSET + 2].copy_from_slice(&(total_len as u16).to_be_bytes());
+    packet[TTL_OFFSET] = ipv4::DEFAULT_TTL;
+    packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&[0, 0]);
+    let csum = checksum(&packet[ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ihl]);
+    packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&csum.to_be_bytes());
 }
 
 /// Calculates the Internet checksum for protocol headers.

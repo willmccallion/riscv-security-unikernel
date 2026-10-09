@@ -98,6 +98,15 @@ pub fn tcp(src_ip: [u8; 4], src_port: u16, dst_port: u16, flags: u8, payload: &[
     ipv4(src_ip, 6, &l4)
 }
 
+/// An ICMP echo request with a correct checksum carrying `data`.
+pub fn icmp_echo_with_payload(src_ip: [u8; 4], data: &[u8]) -> Vec<u8> {
+    let mut l4 = vec![8, 0, 0, 0, 0x12, 0x34, 0, 1];
+    l4.extend_from_slice(data);
+    let csum = checksum(&l4);
+    l4[2..4].copy_from_slice(&csum.to_be_bytes());
+    ipv4(src_ip, 1, &l4)
+}
+
 pub fn icmp_echo(src_ip: [u8; 4], checksum_field: u16) -> Vec<u8> {
     let mut l4 = vec![8, 0];
     l4.extend_from_slice(&checksum_field.to_be_bytes());

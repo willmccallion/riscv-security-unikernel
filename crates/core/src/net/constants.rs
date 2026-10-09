@@ -185,9 +185,3 @@ pub const BROADCAST_MAC: [u8; 6] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
 /// This constant is combined with source IP and port to create
 /// stateless SYN cookies for SYN flood protection.
 pub const SYN_COOKIE_MAGIC: u32 = 0xCAFE_BABE;
-
-/// Maximum safe packet length for ICMP echo reply processing.
-///
-/// Used to cap packet length when generating ICMP responses to
-/// prevent buffer overflows and excessive processing.
-pub const MAX_ICMP_REPLY_LEN: usize = 128;
