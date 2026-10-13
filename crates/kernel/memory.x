@@ -40,22 +40,12 @@ SECTIONS
         _ebss = .;
     } > RAM
 
-    /*
-     * Stack guard: 256 bytes filled at boot with a fixed sentinel
-     * pattern. The stack grows down from _stack_top; once it's used
-     * enough to walk into the heap/data region it will land here
-     * first. The telemetry tick re-reads the bytes and halts the
-     * kernel if the pattern has changed, so a silent overflow turns
-     * into a loud, localised crash instead of corrupting whatever
-     * data structure happened to share that address.
-     */
+    /* Sentinel bytes between .bss and the stack; see stack_guard.rs. */
     .stack_guard : {
         _stack_guard_start = .;
         . = . + 256;
         _stack_guard_end = .;
     } > RAM
 
-    /* Heap/Stack space */
-    _heap_start = _stack_guard_end;
     _stack_top = ORIGIN(RAM) + LENGTH(RAM);
 }

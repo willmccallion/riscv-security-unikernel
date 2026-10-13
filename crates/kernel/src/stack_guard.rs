@@ -1,32 +1,21 @@
 //! Stack-overflow detection via a sentinel region.
 //!
-//! The kernel has no MMU and no architectural stack-bottom check.
-//! The stack grows down from `_stack_top` and the heap grows up
-//! from just above `.bss`; nothing prevents a deep-recursion or
-//! large-frame overflow from corrupting BSS, the security engine,
-//! or the allocator.
+//! The kernel has no MMU and no heap. The stack grows down from
+//! `_stack_top` toward `.bss`, and nothing architectural stops a deep
+//! call chain from running into the security engine's state.
 //!
-//! This module reserves a 256-byte `.stack_guard` section
-//! immediately above `.bss` (so it sits between BSS and the stack
-//! region), fills it with a fixed sentinel pattern at boot, and
-//! verifies the pattern from the telemetry tick. If any byte has
-//! changed, something has overrun into the guard and the kernel
-//! halts with a clear message instead of limping on with corrupt
-//! state.
+//! A 256-byte `.stack_guard` section sits between `.bss` and the stack.
+//! It is filled with a sentinel at boot and checked from the telemetry
+//! tick; if any byte changed, the kernel halts instead of running on
+//! corrupt state.
 //!
-//! This is detection, not prevention: a write that lands above the
-//! guard region still corrupts whatever it hits. Pairing the guard
-//! with a PMP entry that marks it inaccessible would convert
-//! corruption into an immediate trap, but the current PMP layout
-//! treats the whole RAM-after-rodata window as RW; carving out the
-//! guard would cost two more PMP entries and is left for later.
+//! This is detection, not prevention: an overflow that skips past the
+//! guard is not caught. Making the guard a no-access PMP region would
+//! trap instead, but it needs more PMP entries than the layout has left.
 
 use core::ptr;
 
-/// Sentinel byte. 0xA5 (10100101) has equal numbers of 0s and 1s and
-/// is unlikely to appear naturally in pointer values, lengths, or
-/// ASCII text, which makes accidental "the pattern is still intact"
-/// false negatives improbable.
+/// Sentinel byte; 0xA5 is unlikely in pointers, lengths or ASCII text.
 const SENTINEL: u8 = 0xA5;
 
 unsafe extern "C" {
