@@ -182,7 +182,7 @@ The companion desktop app (`egui`/`eframe`) shows live counters and the alert lo
 | Language | Rust `no_std` / `no_main` |
 | Network driver | VirtIO-Net (legacy MMIO), polled |
 | Concurrency model | Single hart, polling loop; other harts are parked |
-| Memory protection | PMP: W^X over the kernel image, MMIO confined to the device window |
+| Memory protection | PMP: W^X over the kernel image, MMIO confined to the device window, every other address denied |
 | Build profile | `opt-level = "z"`, LTO, `codegen-units = 1`, stripped |
 
 Thresholds and intervals are in `mcycle` cycles, so their wall-clock meaning depends on the CPU's clock rate.
