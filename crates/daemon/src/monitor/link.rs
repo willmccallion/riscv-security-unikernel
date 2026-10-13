@@ -148,7 +148,7 @@ impl ViewerServer {
         })
     }
 
-    /// Accepts any viewers waiting to connect, up to [`MAX_VIEWERS`].
+    /// Accepts any viewers waiting to connect, up to `MAX_VIEWERS`.
     pub fn accept_viewers(&mut self) -> Result<()> {
         while let Some(stream) = viewer_socket::accept_nonblocking(&self.listener).context("accept a viewer")? {
             if self.viewers.len() >= MAX_VIEWERS {
