@@ -18,7 +18,7 @@ pub enum ManagementMessageType {
     BlockPort = 0x01,
     /// Add a DPI signature pattern.
     AddDpiPattern = 0x02,
-    /// Upload an eBPF program.
+    /// Upload an BPF program.
     UploadBpfProgram = 0x03,
     /// Manually ban an IP address.
     BanIp = 0x04,

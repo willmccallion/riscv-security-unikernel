@@ -1,4 +1,4 @@
-//! Virtual machine for executing eBPF-like packet filters.
+//! Virtual machine for executing BPF-style packet filters.
 //!
 //! Implements a simple register-based virtual machine that can execute
 //! custom bytecode programs on each packet. Provides instructions for
@@ -159,7 +159,7 @@ impl Instruction {
 /// code can never be mistaken for pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmAction {
-    /// Drop the packet and raise the eBPF alert.
+    /// Drop the packet and raise the BPF alert.
     Drop,
     /// Allow the packet to continue through the pipeline.
     Pass,

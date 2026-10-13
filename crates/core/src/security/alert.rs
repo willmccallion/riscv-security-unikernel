@@ -16,8 +16,8 @@ pub enum AlertReason {
     Firewall = 2,
     /// Malware signature match detected.
     Malware = 3,
-    /// eBPF filter dropped the packet.
-    Ebpf = 4,
+    /// BPF filter dropped the packet.
+    Bpf = 4,
     /// Heuristic analysis detected anomaly.
     Heuristic = 5,
     /// New network flow created.
@@ -72,7 +72,7 @@ impl AlertReason {
             1 => Some(Self::Ddos),
             2 => Some(Self::Firewall),
             3 => Some(Self::Malware),
-            4 => Some(Self::Ebpf),
+            4 => Some(Self::Bpf),
             5 => Some(Self::Heuristic),
             6 => Some(Self::Flow),
             7 => Some(Self::Pass),

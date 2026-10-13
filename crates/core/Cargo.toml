@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Shared no_std security-engine logic: CMS, Aho-Corasick, flow table, heuristics, eBPF VM, mgmt protocol."
+description = "Shared no_std security-engine logic: CMS, Aho-Corasick, flow table, heuristics, BPF VM, mgmt protocol."
 
 [lints]
 workspace = true

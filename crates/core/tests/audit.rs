@@ -2,7 +2,7 @@
 //! and the Linux daemon both depend on.
 //!
 //! Each test exercises a single observable invariant of `sec_core`:
-//! the SYN-cookie reply path, TCP DPI hand-off, the eBPF VM's
+//! the SYN-cookie reply path, TCP DPI hand-off, the BPF VM's
 //! out-of-range tolerance, the penalty-box eviction policy, the ARP
 //! parser, the heuristic engine, the flow table, and the Aho-Corasick
 //! trie. They are written so they fail loudly when the invariant is
@@ -504,7 +504,7 @@ fn firewall_dedups_and_signals_overflow() {
     assert_eq!(fw.block_port(9000), Ok(()));
 }
 
-/// The eBPF VM has 16 registers but encodes register indices as `u8`,
+/// The BPF VM has 16 registers but encodes register indices as `u8`,
 /// so an attacker-supplied program can request register 20. The VM
 /// must reject or clamp instead of panicking, since a panic in the
 /// kernel halts the core.

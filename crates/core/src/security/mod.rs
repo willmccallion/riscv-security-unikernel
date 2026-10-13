@@ -32,5 +32,5 @@ pub mod report_auth;
 pub mod scan;
 /// Probabilistic stream summaries used for heavy-hitter detection.
 pub mod sketch;
-/// Virtual machine for executing eBPF-like packet filter programs.
+/// Virtual machine for executing BPF-style packet filter programs.
 pub mod vm;

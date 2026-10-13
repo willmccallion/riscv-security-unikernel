@@ -1,5 +1,5 @@
 //! Criterion benchmarks for the sec-core hot path: CMS, Aho-Corasick,
-//! eBPF VM, flow table, and heuristic engine.
+//! BPF VM, flow table, and heuristic engine.
 
 // Criterion's `bench_function` returns `&mut Criterion` and `black_box`
 // returns the wrapped value — both are intentionally discarded in benches.
@@ -89,10 +89,10 @@ fn bench_ac_scan_match(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// eBPF VM — bytecode execution
+// BPF VM — bytecode execution
 // ---------------------------------------------------------------------------
 
-/// Builds a small eBPF program that loads the byte at offset 23 (IP protocol
+/// Builds a small BPF program that loads the byte at offset 23 (IP protocol
 /// field in a raw Ethernet frame) and returns 0 (drop) if it equals 17 (UDP).
 fn udp_drop_program() -> Vec<vm::Instruction> {
     use benches::vm::Instruction;

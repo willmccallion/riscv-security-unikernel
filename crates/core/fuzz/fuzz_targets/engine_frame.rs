@@ -24,7 +24,7 @@ impl PacketSink for CheckedSink {
 }
 
 fn counters(s: &IntervalStats) -> [u64; 7] {
-    [s.passed, s.ddos, s.firewall, s.malware, s.ebpf, s.heuristic, s.mgmt]
+    [s.passed, s.ddos, s.firewall, s.malware, s.bpf, s.heuristic, s.mgmt]
 }
 
 fn expected_counter(verdict: Verdict) -> Option<usize> {
@@ -34,7 +34,7 @@ fn expected_counter(verdict: Verdict) -> Option<usize> {
         Verdict::Dropped(AlertReason::Firewall) => Some(2),
         Verdict::Dropped(AlertReason::Malware) => Some(3),
         Verdict::Dropped(
-            AlertReason::Ebpf | AlertReason::BpfTimeout | AlertReason::BpfInvalidAction,
+            AlertReason::Bpf | AlertReason::BpfTimeout | AlertReason::BpfInvalidAction,
         ) => Some(4),
         Verdict::Dropped(AlertReason::Heuristic) => Some(5),
         Verdict::Management => Some(6),

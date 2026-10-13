@@ -62,7 +62,7 @@ pub struct IntervalStats {
     /// DPI signature matches.
     pub malware: u64,
     /// Drops by the installed BPF program.
-    pub ebpf: u64,
+    pub bpf: u64,
     /// Heuristic anomalies.
     pub heuristic: u64,
     /// Mgmt-plane packets, authenticated or not.
@@ -72,7 +72,7 @@ pub struct IntervalStats {
 impl IntervalStats {
     /// Total drops of every kind this interval.
     pub const fn drops(&self) -> u64 {
-        self.ddos + self.firewall + self.malware + self.ebpf + self.heuristic
+        self.ddos + self.firewall + self.malware + self.bpf + self.heuristic
     }
 }
 
@@ -174,7 +174,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
                 ddos: 0,
                 firewall: 0,
                 malware: 0,
-                ebpf: 0,
+                bpf: 0,
                 heuristic: 0,
                 mgmt: 0,
             },
@@ -245,7 +245,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
     }
 
     /// Sends the signed telemetry report for the current interval: ten
-    /// big-endian u64 slots holding passed, ddos, firewall, malware, ebpf
+    /// big-endian u64 slots holding passed, ddos, firewall, malware, bpf
     /// and heuristic counts, `memory_used`, active flows, mgmt packets and
     /// the boot epoch.
     pub fn send_telemetry<S: PacketSink>(&mut self, memory_used: u64, sink: &mut S) {
@@ -255,7 +255,7 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
             s.ddos,
             s.firewall,
             s.malware,
-            s.ebpf,
+            s.bpf,
             s.heuristic,
             memory_used,
             self.flows.active_count as u64,
@@ -346,12 +346,12 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
             let program = &self.bpf.program[..self.bpf.len];
             let drop_reason = match self.vm.execute(program, packet) {
                 Ok(VmAction::Pass) => None,
-                Ok(VmAction::Drop) => Some(AlertReason::Ebpf),
+                Ok(VmAction::Drop) => Some(AlertReason::Bpf),
                 Err(VmRuntimeError::Timeout) => Some(AlertReason::BpfTimeout),
                 Err(VmRuntimeError::InvalidAction(_)) => Some(AlertReason::BpfInvalidAction),
             };
             if let Some(reason) = drop_reason {
-                self.stats.ebpf += 1;
+                self.stats.bpf += 1;
                 return self.drop_with_alert(&meta, reason, now, sink);
             }
         }

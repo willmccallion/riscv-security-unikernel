@@ -3,7 +3,7 @@
 //! This is a bare-metal RISC-V unikernel implementing a network security
 //! appliance. It processes network packets in real-time, applying multiple
 //! security mechanisms including DDoS mitigation, firewall rules, deep packet
-//! inspection, heuristic analysis, and custom eBPF-like packet filters.
+//! inspection, heuristic analysis, and custom BPF-style packet filters.
 //!
 //! The kernel operates in a polling loop, processing packets in batches
 //! and periodically sending telemetry data to the control plane.
@@ -263,7 +263,7 @@ impl Heartbeat {
                 stats.ddos,
                 stats.firewall,
                 stats.malware,
-                stats.ebpf,
+                stats.bpf,
                 stats.heuristic,
                 active_flows,
                 stats.mgmt

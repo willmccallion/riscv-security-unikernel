@@ -3,7 +3,7 @@
 //! This application provides a real-time monitoring and control interface
 //! for the security kernel. It displays network statistics, security alerts,
 //! and allows dynamic configuration of firewall rules, DPI signatures,
-//! and eBPF packet filters. Its live network view shows what the security
+//! and BPF packet filters. Its live network view shows what the security
 //! daemon's monitor sees on a real network; `--live` opens that view alone.
 
 // Every egui widget call returns a Response; ignoring most of them is how

@@ -3,7 +3,7 @@
 //! This module provides the egui-based user interface for monitoring
 //! and controlling the security kernel. It includes real-time statistics
 //! visualization, event logging, packet inspection, and configuration
-//! interfaces for firewall rules, DPI signatures, and eBPF programs.
+//! interfaces for firewall rules, DPI signatures, and BPF programs.
 
 use crate::live::view::LiveView;
 use crate::types::{
@@ -28,8 +28,8 @@ enum Tab {
     Dashboard,
     /// Software-defined networking and firewall configuration.
     Sdn,
-    /// eBPF program editor and compiler.
-    Ebpf,
+    /// BPF program editor and compiler.
+    Bpf,
     /// What the network monitor sees on the real network.
     LiveNetwork,
 }
@@ -113,14 +113,14 @@ pub struct AegisApp {
     sdn_port: String,
     /// Input field for DPI signature patterns.
     sdn_sig: String,
-    /// Input field for eBPF program source code.
-    ebpf_code: String,
+    /// Input field for BPF program source code.
+    bpf_code: String,
     /// Blocked ports, with the kernel's response to each.
     blocked_ports: Vec<Rule<u16>>,
     /// DPI signatures, with the kernel's response to each.
     dpi_signatures: Vec<Rule<String>>,
-    /// Uploaded eBPF programs, newest last.
-    ebpf_programs: Vec<Rule<String>>,
+    /// Uploaded BPF programs, newest last.
+    bpf_programs: Vec<Rule<String>>,
 
     /// Current log display mode.
     log_mode: LogMode,
@@ -162,12 +162,12 @@ impl AegisApp {
             selected_tab: Tab::Dashboard,
             sdn_port: String::new(),
             sdn_sig: String::new(),
-            ebpf_code: "BLOCK TCP DST 80".to_string(),
+            bpf_code: "BLOCK TCP DST 80".to_string(),
             blocked_ports: vec![Rule::built_in(sec_core::config::DEFAULT_BLOCKED_PORT)],
             dpi_signatures: ["DROP TABLE", "<script>", "eval(", "UNION SELECT"]
                 .map(|sig| Rule::built_in(sig.to_string()))
                 .into(),
-            ebpf_programs: Vec::new(),
+            bpf_programs: Vec::new(),
             log_mode: LogMode::Alerts,
             log_paused: false,
             log_new_entry: false,
@@ -196,7 +196,7 @@ impl AegisApp {
     fn apply_status(&mut self, id: CommandId, status: CommandStatus) {
         update_rules(&mut self.blocked_ports, id, status);
         update_rules(&mut self.dpi_signatures, id, status);
-        update_rules(&mut self.ebpf_programs, id, status);
+        update_rules(&mut self.bpf_programs, id, status);
     }
 
     fn drain_events(&mut self) {
@@ -712,7 +712,7 @@ impl AegisApp {
         });
     }
 
-    /// Renders the eBPF program editor tab.
+    /// Renders the BPF program editor tab.
     ///
     /// Allows users to write and compile custom packet filtering programs
     /// that are executed in the kernel's virtual machine for each packet.
@@ -720,8 +720,8 @@ impl AegisApp {
     /// # Arguments
     ///
     /// * `ui` - egui UI context
-    fn ui_ebpf(&mut self, ui: &mut egui::Ui) {
-        ui.heading("eBPF Packet Filter");
+    fn ui_bpf(&mut self, ui: &mut egui::Ui) {
+        ui.heading("BPF Packet Filter");
         ui.label("Inject custom assembly into the packet processing pipeline.");
         ui.add_space(10.0);
 
@@ -732,24 +732,24 @@ impl AegisApp {
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
                     if ui.button("Preset: Block TCP Port 80").clicked() {
-                        self.ebpf_code = "BLOCK TCP DST 80".to_string();
+                        self.bpf_code = "BLOCK TCP DST 80".to_string();
                     }
                     if ui.button("Preset: Block All").clicked() {
-                        self.ebpf_code = "DROP ALL".to_string();
+                        self.bpf_code = "DROP ALL".to_string();
                     }
                 });
                 ui.add_space(5.0);
                 ui.add(
-                    egui::TextEdit::multiline(&mut self.ebpf_code)
+                    egui::TextEdit::multiline(&mut self.bpf_code)
                         .code_editor()
                         .desired_rows(6),
                 );
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
-                    if let Some(bytecode) = compile_ebpf(&self.ebpf_code) {
+                    if let Some(bytecode) = compile_bpf(&self.bpf_code) {
                         let command = self.issue(MgmtCommand::UploadBpf(bytecode));
-                        self.ebpf_programs
-                            .push(Rule::issued(self.ebpf_code.trim().to_string(), command));
+                        self.bpf_programs
+                            .push(Rule::issued(self.bpf_code.trim().to_string(), command));
                     } else {
                         let entry = LogEntry {
                             timestamp: self.start_time.elapsed().as_secs_f64(),
@@ -760,7 +760,7 @@ impl AegisApp {
                             protocol: 0,
                             packet_len: 0,
                             measured: None,
-                            msg: "eBPF: Compilation Failed".to_string(),
+                            msg: "BPF: Compilation Failed".to_string(),
                             color: egui::Color32::RED,
                         };
                         self.logs.push_front(entry);
@@ -775,7 +775,7 @@ impl AegisApp {
                     if ui.small_button("unload").clicked() {
                         let id = self.issue(MgmtCommand::UnloadBpf);
                         if let Some(active) = self
-                            .ebpf_programs
+                            .bpf_programs
                             .iter_mut()
                             .rfind(|r| r.status == CommandStatus::Applied)
                         {
@@ -786,18 +786,18 @@ impl AegisApp {
                 ui.add_space(5.0);
                 ui.separator();
                 ui.add_space(5.0);
-                if self.ebpf_programs.is_empty() {
+                if self.bpf_programs.is_empty() {
                     ui.label(egui::RichText::new("No programs loaded").color(egui::Color32::GRAY));
                 } else {
                     egui::ScrollArea::vertical()
-                        .id_source("ebpf_list")
+                        .id_source("bpf_list")
                         .max_height(200.0)
                         .show(ui, |ui| {
                             let active = self
-                                .ebpf_programs
+                                .bpf_programs
                                 .iter()
                                 .rposition(|r| r.status == CommandStatus::Applied);
-                            for (i, rule) in self.ebpf_programs.iter().enumerate() {
+                            for (i, rule) in self.bpf_programs.iter().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
                                         egui::Color32::LIGHT_BLUE,
@@ -897,7 +897,7 @@ impl eframe::App for AegisApp {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "DASHBOARD");
                 ui.selectable_value(&mut self.selected_tab, Tab::Sdn, "SDN / FIREWALL");
-                ui.selectable_value(&mut self.selected_tab, Tab::Ebpf, "eBPF STUDIO");
+                ui.selectable_value(&mut self.selected_tab, Tab::Bpf, "BPF STUDIO");
                 ui.selectable_value(&mut self.selected_tab, Tab::LiveNetwork, "LIVE NETWORK");
             });
             ui.add_space(4.0);
@@ -906,7 +906,7 @@ impl eframe::App for AegisApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.selected_tab {
             Tab::Dashboard => self.ui_dashboard(ui),
             Tab::Sdn => self.ui_sdn(ui),
-            Tab::Ebpf => self.ui_ebpf(ui),
+            Tab::Bpf => self.ui_bpf(ui),
             Tab::LiveNetwork => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.live.show(ui));
             }
@@ -967,7 +967,7 @@ fn format_metric(val: u64) -> String {
     }
 }
 
-/// Compiles a simple eBPF-like program to bytecode.
+/// Compiles a simple BPF-style program to bytecode.
 ///
 /// Supports a limited instruction set for packet filtering:
 /// - `DROP ALL` - Drops all packets
@@ -982,7 +982,7 @@ fn format_metric(val: u64) -> String {
 /// # Returns
 ///
 /// Some bytecode vector if compilation succeeds, None otherwise.
-fn compile_ebpf(code: &str) -> Option<Vec<u8>> {
+fn compile_bpf(code: &str) -> Option<Vec<u8>> {
     const PROTOCOL_OFFSET: u32 = 23;
     const DST_PORT_OFFSET: u32 = 36;
     const PASS_INDEX: u32 = 8;
@@ -1051,7 +1051,7 @@ mod tests {
     }
 
     fn run(code: &str, packet: &[u8]) -> VmAction {
-        let program = decode(&compile_ebpf(code).expect("compiles"));
+        let program = decode(&compile_bpf(code).expect("compiles"));
         validate(&program).expect("kernel accepts the program");
         VM::new().execute(&program, packet).expect("program returns")
     }
@@ -1079,8 +1079,8 @@ mod tests {
 
     #[test]
     fn block_rejects_unknown_protocol_and_out_of_range_port() {
-        assert!(compile_ebpf("BLOCK ICMP DST 80").is_none());
-        assert!(compile_ebpf("BLOCK TCP DST 70000").is_none());
+        assert!(compile_bpf("BLOCK ICMP DST 80").is_none());
+        assert!(compile_bpf("BLOCK TCP DST 70000").is_none());
     }
 
     #[test]

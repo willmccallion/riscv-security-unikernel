@@ -57,7 +57,7 @@ pub struct NetStats {
     pub fw: AtomicU64,
     /// Current packets per second dropped due to malware signatures.
     pub mal: AtomicU64,
-    /// Current packets per second dropped by eBPF filters.
+    /// Current packets per second dropped by BPF filters.
     pub bpf: AtomicU64,
     /// Current packets per second dropped by heuristic analysis.
     pub heur: AtomicU64,
@@ -157,7 +157,7 @@ pub enum MgmtCommand {
     BlockPort(u16),
     /// Add a DPI signature pattern (capped to 32 bytes at the kernel).
     AddDpiPattern(Vec<u8>),
-    /// Upload a compiled eBPF program (7 bytes per instruction, 64 max).
+    /// Upload a compiled BPF program (7 bytes per instruction, 64 max).
     UploadBpf(Vec<u8>),
     /// Lift a ban on an IP address.
     UnbanIp(std::net::Ipv4Addr),
@@ -165,6 +165,6 @@ pub enum MgmtCommand {
     UnblockPort(u16),
     /// Remove a runtime-added DPI signature.
     RemoveDpiPattern(Vec<u8>),
-    /// Uninstall the eBPF program.
+    /// Uninstall the BPF program.
     UnloadBpf,
 }

@@ -8,7 +8,7 @@ The kernel inspects traffic addressed to it and reports verdicts; it does not fo
 graph LR
     subgraph GUI["GUI Control Plane (egui)"]
         TG[Traffic Generator]
-        CP[Dashboard / SDN / eBPF Studio]
+        CP[Dashboard / SDN / BPF Studio]
     end
 
     subgraph Kernel["RISC-V Kernel · 64 KB RAM"]
@@ -133,7 +133,7 @@ Measured error follows the predicted 1.04/√m; the kernel's 256 registers count
 Single-pass scan for the built-in signatures `DROP TABLE`, `<script>`, `eval(` and `UNION SELECT`. Up to eight more patterns of up to 32 bytes can be added and removed at runtime. Matching is case-sensitive and per packet.
 
 ### BPF filter VM
-A small 16-register bytecode VM (not Linux eBPF) with load, move, compare, bitwise, jump and return instructions. Programs are validated on upload (opcodes, registers, jump targets), run with a 1,000-instruction budget per packet, and must return 0 (drop) or 1 (pass). The GUI's eBPF Studio compiles `BLOCK <TCP|UDP> DST <port>` and `DROP ALL`.
+A small 16-register bytecode VM (not Linux eBPF) with load, move, compare, bitwise, jump and return instructions. Programs are validated on upload (opcodes, registers, jump targets), run with a 1,000-instruction budget per packet, and must return 0 (drop) or 1 (pass). The GUI's BPF Studio compiles `BLOCK <TCP|UDP> DST <port>` and `DROP ALL`.
 
 ### Heuristics
 TCP Xmas (FIN|URG|PSH) and null scans; x86 NOP sleds (a decaying score that reaches 8, so interleaved junk bytes do not hide them) and runs of 8 RISC-V NOPs.
@@ -265,7 +265,7 @@ make gui
 1. On the **Dashboard** tab, click **NORMAL (HTTP)**, **DDoS ATTACK** or **LIVE SIMULATION**
 2. Watch the counters, graph and event log for throughput and drop reasons
 3. Use the **SDN / FIREWALL** tab to add or remove firewall rules and DPI signatures
-4. Use the **eBPF STUDIO** tab to upload or unload a packet filter
+4. Use the **BPF STUDIO** tab to upload or unload a packet filter
 
 Press `Ctrl+B X` to exit QEMU.
 

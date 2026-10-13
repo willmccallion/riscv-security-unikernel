@@ -62,7 +62,7 @@ fn rejected_bpf_upload_leaves_the_active_program_intact() {
     let _ = mgmt.send(&kernel, &drop_udp_port(9999)).unwrap();
     let probe = frame::udp_to_kernel(frame::HOST_IP, 5000, 9999, b"probe");
     kernel.send(&probe).unwrap();
-    expect_alert(&kernel, AlertReason::Ebpf);
+    expect_alert(&kernel, AlertReason::Bpf);
 
     let passes_then_invalid = upload_body(&[
         instruction(Opcode::Ret, 0, 0, 1),
@@ -80,5 +80,5 @@ fn rejected_bpf_upload_leaves_the_active_program_intact() {
     kernel.drain().unwrap();
     kernel.send(&probe).unwrap();
 
-    expect_alert(&kernel, AlertReason::Ebpf);
+    expect_alert(&kernel, AlertReason::Bpf);
 }

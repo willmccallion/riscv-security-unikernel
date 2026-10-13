@@ -1,5 +1,5 @@
 #![no_main]
-//! Fuzz the eBPF VM executor with arbitrary instructions + packet.
+//! Fuzz the BPF VM executor with arbitrary instructions + packet.
 //!
 //! The first byte of input picks how many instructions to materialise
 //! (capped at 64). The next `n * 7` bytes encode instructions; the rest

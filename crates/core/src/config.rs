@@ -145,7 +145,7 @@ pub const TOKEN_BUCKET_CAPACITY: usize = 50;
 /// Port 23 is blocked by default as a security measure.
 pub const DEFAULT_BLOCKED_PORT: u16 = 23;
 
-/// Maximum number of eBPF program instructions.
+/// Maximum number of BPF program instructions.
 pub const MAX_BPF_PROGRAM_SIZE: usize = 64;
 
 /// Sampling rate for flow logging.

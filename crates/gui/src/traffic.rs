@@ -492,8 +492,8 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[MALWARE] Signature Match from {ip}"),
             egui::Color32::RED,
         ),
-        Some(AlertReason::Ebpf) => (
-            format!("[eBPF] Custom Filter Drop from {ip}"),
+        Some(AlertReason::Bpf) => (
+            format!("[BPF] Custom Filter Drop from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
         Some(AlertReason::Heuristic) => (
@@ -839,7 +839,7 @@ mod tests {
             (AlertReason::Ddos, "[DDoS]"),
             (AlertReason::Firewall, "[FIREWALL]"),
             (AlertReason::Malware, "[MALWARE]"),
-            (AlertReason::Ebpf, "[eBPF]"),
+            (AlertReason::Bpf, "[BPF]"),
             (AlertReason::Heuristic, "[HEURISTIC]"),
             (AlertReason::Flow, "[FLOW]"),
             (AlertReason::Pass, "[PASS]"),

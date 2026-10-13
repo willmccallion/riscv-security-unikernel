@@ -21,7 +21,7 @@
 //!
 //! - **Forgery.** Without the pre-shared key an off-path attacker
 //!   cannot construct a valid MAC, so they cannot ban arbitrary IPs,
-//!   block ports, install eBPF programs, or push DPI signatures.
+//!   block ports, install BPF programs, or push DPI signatures.
 //! - **In-boot replay.** A passively recorded mgmt packet cannot be
 //!   re-sent within the same boot, because its sequence is now stale.
 //! - **Cross-reboot replay.** A packet captured before a reboot will

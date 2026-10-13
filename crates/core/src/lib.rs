@@ -10,7 +10,7 @@
 //!
 //! - [`engine`] — the per-packet pipeline tying every subsystem together.
 //! - [`security`] — DDoS mitigation, DPI, firewall, flow tracking,
-//!   heuristics, eBPF VM, and mgmt-protocol constants.
+//!   heuristics, BPF VM, and mgmt-protocol constants.
 //! - [`net`] — Ethernet/IPv4/ARP/ICMP/TCP packet processing. The stack
 //!   is generic over a [`net::PacketSink`] trait so callers supply their
 //!   own send path (VirtIO on the kernel, `AF_XDP/nfqueue` on the daemon).
