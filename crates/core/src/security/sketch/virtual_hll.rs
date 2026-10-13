@@ -181,6 +181,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "statistical test; runs natively in CI")]
     fn two_flows_almost_never_share_most_registers() {
         const FLOWS: u64 = 400;
         let positions: [[usize; 32]; FLOWS as usize] = core::array::from_fn(|f| {

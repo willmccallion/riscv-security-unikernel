@@ -172,6 +172,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "statistical test; runs natively in CI")]
     fn estimates_are_within_a_few_standard_errors() {
         // 1.04 / sqrt(256) = 6.5% standard error; allow 4 sigma.
         for (key, distinct) in [(1u8, 50u32), (2, 1_000), (3, 20_000), (4, 200_000)] {

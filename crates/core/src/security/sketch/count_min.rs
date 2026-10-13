@@ -188,6 +188,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "statistical test; runs natively in CI")]
     fn rows_collide_independently() {
         const ITEMS: usize = 2000;
         let cms = CountMinSketch::<16, 4>::new([5; 16]);
