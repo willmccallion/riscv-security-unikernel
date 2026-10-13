@@ -12,10 +12,6 @@ use sec_core::config::{CMS_DEPTH, CMS_WIDTH};
 use benches::{dpi, flow, heuristic, sketch, vm};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-// ---------------------------------------------------------------------------
-// Shared fixtures
-// ---------------------------------------------------------------------------
-
 /// A synthetic 128-byte UDP payload used across benchmarks.
 const CLEAN_PAYLOAD: &[u8] = b"GET /index.html HTTP/1.1\r\nHost: 192.168.100.1\r\nAccept: */*\r\n\
                                 Connection: keep-alive\r\n\r\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
@@ -28,10 +24,6 @@ const MALICIOUS_PAYLOAD: &[u8] =
 const NOP_SLED_PAYLOAD: &[u8] = &[
     0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x31, 0xc0, 0x50, 0x68,
 ];
-
-// ---------------------------------------------------------------------------
-// Count-Min Sketch — DDoS heavy-hitter detection
-// ---------------------------------------------------------------------------
 
 fn bench_cms_insert(c: &mut Criterion) {
     let mut cms = sketch::CountMinSketch::<CMS_WIDTH, CMS_DEPTH>::new([0; 16]);
@@ -55,10 +47,6 @@ fn bench_cms_insert_varied(c: &mut Criterion) {
         });
     });
 }
-
-// ---------------------------------------------------------------------------
-// Aho-Corasick DPI — multi-pattern payload scan
-// ---------------------------------------------------------------------------
 
 fn build_ac() -> dpi::AhoCorasick {
     let mut ac = dpi::AhoCorasick::new();
@@ -88,10 +76,6 @@ fn bench_ac_scan_match(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// BPF VM — bytecode execution
-// ---------------------------------------------------------------------------
-
 /// Builds a small BPF program that loads the byte at offset 23 (IP protocol
 /// field in a raw Ethernet frame) and returns 0 (drop) if it equals 17 (UDP).
 fn udp_drop_program() -> Vec<vm::Instruction> {
@@ -115,10 +99,6 @@ fn bench_vm_execute(c: &mut Criterion) {
         });
     });
 }
-
-// ---------------------------------------------------------------------------
-// Flow table — 5-tuple lookup and update
-// ---------------------------------------------------------------------------
 
 const fn key(src_ip: [u8; 4], src_port: u16) -> FlowKey {
     FlowKey {
@@ -181,10 +161,6 @@ fn bench_flow_full_table(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Heuristic engine — TCP flag and NOP-sled detection
-// ---------------------------------------------------------------------------
-
 fn bench_heuristic_tcp_flags(c: &mut Criterion) {
     c.bench_function("heuristic_check_tcp_flags", |b| {
         b.iter(|| {
@@ -215,10 +191,6 @@ fn bench_heuristic_payload_nop_sled(c: &mut Criterion) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Full hot-path simulation: CMS → AC scan → VM execute per packet
-// ---------------------------------------------------------------------------
-
 fn bench_full_hot_path(c: &mut Criterion) {
     let mut cms = sketch::CountMinSketch::<CMS_WIDTH, CMS_DEPTH>::new([0; 16]);
     let ac = build_ac();
@@ -238,10 +210,6 @@ fn bench_full_hot_path(c: &mut Criterion) {
         });
     });
 }
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
 
 criterion_group!(
     benches,

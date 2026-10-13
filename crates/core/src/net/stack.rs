@@ -170,12 +170,8 @@ fn handle_ipv4<'a, S: PacketSink>(
     if packet.len() < ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE {
         return None;
     }
-    // Reject anything that isn't a well-formed IPv4 header. Accepting
-    // version != 4 or IHL < 5 lets a sender position the "TCP header"
-    // inside the IP header itself, so downstream port/firewall checks
-    // run on the wrong bytes -- a packet to a banned port can sneak
-    // past by claiming IHL=0 and having the firewall match against
-    // header bytes that happen to look like a different port.
+    // IHL < 5 would place the L4 header inside the IP header and let the
+    // firewall read ports from the wrong bytes.
     let version_ihl = packet[ipv4::VERSION_IHL_OFFSET];
     if (version_ihl >> 4) != 4 {
         return None;

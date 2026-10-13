@@ -111,13 +111,7 @@ impl MgmtAuth {
             return None;
         }
 
-        // MAC is verified BEFORE the counter is inspected. If we
-        // returned early on a stale counter, an attacker measuring
-        // reply latency could distinguish "wrong key" (slow, ~100
-        // cycles of SipHash) from "stale counter" (fast, no hash) for
-        // any chosen counter value, which leaks whether they have
-        // already rolled past our last-seen sequence. Always paying
-        // the SipHash cost erases that distinguisher.
+        // MAC first, so timing does not reveal whether a counter is stale.
         let mac_start = packet.len() - MAC_LEN;
         let signed_region = &packet[..mac_start];
         let provided_mac = &packet[mac_start..];

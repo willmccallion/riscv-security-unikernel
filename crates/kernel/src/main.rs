@@ -138,12 +138,7 @@ pub extern "C" fn kmain() -> ! {
     let mut last_cms_decay = last_report;
     let mut heartbeat = Heartbeat::new();
 
-    // Gather 32 bytes of per-boot entropy from every source the
-    // kernel can reach: Zkr (RISC-V K extension TRNG, gated on the
-    // `zkr` Cargo feature), virtio-rng (QEMU and other hypervisors),
-    // and `mcycle` as a degraded last resort. `gather` XOR-mixes
-    // them, so as long as **any** source is unpredictable the output
-    // is unpredictable.
+    // XOR-mixed, so the result is unpredictable if any one source is.
     let mut entropy = [0u8; 32];
     let report = entropy::gather(&mut entropy, rng_present);
     crate::kprintln!(

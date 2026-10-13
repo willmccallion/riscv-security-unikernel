@@ -65,12 +65,8 @@ impl EntropySource for ZkrSource {
         let mut wait_spins: u32 = 0;
         while written < buf.len() {
             let raw: usize;
-            // SAFETY: csrrw with x0 as source operand reads the seed
-            // CSR (and clears the side-effect bits the spec marks as
-            // write-1-to-clear). The `zkr` feature is the operator's
-            // assertion that this CPU implements the K extension; on
-            // non-Zkr hardware this instruction traps and the kernel
-            // halts, as documented on the feature flag.
+            // SAFETY: the `zkr` feature asserts the hart implements the seed
+            // CSR; reading it with x0 as the source has no other effect.
             unsafe { core::arch::asm!("csrrw {0}, 0x015, x0", out(reg) raw) };
             let opst = (raw >> 30) & 0b11;
             match opst {

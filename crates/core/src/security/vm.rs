@@ -65,38 +65,20 @@ impl Opcode {
     }
 }
 
-/// Reasons a BPF program may be rejected at upload time.
-///
-/// Returned by [`validate`] when a program contains instructions that would
-/// behave unsafely or unpredictably at execution time. Programs that fail
-/// validation must never reach [`VM::execute`] — if one does, the masking
-/// applied inside `execute` keeps the kernel from panicking, but the
-/// behaviour the program describes is undefined and the rejection signals
-/// that an attacker is probing the upload path.
+/// Reasons [`validate`] rejects a BPF program at upload time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmError {
     /// `reg_a` or `reg_b` is outside the 16-register file.
     InvalidRegister,
     /// A jump opcode targets an instruction index `>= program.len()`.
     InvalidJumpTarget,
-    /// The instruction's opcode byte is not one of the variants the VM
-    /// recognises. Without this check, unknown opcodes hit the
-    /// catch-all `_ => {}` arm in `execute` and become silent no-ops,
-    /// which (a) gives an attacker a fuzz-the-opcodes oracle without
-    /// rejection and (b) means a future opcode added at one of the
-    /// currently-unused values would silently change the behaviour of
-    /// programs uploaded before the addition.
+    /// The opcode byte is not one the VM defines, so a future opcode cannot
+    /// change what an already-uploaded program does.
     InvalidOpcode,
 }
 
-/// Validates a program before it can be installed.
-///
-/// The VM has 16 registers but instructions encode register indices as
-/// `u8`, so an attacker-supplied program can ask for register 200. Likewise
-/// jump targets are `u32` immediates with no inherent bound. Reject both
-/// at upload time so a malicious management packet cannot install a
-/// program that would otherwise force the executing core into masked
-/// fallback behaviour on every packet.
+/// Validates a program before it can be installed: known opcodes, registers
+/// below 16, and jump targets inside the program.
 pub fn validate(program: &[Instruction]) -> Result<(), VmError> {
     let len = program.len() as u32;
     for inst in program {
@@ -165,14 +147,8 @@ pub enum VmAction {
     Pass,
 }
 
-/// Runtime failures raised by [`VM::execute`].
-///
-/// Distinct from [`VmError`], which covers upload-time validation.
-/// Returning a dedicated error type (rather than a sentinel `u64`)
-/// forces every caller to handle each failure mode explicitly, so an
-/// attacker who installs a one-instruction infinite loop (`Jmp 0`) or
-/// returns a garbage action code cannot rely on a forgotten branch
-/// silently degrading to "pass".
+/// Runtime failures raised by [`VM::execute`]; callers drop the packet and
+/// alert on either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmRuntimeError {
     /// The program burned through `MAX_CYCLES` without reaching a

@@ -27,8 +27,6 @@ use sec_core::security::sketch::CountMinSketch;
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::{FlowKey, FlowTable};
 
-// ---------------------------------------------------------------- PenaltyBox
-
 proptest! {
     /// An IP banned at time `t` for `dur` cycles must read as banned at
     /// every time strictly inside `[t, t + dur)`. The penalty box is a
@@ -87,8 +85,6 @@ proptest! {
     }
 }
 
-// ----------------------------------------------------------- CountMinSketch
-
 proptest! {
     /// CMS guarantees no underestimate. After inserting `item` exactly
     /// N times (with arbitrary other items mixed in), the returned
@@ -117,8 +113,6 @@ proptest! {
             "estimate {last_seen} below true count {repeats}");
     }
 }
-
-// -------------------------------------------------------------- FlowTable
 
 proptest! {
     /// Two updates against the same 5-tuple must hit the same slot:
@@ -164,8 +158,6 @@ proptest! {
     }
 }
 
-// ---------------------------------------------------------- AhoCorasick
-
 proptest! {
     /// Inserting a non-empty pattern and immediately scanning a
     /// haystack that contains it as a contiguous substring must
@@ -198,8 +190,6 @@ proptest! {
         prop_assert!(!ac.scan(&hay), "haystack of disjoint alphabet must not match");
     }
 }
-
-// -------------------------------------------------------------- TokenBucket
 
 proptest! {
     /// Bounded-rate invariant. Over `steps` calls spaced `step_size`

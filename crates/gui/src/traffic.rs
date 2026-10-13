@@ -175,14 +175,8 @@ pub async fn start_background_task(
         socket_pool.push(sock);
     }
 
-    // Try to attach to the namespaces created by `make setup_net_many`.
-    // When this succeeds, every generated packet's source IP is a real
-    // in-kernel network stack — CMS per-source counters reflect actual
-    // diversity instead of collapsing onto the handful of addresses a
-    // host-bound socket pool can present. When it fails (no setup run,
-    // no CAP_SYS_ADMIN), we log and fall back to `socket_pool` so the
-    // GUI still starts and the user sees traffic, even if the
-    // heavy-hitter behaviour is unrealistic.
+    // Namespaces from `make setup_net_many` give each packet a distinct
+    // source IP; without them, fall back to the host socket pool.
     let ns_count: usize = std::env::var("AEGIS_NS_COUNT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -233,16 +227,8 @@ pub async fn start_background_task(
                 for id in pending.expire(Instant::now()) {
                     let _ = events.send(UiEvent::CommandStatus { id, status: CommandStatus::NoAck });
                 }
-                // Rates are tuned against the kernel's CMS heavy-hitter
-                // threshold (100 pps/source). With N real source IPs
-                // (netns mode) the per-source rate is total/N:
-                //   Normal 2 pkts/tick × ~1000 ticks/s ÷ 200 ns ≈ 10 pps/src
-                //   DDoS 300 pkts/tick × ~1000 ticks/s ÷ 200 ns ≈ 1500 pps/src
-                // So Normal passes; DDoS lights up HH on every source.
-                // Fallback (host-pool) still roughly works since 50
-                // sockets × 10 pps = 500 pps/src — over HH — which
-                // surfaces the "you need netns for Normal" failure
-                // mode loudly rather than silently.
+                // Across 200 namespaces, Normal is ~10 pps per source and DDoS
+                // ~1500, either side of the kernel's 100 pps ban threshold.
                 match mode {
                     TrafficMode::Normal => {
                         for _ in 0..rng.gen_range(1..=3) {
@@ -721,8 +707,6 @@ mod tests {
             .to_vec()
     }
 
-    // ----- mgmt packet construction (covers C1 regression) -----
-
     #[test]
     fn ban_ip_body_roundtrips_to_kernel_view() {
         let body = build_ban_ip_body(std::net::Ipv4Addr::new(10, 0, 0, 42));
@@ -796,8 +780,6 @@ mod tests {
         let too_many = vec![0u8; upload_bpf::INSTR_SIZE * (upload_bpf::MAX_INSTR_COUNT + 1)];
         assert!(build_upload_bpf_body(&too_many).is_none());
     }
-
-    // ----- alert parser (covers H3 regression) -----
 
     /// Build a well-formed 17-byte alert body with all metadata fields
     /// set to recognisable canary values.
