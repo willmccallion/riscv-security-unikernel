@@ -44,7 +44,7 @@ use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::hash::derive_key;
 use sec_core::time::TimeSource;
-use sec_core::types::Singleton;
+use sec_core::types::TakeOnce;
 
 include!(concat!(env!("OUT_DIR"), "/mgmt_key.rs"));
 
@@ -86,11 +86,20 @@ global_asm!(
 "#
 );
 
+/// Stops this hart for good.
+pub fn halt() -> ! {
+    loop {
+        // SAFETY: `wfi` is always safe in M-mode, and with interrupts never
+        // enabled it does not return.
+        unsafe { core::arch::asm!("wfi") };
+    }
+}
+
 /// Maximum number of packets to process before servicing timers again.
 const BATCH_SIZE: usize = 64;
 
 /// Global security engine instance.
-static ENGINE: Singleton<Engine> = Singleton::new(Engine::new(MGMT_KEY));
+static ENGINE: TakeOnce<Engine> = TakeOnce::new(Engine::new(MGMT_KEY));
 
 /// Kernel main entry point.
 ///
@@ -108,7 +117,10 @@ pub extern "C" fn kmain() -> ! {
     NetDevice::init();
     let rng_present = VirtioRng::init();
 
-    let engine = ENGINE.get();
+    let Some(engine) = ENGINE.take() else {
+        crate::kprintln!("\n\x1b[31m[BOOT]\x1b[0m engine already in use; halting.");
+        halt();
+    };
 
     crate::kprintln!("\n[ RISC-V Security Unikernel {} ]", KERNEL_VERSION);
     crate::kprintln!("[*] Architecture: RISC-V64 (Bare Metal)");

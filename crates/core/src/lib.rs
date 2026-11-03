@@ -18,7 +18,7 @@
 //!   clock counter. The kernel implements it via the RISC-V `mcycle`
 //!   CSR; the daemon via `CLOCK_MONOTONIC`.
 //! - [`config`] — shared threshold and protocol constants.
-//! - [`types`] — small utilities (currently the `Singleton` pattern).
+//! - [`types`] — small utilities (currently [`types::TakeOnce`]).
 
 #![no_std]
 

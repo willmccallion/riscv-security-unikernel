@@ -68,10 +68,5 @@ pub fn check_or_halt() {
         start as usize,
         start as usize + len
     );
-    loop {
-        // SAFETY: `wfi` is always safe in M-mode; halts until the
-        // next interrupt (which we never enable), effectively
-        // pausing the core forever.
-        unsafe { core::arch::asm!("wfi") };
-    }
+    crate::halt();
 }
