@@ -258,10 +258,10 @@ impl<
         }
     }
 
-    /// Sends the signed telemetry report for the current interval: ten
+    /// Sends the signed telemetry report for the current interval: eleven
     /// big-endian u64 slots holding passed, ddos, firewall, malware, bpf
-    /// and heuristic counts, `memory_used`, active flows, mgmt packets and
-    /// the boot epoch.
+    /// and heuristic counts, `memory_used`, active flows, mgmt packets, the
+    /// boot epoch and the last mgmt sequence accepted this boot.
     pub fn send_telemetry<S: PacketSink>(&mut self, memory_used: u64, sink: &mut S) {
         let s = &self.stats;
         let slots = [
@@ -275,6 +275,7 @@ impl<
             self.flows.active_count as u64,
             s.mgmt,
             u64::from(self.mgmt_auth.epoch()),
+            u64::from(self.mgmt_auth.last_seq()),
         ];
         self.send_report(TELEMETRY_PORT, &report::telemetry_body(&slots), sink);
     }

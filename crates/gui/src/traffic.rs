@@ -36,7 +36,7 @@ const NETNS_DEFAULT_COUNT: usize = 200;
 /// kernel echoes in its ack, or `None` if nothing was sent because no
 /// telemetry has announced the kernel's boot epoch yet.
 async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Option<u32> {
-    let counter = next_counter()?;
+    let counter = MGMT_COUNTER.next()?;
     let mut packet = vec![0u8; 8 + body.len() + 8];
     seal(key, counter, body, &mut packet)?;
     let _ = sock.send_to(&packet, MGMT_ADDR).await;
@@ -48,7 +48,7 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -99,49 +99,53 @@ fn read_dev_key_file() -> Option<[u8; 16]> {
     None
 }
 
-/// Last boot epoch seen in a kernel telemetry packet. Zero means we
-/// have not yet learned an epoch, in which case no mgmt packet can be
-/// sealed (the kernel would reject every counter built around epoch 0).
-static KERNEL_EPOCH: AtomicU32 = AtomicU32::new(0);
+/// The mgmt counters this dashboard seals commands with.
+static MGMT_COUNTER: MgmtCounter = MgmtCounter::new();
 
-/// In-epoch monotonic sequence for outgoing mgmt packets. Initialised
-/// from the low 32 bits of Unix-millis on first use so a GUI restart
-/// within the same kernel epoch still picks a sequence above whatever
-/// the previous instance sent. Reset to 0 whenever the kernel epoch
-/// rotates (i.e. a kernel reboot).
-static MGMT_SEQ: AtomicU32 = AtomicU32::new(0);
+/// The last mgmt counter used, `(epoch << 32) | seq`, kept in step with the
+/// kernel's own record so the next command is always one it accepts.
+#[derive(Debug)]
+struct MgmtCounter(AtomicU64);
 
-/// Records a kernel-advertised epoch. If it differs from what we last
-/// saw, restart the in-epoch sequence so the first post-rotation packet
-/// is `seq=1` and the kernel's freshly-zeroed `last_seq` accepts it.
-fn observe_kernel_epoch(epoch: u32) {
-    if epoch == 0 {
-        return;
+impl MgmtCounter {
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
     }
-    let prev = KERNEL_EPOCH.swap(epoch, Ordering::Relaxed);
-    if prev != epoch {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(1, |d| d.as_millis() as u32);
-        MGMT_SEQ.store(seed, Ordering::Relaxed);
-    }
-}
 
-/// Builds the next mgmt counter as `(epoch << 32) | seq`, or returns
-/// `None` if no telemetry has yet announced an epoch. The sequence
-/// portion increments strictly for every packet; if it ever wraps to 0
-/// (unreachable in practice — would need >4 billion mgmt commands in
-/// one boot) we skip 0 so the kernel keeps accepting `seq > 0`.
-fn next_counter() -> Option<u64> {
-    let epoch = KERNEL_EPOCH.load(Ordering::Relaxed);
-    if epoch == 0 {
-        return None;
+    /// Takes in the epoch and last accepted sequence a telemetry report
+    /// carries. Within one epoch the counter only moves forward, so a
+    /// report older than commands already sent cannot rewind it; a new
+    /// epoch (a kernel reboot) restarts it from the kernel's sequence.
+    fn observe(&self, epoch: u32, last_accepted_seq: u32) {
+        if epoch == 0 {
+            return;
+        }
+        let reported = (u64::from(epoch) << 32) | u64::from(last_accepted_seq);
+        let _ = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                let same_epoch = last >> 32 == u64::from(epoch);
+                Some(if same_epoch {
+                    last.max(reported)
+                } else {
+                    reported
+                })
+            });
     }
-    let mut seq = MGMT_SEQ.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    if seq == 0 {
-        seq = MGMT_SEQ.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+
+    /// The counter for the next command, or `None` before any telemetry
+    /// has announced the kernel's epoch or once this epoch's sequence is
+    /// used up.
+    fn next(&self) -> Option<u64> {
+        self.0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                let has_epoch = last >> 32 != 0;
+                let seq_left = last & u64::from(u32::MAX) != u64::from(u32::MAX);
+                (has_epoch && seq_left).then_some(last + 1)
+            })
+            .ok()
+            .map(|last| last + 1)
     }
-    Some(((epoch as u64) << 32) | (seq as u64))
 }
 
 /// Main background task that runs continuously.
@@ -324,7 +328,6 @@ fn handle_report(
     events: &UnboundedSender<UiEvent>,
     pending: &mut PendingAcks,
 ) {
-    observe_kernel_epoch(report.epoch);
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -333,6 +336,11 @@ fn handle_report(
     match classify_report(report.body) {
         ReportKind::Telemetry => {
             if let Some(slots) = parse_telemetry(report.body) {
+                let last_accepted_seq = slots[telemetry_packet::LAST_MGMT_SEQ_SLOT];
+                MGMT_COUNTER.observe(
+                    report.epoch,
+                    u32::try_from(last_accepted_seq).unwrap_or(u32::MAX),
+                );
                 record_telemetry(stats, &slots);
             }
         }
@@ -361,7 +369,7 @@ fn parse_telemetry(body: &[u8]) -> Option<[u64; telemetry_packet::SLOTS]> {
 }
 
 /// Stores one interval's counters. Slot 9 (the epoch) is taken from the
-/// authenticated envelope instead.
+/// authenticated envelope instead, and slot 10 feeds the mgmt counter.
 fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
     let [
         passed,
@@ -374,6 +382,7 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
         flows,
         mgmt,
         _epoch,
+        _last_mgmt_seq,
     ] = *slots;
     stats.passed.store(passed, Ordering::Relaxed);
     stats.total_passed.fetch_add(passed, Ordering::Relaxed);
@@ -885,21 +894,56 @@ mod tests {
         }
     }
 
+    const EPOCH: u32 = 0xDEAD_BEEF;
+
+    fn counter(epoch: u32, seq: u32) -> u64 {
+        (u64::from(epoch) << 32) | u64::from(seq)
+    }
+
     #[test]
-    fn next_counter_is_none_until_kernel_epoch_observed() {
-        // Run in an isolated process via a forked test would be ideal,
-        // but the static atomics are process-wide. Snapshot, mutate,
-        // restore so the test is independent of others' ordering.
-        let saved_epoch = KERNEL_EPOCH.swap(0, Ordering::Relaxed);
-        let saved_seq = MGMT_SEQ.swap(0, Ordering::Relaxed);
+    fn mgmt_counter_has_nothing_to_offer_before_telemetry() {
+        let mgmt = MgmtCounter::new();
 
-        assert!(next_counter().is_none(), "no telemetry seen → no counter");
-        observe_kernel_epoch(0xDEAD_BEEF);
-        let c = next_counter().expect("epoch known → counter available");
-        assert_eq!((c >> 32) as u32, 0xDEAD_BEEF, "epoch in high 32 bits");
+        assert_eq!(mgmt.next(), None);
+    }
 
-        KERNEL_EPOCH.store(saved_epoch, Ordering::Relaxed);
-        MGMT_SEQ.store(saved_seq, Ordering::Relaxed);
+    #[test]
+    fn mgmt_counter_resumes_after_the_kernels_last_accepted_sequence() {
+        let mgmt = MgmtCounter::new();
+
+        mgmt.observe(EPOCH, 500);
+
+        assert_eq!(mgmt.next(), Some(counter(EPOCH, 501)));
+    }
+
+    #[test]
+    fn mgmt_counter_ignores_telemetry_older_than_commands_it_sent() {
+        let mgmt = MgmtCounter::new();
+        mgmt.observe(EPOCH, 500);
+        let _ = mgmt.next();
+
+        mgmt.observe(EPOCH, 400);
+
+        assert_eq!(mgmt.next(), Some(counter(EPOCH, 502)));
+    }
+
+    #[test]
+    fn mgmt_counter_restarts_from_the_kernels_sequence_after_a_reboot() {
+        let mgmt = MgmtCounter::new();
+        mgmt.observe(EPOCH, 9_000);
+
+        mgmt.observe(EPOCH + 1, 0);
+
+        assert_eq!(mgmt.next(), Some(counter(EPOCH + 1, 1)));
+    }
+
+    #[test]
+    fn mgmt_counter_stops_when_the_epochs_sequence_is_used_up() {
+        let mgmt = MgmtCounter::new();
+
+        mgmt.observe(EPOCH, u32::MAX);
+
+        assert_eq!(mgmt.next(), None);
     }
 
     #[test]

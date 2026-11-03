@@ -25,7 +25,9 @@ pub mod telemetry_packet {
     /// Message-type byte distinguishing telemetry from alerts and acks.
     pub const MESSAGE_TYPE: u8 = 0x01;
     /// Number of big-endian u64 counters after the type byte.
-    pub const SLOTS: usize = 10;
+    pub const SLOTS: usize = 11;
+    /// Slot holding the last mgmt sequence the kernel accepted this boot.
+    pub const LAST_MGMT_SEQ_SLOT: usize = 10;
     /// Offset of the first counter.
     pub const SLOTS_OFFSET: usize = 1;
     /// Total bytes of telemetry body.

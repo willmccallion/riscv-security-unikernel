@@ -162,7 +162,7 @@ Telemetry (every interval), alerts and acks go to UDP port 8888, broadcast until
 
 `epoch (u32) ‖ sequence (u64) ‖ body ‖ SipHash-2-4 MAC (u64)`
 
-The telemetry body is a type byte followed by ten big-endian u64 counters: passed, DDoS drops, firewall blocks, malware matches, BPF drops, heuristic drops, RAM used, active flows, management packets and the boot epoch.
+The telemetry body is a type byte followed by eleven big-endian u64 counters: passed, DDoS drops, firewall blocks, malware matches, BPF drops, heuristic drops, RAM used, active flows, management packets, the boot epoch and the last command sequence accepted this boot. The dashboard numbers its commands from that last one, so restarting it during a boot never reuses a sequence the kernel would reject.
 
 ---
 

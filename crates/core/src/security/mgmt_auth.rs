@@ -99,6 +99,11 @@ impl MgmtAuth {
         self.epoch
     }
 
+    /// The highest sequence accepted in the current epoch, or 0 if none.
+    pub const fn last_seq(&self) -> u32 {
+        self.last_seq
+    }
+
     /// Verifies an inbound mgmt packet and returns its sequence and body.
     ///
     /// Returns `None` if the packet is shorter than [`MIN_PACKET_LEN`] or

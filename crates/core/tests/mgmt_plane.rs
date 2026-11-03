@@ -256,6 +256,23 @@ fn operator_ban_beyond_a_table_full_of_operator_bans_is_acked_as_table_full() {
     assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
 }
 
+/// A dashboard that restarts within one kernel boot learns from telemetry
+/// where to resume its sequence.
+#[test]
+fn telemetry_reports_the_last_accepted_mgmt_sequence() {
+    use sec_core::security::report_auth::telemetry_packet::{LAST_MGMT_SEQ_SLOT, SLOTS_OFFSET};
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let _ = e.process(&mut mgmt(41, &block_port(8080)), 1, &mut sink);
+
+    e.send_telemetry(0, &mut sink);
+
+    let telemetry = sink.report_bodies().pop().expect("telemetry was sent");
+    let at = SLOTS_OFFSET + LAST_MGMT_SEQ_SLOT * 8;
+    let last_seq = u64::from_be_bytes(telemetry[at..at + 8].try_into().unwrap());
+    assert_eq!(last_seq, 41);
+}
+
 #[test]
 fn every_authenticated_command_is_acknowledged_with_its_outcome() {
     let mut e = engine();
