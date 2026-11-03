@@ -75,10 +75,16 @@ pub enum VmError {
     /// The opcode byte is not one the VM defines, so a future opcode cannot
     /// change what an already-uploaded program does.
     InvalidOpcode,
+    /// The last instruction is neither `Ret` nor `Jmp`, so execution can
+    /// step past the end without choosing an action.
+    MissingReturn,
 }
 
-/// Validates a program before it can be installed: known opcodes, registers
-/// below 16, and jump targets inside the program.
+/// Validates a program before it can be installed.
+///
+/// It needs known opcodes, registers below 16, jump targets inside the
+/// program, and a last instruction that is `Ret` or `Jmp`, so no run can
+/// step past the end. An empty program is valid and installs no filter.
 pub fn validate(program: &[Instruction]) -> Result<(), VmError> {
     let len = program.len() as u32;
     for inst in program {
@@ -93,6 +99,11 @@ pub fn validate(program: &[Instruction]) -> Result<(), VmError> {
         {
             return Err(VmError::InvalidJumpTarget);
         }
+    }
+    if let Some(last) = program.last()
+        && !matches!(Opcode::from_u8(last.op), Some(Opcode::Ret | Opcode::Jmp))
+    {
+        return Err(VmError::MissingReturn);
     }
     Ok(())
 }
@@ -136,7 +147,7 @@ impl Instruction {
 
 /// What a program wants the caller to do with the current packet.
 ///
-/// Only `Ret 0` and `Ret 1` (or falling off the end) produce an action;
+/// Only `Ret 0` and `Ret 1` produce an action;
 /// any other return value is a [`VmRuntimeError`], so a garbage action
 /// code can never be mistaken for pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +170,9 @@ pub enum VmRuntimeError {
     /// that action codes added later cannot change what programs
     /// uploaded today do.
     InvalidAction(u64),
+    /// Execution stepped past the last instruction without a `Ret`.
+    /// [`validate`] refuses such programs, so only an unvalidated one can.
+    MissingReturn,
 }
 
 /// Virtual machine for executing packet filter programs.
@@ -205,12 +219,12 @@ impl VM {
     /// # Returns
     ///
     /// `Ok(VmAction::Drop | Pass)` for the two valid outcomes of a
-    /// `Ret` instruction (immediate 0 or 1), or `Ok(VmAction::Pass)` if
-    /// the program fell off the end without returning.
+    /// `Ret` instruction (immediate 0 or 1).
     /// `Err(VmRuntimeError::Timeout)` if the program burns through
     /// `MAX_CYCLES`; `Err(VmRuntimeError::InvalidAction(n))` if a `Ret`
-    /// carried any other immediate. Callers must treat both errors as
-    /// drop + alert.
+    /// carried any other immediate; `Err(VmRuntimeError::MissingReturn)`
+    /// if execution stepped past the end. Callers must treat every error
+    /// as drop + alert.
     #[inline(always)]
     pub fn execute(
         &mut self,
@@ -227,7 +241,7 @@ impl VM {
 
         for _ in 0..MAX_CYCLES {
             let Some(&inst) = program.get(self.pc) else {
-                return Ok(VmAction::Pass);
+                return Err(VmRuntimeError::MissingReturn);
             };
             self.pc += 1;
             let a = usize::from(inst.reg_a & 0x0F);
@@ -257,7 +271,7 @@ impl VM {
             }
         }
         if self.pc >= program.len() {
-            Ok(VmAction::Pass)
+            Err(VmRuntimeError::MissingReturn)
         } else {
             Err(VmRuntimeError::Timeout)
         }

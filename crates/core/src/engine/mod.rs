@@ -363,7 +363,9 @@ impl<
                 Ok(VmAction::Pass) => None,
                 Ok(VmAction::Drop) => Some(AlertReason::Bpf),
                 Err(VmRuntimeError::Timeout) => Some(AlertReason::BpfTimeout),
-                Err(VmRuntimeError::InvalidAction(_)) => Some(AlertReason::BpfInvalidAction),
+                Err(VmRuntimeError::InvalidAction(_) | VmRuntimeError::MissingReturn) => {
+                    Some(AlertReason::BpfInvalidAction)
+                }
             };
             if let Some(reason) = drop_reason {
                 self.stats.bpf += 1;

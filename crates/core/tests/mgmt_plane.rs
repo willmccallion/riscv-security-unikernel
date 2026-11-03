@@ -5,11 +5,11 @@
 
 mod common;
 
-use common::{CaptureSink, PEER_IP, engine, mgmt, tcp, udp};
+use common::{CaptureSink, PEER_IP, acks, engine, mgmt, tcp, udp};
 use sec_core::config::MANAGEMENT_PORT;
 use sec_core::engine::{Engine, Verdict};
 use sec_core::security::alert::AlertReason;
-use sec_core::security::mgmt::ManagementMessageType;
+use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome};
 use sec_core::security::vm::Opcode;
 
 const PROBE_PORT: u16 = 7777;
@@ -20,18 +20,20 @@ fn block_port(port: u16) -> Vec<u8> {
     body
 }
 
-fn pass_all_program() -> Vec<u8> {
-    vec![
+fn single_instruction_upload(op: Opcode, imm: u32) -> Vec<u8> {
+    let mut body = vec![
         ManagementMessageType::UploadBpfProgram as u8,
         1,
-        Opcode::Ret as u8,
+        op as u8,
         0,
         0,
-        0,
-        0,
-        0,
-        1,
-    ]
+    ];
+    body.extend_from_slice(&imm.to_be_bytes());
+    body
+}
+
+fn pass_all_program() -> Vec<u8> {
+    single_instruction_upload(Opcode::Ret, 1)
 }
 
 /// True if fresh commands from the operator take effect: replace any BPF
@@ -58,20 +60,31 @@ fn operator_can_still_manage(e: &mut Engine, first_seq: u32, now: u64) -> bool {
 fn drop_all_bpf_program_does_not_lock_out_the_operator() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
-    let drop_all = [
-        ManagementMessageType::UploadBpfProgram as u8,
-        1,
-        Opcode::Ret as u8,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ];
+    let drop_all = single_instruction_upload(Opcode::Ret, 0);
     let _ = e.process(&mut mgmt(1, &drop_all), 1, &mut sink);
 
     assert!(operator_can_still_manage(&mut e, 2, 2));
+}
+
+#[test]
+fn bpf_upload_that_can_run_past_its_end_is_rejected_and_keeps_the_active_program() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let drop_all = single_instruction_upload(Opcode::Ret, 0);
+    let no_return = single_instruction_upload(Opcode::Nop, 0);
+    let _ = e.process(&mut mgmt(1, &drop_all), 1, &mut sink);
+
+    let _ = e.process(&mut mgmt(2, &no_return), 2, &mut sink);
+    let later = 2 + 1_000_000_000;
+    let verdict = e.process(
+        &mut udp([10, 9, 9, 9], 5000, 80, b"probe"),
+        later,
+        &mut sink,
+    );
+
+    let outcome = acks(&sink).last().map(|&(_, _, outcome)| outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::Invalid as u8));
+    assert_eq!(verdict, Verdict::Dropped(AlertReason::Bpf));
 }
 
 #[test]

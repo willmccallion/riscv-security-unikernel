@@ -32,7 +32,8 @@ pub enum AlertReason {
     /// program is likely adversarial or buggy.
     BpfTimeout = 11,
     /// The installed BPF program executed a `Ret` whose immediate was
-    /// neither 0 (drop) nor 1 (pass). The packet is dropped rather
+    /// neither 0 (drop) nor 1 (pass), or ended without one (which
+    /// upload validation rules out). The packet is dropped rather
     /// than silently passed, so future action-code extensions cannot
     /// be pre-poisoned by programs uploaded before the extension.
     BpfInvalidAction = 12,

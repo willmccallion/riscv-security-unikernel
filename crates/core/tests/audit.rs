@@ -581,6 +581,41 @@ fn vm_reports_invalid_action_on_unknown_ret_immediate() {
     );
 }
 
+/// A program that can step past its last instruction has no defined
+/// action, so it is refused at upload: every installed program must end
+/// in `Ret` or an unconditional `Jmp`.
+#[test]
+fn vm_rejects_a_program_that_can_run_past_its_last_instruction() {
+    let ends_in_nop = [Instruction::new(0x00, 0, 0, 0)];
+    let ends_in_conditional_jump = [
+        Instruction::new(0x0D, 0, 0, 1),
+        Instruction::new(0x0B, 0, 0, 0),
+    ];
+
+    assert_eq!(validate_vm(&ends_in_nop), Err(VmError::MissingReturn));
+    assert_eq!(
+        validate_vm(&ends_in_conditional_jump),
+        Err(VmError::MissingReturn)
+    );
+}
+
+/// Uploading an empty program is how the operator removes the filter.
+#[test]
+fn vm_accepts_an_empty_program_as_no_filter() {
+    assert_eq!(validate_vm(&[]), Ok(()));
+}
+
+/// An unvalidated program that runs off the end fails closed instead of
+/// passing the packet.
+#[test]
+fn vm_reports_missing_return_when_execution_runs_off_the_end() {
+    let prog = [Instruction::new(0x00, 0, 0, 0)];
+
+    let action = VM::new().execute(&prog, &[0u8; 64]);
+
+    assert_eq!(action, Err(VmRuntimeError::MissingReturn));
+}
+
 /// Ret 0 → Drop, Ret 1 → Pass, round-trip both.
 #[test]
 fn vm_returns_typed_actions_for_valid_ret_immediates() {
@@ -848,7 +883,8 @@ fn penalty_box_unban_lifts_an_active_ban() {
 
 #[test]
 fn vm_program_finishing_on_its_last_allowed_step_is_not_a_timeout() {
-    let program = [Instruction::new(0x00, 0, 0, 0); 1000];
+    let mut program = [Instruction::new(0x00, 0, 0, 0); 1000];
+    program[999] = Instruction::new(0x0D, 0, 0, 1);
 
     let action = VM::new().execute(&program, &[]);
 
