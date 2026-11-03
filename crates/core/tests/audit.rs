@@ -19,7 +19,7 @@
 use sec_core::net::PacketSink;
 use sec_core::net::constants::{arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
-use sec_core::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
+use sec_core::net::tcp::{TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, extract_ports};
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::PenaltyBox;
 use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
@@ -289,6 +289,21 @@ fn process_packet_emits_syn_ack_for_syn() {
     assert_eq!(sink.sent.len(), 1, "SYN must produce SYN-ACK");
     let flags = read_flags(&sink.sent[0]);
     assert_eq!(flags & (TCP_SYN | TCP_ACK), TCP_SYN | TCP_ACK);
+}
+
+/// A SYN-ACK is the answer to a connection request only: a segment with
+/// SYN plus ACK, FIN or RST is not one, and answering it would reflect
+/// traffic at whoever the source address names.
+#[test]
+fn process_packet_answers_only_bare_syns_with_a_syn_ack() {
+    for flags in [TCP_SYN | TCP_ACK, TCP_SYN | TCP_FIN, TCP_SYN | TCP_RST] {
+        let mut sink = CaptureSink::default();
+        let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, flags, 0, &[]);
+
+        let _ = process_packet(&mut frame, &mut sink, &test_syn_secret());
+
+        assert!(sink.sent.is_empty(), "flags {flags:#06x} got a reply");
+    }
 }
 
 /// Regression: the SYN-ACK reply path must work when the TCP header

@@ -9,7 +9,7 @@ use crate::net::PacketSink;
 use crate::net::constants::{
     ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp, udp,
 };
-use crate::net::tcp::{TCP_ACK, TCP_SYN};
+use crate::net::tcp::{TCP_ACK, TCP_SYN, is_connection_request};
 use crate::security::hash::siphash24;
 
 /// Per-boot secret keying the SYN-cookie PRF, so a cookie cannot be
@@ -222,7 +222,7 @@ fn handle_ipv4<'a, S: PacketSink>(
             return None;
         }
 
-        if (flags & TCP_SYN) != 0 {
+        if is_connection_request(flags) {
             let src_ip = [
                 packet[ipv4::SRC_IP_OFFSET],
                 packet[ipv4::SRC_IP_OFFSET + 1],
@@ -235,7 +235,7 @@ fn handle_ipv4<'a, S: PacketSink>(
                 packet[ipv4::DST_IP_OFFSET + 2],
                 packet[ipv4::DST_IP_OFFSET + 3],
             ];
-            handle_tcp(packet, offset, src_ip, dst_ip, sink, syn_secret);
+            answer_connection_request(packet, offset, src_ip, dst_ip, sink, syn_secret);
             return None;
         }
 
@@ -257,11 +257,10 @@ fn udp_payload(packet: &[u8], offset: usize, ip_end: usize) -> Option<&[u8]> {
     packet.get(offset + udp::HEADER_SIZE..udp_end.min(ip_end))
 }
 
-/// Handles TCP packets with SYN flood protection.
+/// Answers a connection request with a SYN-ACK.
 ///
-/// Implements SYN cookies to protect against SYN flood attacks.
-/// When a SYN packet is received, generates a SYN-ACK response
-/// without maintaining connection state.
+/// Implements SYN cookies to protect against SYN flood attacks: the
+/// SYN-ACK is generated without maintaining connection state.
 ///
 /// # Arguments
 ///
@@ -271,7 +270,7 @@ fn udp_payload(packet: &[u8], offset: usize, ip_end: usize) -> Option<&[u8]> {
 /// * `dst_ip` - Destination IP (this kernel) for cookie binding
 /// * `sink`   - Egress for the SYN-ACK reply
 /// * `syn_secret` - Per-boot secret keying the cookie PRF
-fn handle_tcp<S: PacketSink>(
+fn answer_connection_request<S: PacketSink>(
     packet: &mut [u8],
     offset: usize,
     src_ip: [u8; 4],
@@ -282,24 +281,20 @@ fn handle_tcp<S: PacketSink>(
     // The header sits at `14 + IHL`, which need not be aligned; byte-wise
     // reads avoid misaligned-access traps on RV64GC parts that lack it.
     let tcp = &packet[offset..offset + tcp::MIN_HEADER_SIZE];
-    let flags = u16::from_be_bytes([tcp[12], tcp[13]]) & 0x003F;
+    let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+    let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
+    let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
+    let cookie = syn_secret.cookie(&src_ip, &dst_ip, src_port, dst_port);
 
-    if (flags & TCP_SYN) != 0 {
-        let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
-        let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
-        let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
-        let cookie = syn_secret.cookie(&src_ip, &dst_ip, src_port, dst_port);
-
-        // Sequence numbers wrap (RFC 793 §3.3): seq 0xFFFFFFFF acks as 0.
-        send_tcp_reply_inplace(
-            packet,
-            offset,
-            cookie,
-            seq.wrapping_add(1),
-            TCP_SYN | TCP_ACK,
-            sink,
-        );
-    }
+    // Sequence numbers wrap (RFC 793 §3.3): seq 0xFFFFFFFF acks as 0.
+    send_tcp_reply_inplace(
+        packet,
+        offset,
+        cookie,
+        seq.wrapping_add(1),
+        TCP_SYN | TCP_ACK,
+        sink,
+    );
 }
 
 /// Constructs and sends a TCP reply packet in-place.
