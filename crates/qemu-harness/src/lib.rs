@@ -20,8 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// Serial line printed once the kernel has finished init and entered its
-/// packet loop.
+/// Start of the line the kernel prints once its entropy is gathered, just
+/// before its packet loop; boot waits for the whole line.
 const READY_MARKER: &str = "[*] Entropy";
 
 /// Serial markers that mean the kernel stopped processing packets.
@@ -193,13 +193,14 @@ impl Kernel {
         }
     }
 
+    /// Waits until the kernel has printed a whole line containing `marker`.
     fn wait_for_serial(&self, marker: &str, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if let Some(report) = self.fatal() {
                 bail!("kernel died during boot: {}", report.0);
             }
-            if self.serial_snapshot().contains(marker) {
+            if has_complete_line_with(&self.serial_snapshot(), marker) {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(20));
@@ -209,6 +210,12 @@ impl Kernel {
             self.serial_snapshot()
         )
     }
+}
+
+fn has_complete_line_with(serial: &str, marker: &str) -> bool {
+    serial
+        .split_inclusive('\n')
+        .any(|line| line.ends_with('\n') && line.contains(marker))
 }
 
 impl Drop for Kernel {
@@ -258,4 +265,23 @@ pub fn default_kernel_elf() -> PathBuf {
         },
         PathBuf::from,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_marker_on_a_line_still_being_printed_is_not_yet_ready() {
+        let serial = "[VirtIO] Driver OK\n[*] Entropy     : zkr=false vi";
+
+        assert!(!has_complete_line_with(serial, READY_MARKER));
+    }
+
+    #[test]
+    fn a_marker_on_a_finished_line_is_ready() {
+        let serial = "[*] Entropy     : zkr=false virtio-rng=true mcycle=true\n";
+
+        assert!(has_complete_line_with(serial, READY_MARKER));
+    }
 }
