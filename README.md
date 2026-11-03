@@ -36,10 +36,10 @@ graph LR
 | Aho-Corasick automaton | ~1.3 KB | 128-node trie for built-in signatures |
 | VirtIO queues and buffers | ~6.3 KB | 2 RX + 2 TX MTU-sized buffers, rings on 64-byte legacy pages |
 | BPF program slot | 448 B | 64 instructions × 7 bytes |
-| Penalty box | 256 B | 16 address or subnet bans, round-robin eviction once every slot is active |
+| Penalty box | 384 B | 16 address or subnet bans; once every slot is active, detector bans are evicted round-robin and operator bans never are |
 | **Hot-path allocations** | **0 B** | No heap; all state is static |
 
-`make check-size` adds a 4 KB stack reserve to `.text + .rodata + .data + .bss` and fails if the total exceeds 64 KB. The current kernel uses about **58.8 KB**.
+`make check-size` adds a 4 KB stack reserve to `.text + .rodata + .data + .bss` and fails if the total exceeds 64 KB. The current kernel uses about **60.4 KB**.
 
 ---
 
