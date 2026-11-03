@@ -47,13 +47,17 @@ pub enum Hello {
 pub fn parse_client_hello(stream: &[u8]) -> Hello {
     const RECORD_HEADER: usize = 5;
     let (Some(&content_type), Some(&major)) = (stream.first(), stream.get(1)) else {
-        return Hello::Incomplete { needed: RECORD_HEADER };
+        return Hello::Incomplete {
+            needed: RECORD_HEADER,
+        };
     };
     if content_type != CONTENT_HANDSHAKE || major != 3 {
         return Hello::NotTls;
     }
     let Some(record_len) = read_u16(stream, 3) else {
-        return Hello::Incomplete { needed: RECORD_HEADER };
+        return Hello::Incomplete {
+            needed: RECORD_HEADER,
+        };
     };
     let needed = RECORD_HEADER + usize::from(record_len);
     let Some(record) = stream.get(RECORD_HEADER..needed) else {
@@ -70,8 +74,11 @@ pub fn parse_client_hello(stream: &[u8]) -> Hello {
 /// as QUIC carries it in CRYPTO frames, without TLS records.
 pub fn parse_handshake(stream: &[u8]) -> Hello {
     const MESSAGE_HEADER: usize = 4;
-    let Some(&[message_type, len_high, len_mid, len_low]) = stream.first_chunk::<MESSAGE_HEADER>() else {
-        return Hello::Incomplete { needed: MESSAGE_HEADER };
+    let Some(&[message_type, len_high, len_mid, len_low]) = stream.first_chunk::<MESSAGE_HEADER>()
+    else {
+        return Hello::Incomplete {
+            needed: MESSAGE_HEADER,
+        };
     };
     if message_type != HANDSHAKE_CLIENT_HELLO {
         return Hello::NotTls;
@@ -112,7 +119,12 @@ fn server_name(mut extensions: &[u8]) -> Hello {
         };
         extensions = rest;
     }
-    name.map_or(Hello::Unnamed, |name| Hello::Named(ServerName { name, encrypted_hello }))
+    name.map_or(Hello::Unnamed, |name| {
+        Hello::Named(ServerName {
+            name,
+            encrypted_hello,
+        })
+    })
 }
 
 /// The host name in a `server_name` extension's data.
@@ -125,12 +137,19 @@ fn host_name(data: &[u8]) -> Option<String> {
     let len = usize::from(read_u16(list, 1)?);
     let name = list.get(3..3 + len)?;
     let printable = name.iter().all(u8::is_ascii_graphic);
-    (printable && !name.is_empty() && name.len() <= MAX_NAME_LEN)
-        .then(|| name.iter().map(|b| char::from(b.to_ascii_lowercase())).collect())
+    (printable && !name.is_empty() && name.len() <= MAX_NAME_LEN).then(|| {
+        name.iter()
+            .map(|b| char::from(b.to_ascii_lowercase()))
+            .collect()
+    })
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    bytes.get(offset..)?.first_chunk().copied().map(u16::from_be_bytes)
+    bytes
+        .get(offset..)?
+        .first_chunk()
+        .copied()
+        .map(u16::from_be_bytes)
 }
 
 #[cfg(test)]
@@ -189,7 +208,9 @@ pub(super) mod tests {
 
     #[test]
     fn marks_names_from_encrypted_hellos_as_cover_names() {
-        let Hello::Named(name) = parse_client_hello(&client_hello(Some("cloudflare-ech.com"), 0, true)) else {
+        let Hello::Named(name) =
+            parse_client_hello(&client_hello(Some("cloudflare-ech.com"), 0, true))
+        else {
             panic!("no name");
         };
 
@@ -202,7 +223,12 @@ pub(super) mod tests {
 
         let partial = parse_client_hello(&whole[..1400]);
 
-        assert_eq!(partial, Hello::Incomplete { needed: whole.len() });
+        assert_eq!(
+            partial,
+            Hello::Incomplete {
+                needed: whole.len()
+            }
+        );
     }
 
     #[test]
@@ -213,13 +239,21 @@ pub(super) mod tests {
         let partial = parse_handshake(&message[..40]);
         let whole = parse_handshake(message);
 
-        assert_eq!(partial, Hello::Incomplete { needed: message.len() });
+        assert_eq!(
+            partial,
+            Hello::Incomplete {
+                needed: message.len()
+            }
+        );
         assert!(matches!(whole, Hello::Named(name) if name.name == "www.youtube.com"));
     }
 
     #[test]
     fn hellos_without_names_and_other_protocols_are_told_apart() {
-        assert_eq!(parse_client_hello(&client_hello(None, 4, false)), Hello::Unnamed);
+        assert_eq!(
+            parse_client_hello(&client_hello(None, 4, false)),
+            Hello::Unnamed
+        );
         assert_eq!(parse_client_hello(b"GET / HTTP/1.1\r\n"), Hello::NotTls);
         assert_eq!(parse_client_hello(&[]), Hello::Incomplete { needed: 5 });
     }

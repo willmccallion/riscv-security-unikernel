@@ -14,10 +14,10 @@ use crate::synth::{self, Mix};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, TELEMETRY_INTERVAL_CYCLES};
-use sec_core::security::alert::AlertReason;
 use sec_core::engine::{BootSecrets, Verdict};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
+use sec_core::security::alert::AlertReason;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -164,7 +164,9 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
         }
         let buf = &mut scratch[..frame.len()];
         buf.copy_from_slice(frame);
-        result.verdicts.record(engine.process(buf, now, &mut NullSink));
+        result
+            .verdicts
+            .record(engine.process(buf, now, &mut NullSink));
         result.packets += 1;
     }
     result.elapsed = started.elapsed();

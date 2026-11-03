@@ -42,7 +42,13 @@ pub const fn report_key(mgmt_key: &[u8; 16]) -> [u8; 16] {
 
 /// Writes `body` into `out` as a sealed report and returns its length, or
 /// `None` if `out` is too small.
-pub fn seal_report(key: &[u8; 16], epoch: u32, seq: u64, body: &[u8], out: &mut [u8]) -> Option<usize> {
+pub fn seal_report(
+    key: &[u8; 16],
+    epoch: u32,
+    seq: u64,
+    body: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
     let signed_len = HEADER_LEN + body.len();
     let out = out.get_mut(..signed_len + MAC_LEN)?;
     out[..4].copy_from_slice(&epoch.to_be_bytes());
@@ -150,7 +156,10 @@ mod tests {
 
         let report = v.verify(&packet[..n]).unwrap();
 
-        assert_eq!((report.epoch, report.seq, report.body), (5, 1, &b"hello"[..]));
+        assert_eq!(
+            (report.epoch, report.seq, report.body),
+            (5, 1, &b"hello"[..])
+        );
     }
 
     #[test]

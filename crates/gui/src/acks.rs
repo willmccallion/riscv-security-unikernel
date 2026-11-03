@@ -61,7 +61,10 @@ mod tests {
 
         assert_eq!(
             resolved,
-            Some((CommandId(2), CommandStatus::Rejected(MgmtOutcome::TableFull)))
+            Some((
+                CommandId(2),
+                CommandStatus::Rejected(MgmtOutcome::TableFull)
+            ))
         );
     }
 
@@ -92,6 +95,9 @@ mod tests {
         let expired = pending.expire(t0 + ACK_TIMEOUT);
 
         assert_eq!(expired, [CommandId(1)]);
-        assert_eq!(pending.acked(8, MgmtOutcome::Applied).map(|(id, _)| id), Some(CommandId(2)));
+        assert_eq!(
+            pending.acked(8, MgmtOutcome::Applied).map(|(id, _)| id),
+            Some(CommandId(2))
+        );
     }
 }

@@ -125,7 +125,11 @@ impl PenaltyBox {
     pub fn ban_prefix(&mut self, prefix: Ipv4Prefix, duration: u64, now: u64) {
         let expiry = now.saturating_add(duration);
 
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.prefix == prefix && e.is_active(now)) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.prefix == prefix && e.is_active(now))
+        {
             entry.expiry = expiry;
             return;
         }
@@ -244,7 +248,11 @@ mod prefix_tests {
 
     #[test]
     fn zero_length_prefix_covers_everything_and_long_ones_are_rejected() {
-        assert!(Ipv4Prefix::new([1, 2, 3, 4], 0).unwrap().contains([200, 0, 0, 1]));
+        assert!(
+            Ipv4Prefix::new([1, 2, 3, 4], 0)
+                .unwrap()
+                .contains([200, 0, 0, 1])
+        );
         assert_eq!(Ipv4Prefix::new([1, 2, 3, 4], 33), None);
     }
 
@@ -345,7 +353,10 @@ mod token_bucket_tests {
                 }
             }
         }
-        assert!(allowed >= 300, "only {allowed} tokens in 3000 ticks at cost 10");
+        assert!(
+            allowed >= 300,
+            "only {allowed} tokens in 3000 ticks at cost 10"
+        );
     }
 
     #[test]

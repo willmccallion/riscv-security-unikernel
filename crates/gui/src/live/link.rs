@@ -105,7 +105,8 @@ fn read_bounded_line(reader: &mut impl BufRead, line: &mut Vec<u8>) -> Result<bo
 }
 
 fn parse(line: &[u8]) -> Result<Message, String> {
-    let text = std::str::from_utf8(line).map_err(|_| "the monitor sent text that is not UTF-8".to_string())?;
+    let text = std::str::from_utf8(line)
+        .map_err(|_| "the monitor sent text that is not UTF-8".to_string())?;
     Message::from_line(text).map_err(|e| format!("the monitor sent something unexpected: {e}"))
 }
 
@@ -147,7 +148,12 @@ mod tests {
 
     #[test]
     fn a_hello_then_summaries_become_events() {
-        let (events, ended) = read_all(&format!("{}{}{}", hello_line(PROTOCOL_VERSION), summary_line(), summary_line()));
+        let (events, ended) = read_all(&format!(
+            "{}{}{}",
+            hello_line(PROTOCOL_VERSION),
+            summary_line(),
+            summary_line()
+        ));
 
         assert!(matches!(events[0], LinkEvent::Connected(_)));
         assert_eq!(events.len(), 3);
@@ -173,7 +179,11 @@ mod tests {
     #[test]
     fn garbage_and_overlong_lines_end_the_connection() {
         let garbage = format!("{}not json\n", hello_line(PROTOCOL_VERSION));
-        let overlong = format!("{}{}\n", hello_line(PROTOCOL_VERSION), "x".repeat(MAX_LINE_LEN + 10));
+        let overlong = format!(
+            "{}{}\n",
+            hello_line(PROTOCOL_VERSION),
+            "x".repeat(MAX_LINE_LEN + 10)
+        );
 
         assert!(read_all(&garbage).1.contains("unexpected"));
         assert!(read_all(&overlong).1.contains("overlong"));

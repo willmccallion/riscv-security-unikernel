@@ -5,10 +5,10 @@ use super::config::MonitorConfig;
 use super::net::IpPrefix;
 use super::report::Detail;
 use super::{live, replay};
-use anyhow::Context;
-use monitor_proto as proto;
 use crate::sandbox::{self, WriteAccess};
+use anyhow::Context;
 use anyhow::{Result, bail};
+use monitor_proto as proto;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -68,7 +68,9 @@ impl Serving {
     pub fn path(&self) -> Result<Option<PathBuf>> {
         match self {
             Self::Off => Ok(None),
-            Self::AtDefaultPath => proto::default_socket_path().map(Some).context("find the runtime directory"),
+            Self::AtDefaultPath => proto::default_socket_path()
+                .map(Some)
+                .context("find the runtime directory"),
             Self::At(path) => Ok(Some(path.clone())),
         }
     }
@@ -96,7 +98,9 @@ impl Sandboxing {
                     confinement.landlock_abi
                 );
             }
-            Self::Unconfined => println!("monitor: WARNING: running without the sandbox (--no-sandbox)"),
+            Self::Unconfined => {
+                println!("monitor: WARNING: running without the sandbox (--no-sandbox)");
+            }
         }
         Ok(())
     }
@@ -136,7 +140,11 @@ impl MonitorOptions {
     /// command line win over the file's interfaces, and local networks
     /// from both apply.
     pub fn resolve(args: MonitorArgs, file: MonitorConfig) -> Result<Self> {
-        let interfaces = if args.interfaces.is_empty() { file.interfaces } else { args.interfaces };
+        let interfaces = if args.interfaces.is_empty() {
+            file.interfaces
+        } else {
+            args.interfaces
+        };
         let source = match args.pcap {
             Some(path) => Source::PcapFile(path),
             None if interfaces.is_empty() => {
@@ -149,8 +157,16 @@ impl MonitorOptions {
         };
         let mut extra_local_networks = file.local_networks;
         extra_local_networks.extend(args.local_networks);
-        let sandboxing = if args.no_sandbox { Sandboxing::Unconfined } else { Sandboxing::Confine };
-        let detail = if args.verbose { Detail::Verbose } else { Detail::Normal };
+        let sandboxing = if args.no_sandbox {
+            Sandboxing::Unconfined
+        } else {
+            Sandboxing::Confine
+        };
+        let detail = if args.verbose {
+            Detail::Verbose
+        } else {
+            Detail::Normal
+        };
         let serving = match (args.serve, args.socket) {
             (false, _) => Serving::Off,
             (true, None) => Serving::AtDefaultPath,
@@ -174,10 +190,13 @@ pub fn run(args: MonitorArgs) -> Result<()> {
     };
     let options = MonitorOptions::resolve(args, file)?;
     match &options.source {
-        Source::Interfaces { names, duration } => {
-            live::run(names, *duration, &options)
-        }
-        Source::PcapFile(path) => replay::run(path, &options.extra_local_networks, options.sandboxing, options.detail),
+        Source::Interfaces { names, duration } => live::run(names, *duration, &options),
+        Source::PcapFile(path) => replay::run(
+            path,
+            &options.extra_local_networks,
+            options.sandboxing,
+            options.detail,
+        ),
     }
 }
 
@@ -227,7 +246,10 @@ mod tests {
         let options = MonitorOptions::resolve(args, file).unwrap();
 
         assert_eq!(options.source, Source::PcapFile("cap.pcap".into()));
-        assert_eq!(options.extra_local_networks, vec![prefix("192.168.1.0/24"), prefix("10.0.0.0/8")]);
+        assert_eq!(
+            options.extra_local_networks,
+            vec![prefix("192.168.1.0/24"), prefix("10.0.0.0/8")]
+        );
     }
 
     #[test]

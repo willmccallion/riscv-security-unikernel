@@ -8,9 +8,9 @@
 #![allow(missing_docs)]
 
 use benches::flow::FlowKey;
-use sec_core::config::{CMS_DEPTH, CMS_WIDTH};
 use benches::{dpi, flow, heuristic, sketch, vm};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use sec_core::config::{CMS_DEPTH, CMS_WIDTH};
 
 /// A synthetic 128-byte UDP payload used across benchmarks.
 const CLEAN_PAYLOAD: &[u8] = b"GET /index.html HTTP/1.1\r\nHost: 192.168.100.1\r\nAccept: */*\r\n\

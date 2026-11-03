@@ -321,9 +321,9 @@ impl DynamicRules {
     /// Removes `pattern` if present. Removing an absent pattern is a no-op.
     /// Does not preserve the order of the others.
     pub fn remove(&mut self, pattern: &[u8]) {
-        let Some(i) = (0..self.count)
-            .find(|&i| self.lengths[i] == pattern.len() && self.patterns[i][..pattern.len()] == *pattern)
-        else {
+        let Some(i) = (0..self.count).find(|&i| {
+            self.lengths[i] == pattern.len() && self.patterns[i][..pattern.len()] == *pattern
+        }) else {
             return;
         };
         self.count -= 1;

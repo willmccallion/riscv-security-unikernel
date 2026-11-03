@@ -24,7 +24,11 @@ fn probe_ports(flags: u8, ports: std::ops::Range<u16>) -> (Vec<Verdict>, Capture
     let mut verdicts = Vec::new();
     for (i, port) in ports.enumerate() {
         let now = i as u64 * 1_000_000;
-        verdicts.push(e.process(&mut tcp([10, 3, 3, 3], 40_000, port, flags, b""), now, &mut sink));
+        verdicts.push(e.process(
+            &mut tcp([10, 3, 3, 3], 40_000, port, flags, b""),
+            now,
+            &mut sink,
+        ));
         if (i + 1) % PROBES_PER_INTERVAL == 0 {
             e.end_detection_interval(&mut sink);
         }
@@ -41,7 +45,10 @@ fn a_syn_scan_is_banned_and_reported() {
     let first_ddos = reasons.iter().position(|&r| r == AlertReason::Ddos);
     assert_eq!(verdicts.last(), Some(&Verdict::Dropped(AlertReason::Ddos)));
     assert!(scan.is_some(), "no port-scan alert");
-    assert!(scan < first_ddos, "the scan detector, not the rate detector, banned the prober");
+    assert!(
+        scan < first_ddos,
+        "the scan detector, not the rate detector, banned the prober"
+    );
 }
 
 #[test]
@@ -49,8 +56,17 @@ fn replies_to_many_client_ports_are_not_a_scan() {
     let (syn_acks, syn_ack_sink) = probe_ports(SYN_ACK, 30_000..30_400);
     let (acks, ack_sink) = probe_ports(ACK, 30_000..30_400);
 
-    assert!(syn_acks.iter().chain(&acks).all(|v| *v != Verdict::Dropped(AlertReason::Ddos)));
-    assert!(!syn_ack_sink.alert_reasons().contains(&AlertReason::PortScan));
+    assert!(
+        syn_acks
+            .iter()
+            .chain(&acks)
+            .all(|v| *v != Verdict::Dropped(AlertReason::Ddos))
+    );
+    assert!(
+        !syn_ack_sink
+            .alert_reasons()
+            .contains(&AlertReason::PortScan)
+    );
     assert!(!ack_sink.alert_reasons().contains(&AlertReason::PortScan));
 }
 
@@ -64,7 +80,11 @@ fn a_scan_slower_than_the_window_is_not_caught() {
         for offset in 1..=PORTS_PER_WINDOW {
             let port = window * PORTS_PER_WINDOW + offset;
             let now = u64::from(port) * 1_000_000;
-            let _ = e.process(&mut tcp([10, 3, 3, 3], 40_000, port, SYN, b""), now, &mut sink);
+            let _ = e.process(
+                &mut tcp([10, 3, 3, 3], 40_000, port, SYN, b""),
+                now,
+                &mut sink,
+            );
         }
         for _ in 0..PORT_SCAN_WINDOW_INTERVALS {
             e.end_detection_interval(&mut sink);

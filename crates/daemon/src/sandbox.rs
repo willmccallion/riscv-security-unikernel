@@ -121,8 +121,16 @@ fn restrict_with_landlock(abi: u32) -> Result<()> {
     };
     let attr = RulesetAttr {
         handled_access_fs: (1u64 << filesystem_rights_known) - 1,
-        handled_access_net: if abi >= 4 { LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP } else { 0 },
-        scoped: if abi >= 6 { LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL } else { 0 },
+        handled_access_net: if abi >= 4 {
+            LANDLOCK_ACCESS_NET_BIND_TCP | LANDLOCK_ACCESS_NET_CONNECT_TCP
+        } else {
+            0
+        },
+        scoped: if abi >= 6 {
+            LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | LANDLOCK_SCOPE_SIGNAL
+        } else {
+            0
+        },
     };
     let attr_size: usize = match abi {
         1..=3 => 8,
@@ -131,7 +139,14 @@ fn restrict_with_landlock(abi: u32) -> Result<()> {
     };
     // SAFETY: attr is a live landlock_ruleset_attr of at least attr_size
     // bytes, the size the kernel's ABI version reads.
-    let fd = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &raw const attr, attr_size, 0u32) };
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            &raw const attr,
+            attr_size,
+            0u32,
+        )
+    };
     if fd < 0 {
         bail!("landlock_create_ruleset: {}", io::Error::last_os_error());
     }
@@ -154,7 +169,14 @@ fn install_seccomp_filter(filter: &[libc::sock_filter]) -> Result<()> {
     };
     // SAFETY: program points at `filter`, which outlives the call; the
     // kernel copies it before returning.
-    let rc = unsafe { libc::syscall(libc::SYS_seccomp, libc::SECCOMP_SET_MODE_FILTER, 0u32, &raw const program) };
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_seccomp,
+            libc::SECCOMP_SET_MODE_FILTER,
+            0u32,
+            &raw const program,
+        )
+    };
     if rc != 0 {
         bail!("seccomp: {}", io::Error::last_os_error());
     }
@@ -208,8 +230,12 @@ fn seccomp_filter(writes: WriteAccess) -> Vec<libc::sock_filter> {
     }
     for call in [libc::SYS_write, libc::SYS_writev] {
         match writes {
-            WriteAccess::StdioOnly => filter.extend(allow_if_argument_in(call, 0, &[STDOUT, STDERR])),
-            WriteAccess::StdioAndViewers { fds_from } => filter.extend(allow_stdio_or_from(call, fds_from)),
+            WriteAccess::StdioOnly => {
+                filter.extend(allow_if_argument_in(call, 0, &[STDOUT, STDERR]));
+            }
+            WriteAccess::StdioAndViewers { fds_from } => {
+                filter.extend(allow_stdio_or_from(call, fds_from));
+            }
         }
     }
     if let WriteAccess::StdioAndViewers { fds_from } = writes {
@@ -234,7 +260,12 @@ const fn ret(action: u32) -> libc::sock_filter {
 }
 
 const fn statement(code: u16, k: u32) -> libc::sock_filter {
-    libc::sock_filter { code, jt: 0, jf: 0, k }
+    libc::sock_filter {
+        code,
+        jt: 0,
+        jf: 0,
+        k,
+    }
 }
 
 const fn jump_if_equal(k: u32, jt: u8, jf: u8) -> libc::sock_filter {
@@ -278,7 +309,10 @@ const fn allow(call: libc::c_long) -> [libc::sock_filter; 2] {
 /// otherwise.
 fn allow_if_argument_in(call: libc::c_long, index: u32, values: &[u32]) -> Vec<libc::sock_filter> {
     let count = u8::try_from(values.len()).unwrap_or(u8::MAX);
-    let mut block = vec![jump_if_equal(syscall_number(call), 0, count + 3), load(argument_offset(index))];
+    let mut block = vec![
+        jump_if_equal(syscall_number(call), 0, count + 3),
+        load(argument_offset(index)),
+    ];
     for (i, &value) in (0u8..).zip(values) {
         block.push(jump_if_equal(value, count - i, 0));
     }
@@ -320,7 +354,11 @@ const fn allow_send_to_connected_from(fds_from: u32) -> [libc::sock_filter; 9] {
 }
 
 /// Allows `call` unless argument `index` has any of `bits` set.
-const fn allow_unless_argument_has(call: libc::c_long, index: u32, bits: u32) -> [libc::sock_filter; 5] {
+const fn allow_unless_argument_has(
+    call: libc::c_long,
+    index: u32,
+    bits: u32,
+) -> [libc::sock_filter; 5] {
     [
         jump_if_equal(syscall_number(call), 0, 4),
         load(argument_offset(index)),
@@ -343,7 +381,8 @@ pub fn check() -> Result<()> {
     }
     let (_capture_reader, mut capture_stand_in) = std::io::pipe().context("create a pipe")?;
     let (viewer_end, mut monitor_end) = UnixStream::pair().context("create a socket pair")?;
-    let fds_from = u32::try_from(viewer_end.as_raw_fd().min(monitor_end.as_raw_fd())).context("descriptor out of range")?;
+    let fds_from = u32::try_from(viewer_end.as_raw_fd().min(monitor_end.as_raw_fd()))
+        .context("descriptor out of range")?;
     // Plain read(2): the recvfrom a UnixStream uses is rightly refused.
     let mut viewer_end = std::fs::File::from(OwnedFd::from(viewer_end));
 
@@ -352,16 +391,25 @@ pub fn check() -> Result<()> {
     println!("sandbox-check: Landlock ABI v{abi} applied");
     let mut allowed = attempt(&[
         ("read /etc/passwd", std::fs::read("/etc/passwd").map(drop)),
-        ("run a program", std::process::Command::new("true").status().map(drop)),
+        (
+            "run a program",
+            std::process::Command::new("true").status().map(drop),
+        ),
     ]);
     install_seccomp_filter(&seccomp_filter(WriteAccess::StdioAndViewers { fds_from }))?;
     println!("sandbox-check: seccomp filter added, as when serving viewers");
     allowed.extend(attempt(&[
         ("read /etc/passwd", std::fs::read("/etc/passwd").map(drop)),
-        ("run a program", std::process::Command::new("true").status().map(drop)),
+        (
+            "run a program",
+            std::process::Command::new("true").status().map(drop),
+        ),
         ("open a network socket", open_socket()),
         ("create executable memory", map_executable_memory()),
-        ("write below the viewers (where capture sockets are)", capture_stand_in.write_all(b"x")),
+        (
+            "write below the viewers (where capture sockets are)",
+            capture_stand_in.write_all(b"x"),
+        ),
     ]));
     let streamed = stream_to_viewer(&mut monitor_end, &mut viewer_end);
     match &streamed {
@@ -378,7 +426,10 @@ pub fn check() -> Result<()> {
 
 /// Writes a line from the monitor's end of a connection and reads it back
 /// at the viewer's, as a served viewer would receive it.
-fn stream_to_viewer(monitor_end: &mut UnixStream, viewer_end: &mut std::fs::File) -> io::Result<()> {
+fn stream_to_viewer(
+    monitor_end: &mut UnixStream,
+    viewer_end: &mut std::fs::File,
+) -> io::Result<()> {
     const LINE: &[u8] = b"{\"type\":\"summary\"}\n";
     monitor_end.write_all(LINE)?;
     let mut received = [0u8; LINE.len()];
@@ -473,13 +524,22 @@ mod tests {
                 } else {
                     panic!("unexpected instruction {code:#x}");
                 };
-                pc += usize::from(if taken { instruction.jt } else { instruction.jf });
+                pc += usize::from(if taken {
+                    instruction.jt
+                } else {
+                    instruction.jf
+                });
             }
         }
     }
 
     fn verdict(nr: libc::c_long, args: [u64; 6]) -> u32 {
-        evaluate(&seccomp_filter(WriteAccess::StdioOnly), nr, AUDIT_ARCH, args)
+        evaluate(
+            &seccomp_filter(WriteAccess::StdioOnly),
+            nr,
+            AUDIT_ARCH,
+            args,
+        )
     }
 
     fn verdict_serving(nr: libc::c_long, args: [u64; 6]) -> u32 {
@@ -498,7 +558,11 @@ mod tests {
     fn writing_is_allowed_only_to_stdout_and_stderr() {
         assert_eq!(verdict(libc::SYS_write, [1, 0, 0, 0, 0, 0]), ALLOW);
         assert_eq!(verdict(libc::SYS_writev, [2, 0, 0, 0, 0, 0]), ALLOW);
-        assert_eq!(verdict(libc::SYS_write, [3, 0, 0, 0, 0, 0]), DENY, "the capture socket");
+        assert_eq!(
+            verdict(libc::SYS_write, [3, 0, 0, 0, 0, 0]),
+            DENY,
+            "the capture socket"
+        );
         assert_eq!(verdict(libc::SYS_write, [0, 0, 0, 0, 0, 0]), DENY);
     }
 
@@ -507,20 +571,49 @@ mod tests {
         assert_eq!(verdict_serving(libc::SYS_write, [1, 0, 0, 0, 0, 0]), ALLOW);
         assert_eq!(verdict_serving(libc::SYS_write, [7, 0, 0, 0, 0, 0]), ALLOW);
         assert_eq!(verdict_serving(libc::SYS_writev, [9, 0, 0, 0, 0, 0]), ALLOW);
-        assert_eq!(verdict_serving(libc::SYS_write, [3, 0, 0, 0, 0, 0]), DENY, "a capture socket");
-        assert_eq!(verdict_serving(libc::SYS_write, [6, 0, 0, 0, 0, 0]), DENY, "the highest capture socket");
-        assert_eq!(verdict_serving(libc::SYS_accept4, [8, 0, 0, 0, 0, 0]), ALLOW);
+        assert_eq!(
+            verdict_serving(libc::SYS_write, [3, 0, 0, 0, 0, 0]),
+            DENY,
+            "a capture socket"
+        );
+        assert_eq!(
+            verdict_serving(libc::SYS_write, [6, 0, 0, 0, 0, 0]),
+            DENY,
+            "the highest capture socket"
+        );
+        assert_eq!(
+            verdict_serving(libc::SYS_accept4, [8, 0, 0, 0, 0, 0]),
+            ALLOW
+        );
     }
 
     #[test]
     fn serving_allows_sendto_only_to_connected_viewers() {
         let some_address = 0x7FFF_0000_1000;
 
-        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, 0, 0]), ALLOW);
-        assert_eq!(verdict_serving(libc::SYS_sendto, [3, 0, 100, 0, 0, 0]), DENY, "a capture socket");
-        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, some_address, 16]), DENY);
-        assert_eq!(verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, 1 << 40, 16]), DENY, "high half only");
-        assert_eq!(verdict(libc::SYS_sendto, [9, 0, 100, 0, 0, 0]), DENY, "not serving");
+        assert_eq!(
+            verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, 0, 0]),
+            ALLOW
+        );
+        assert_eq!(
+            verdict_serving(libc::SYS_sendto, [3, 0, 100, 0, 0, 0]),
+            DENY,
+            "a capture socket"
+        );
+        assert_eq!(
+            verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, some_address, 16]),
+            DENY
+        );
+        assert_eq!(
+            verdict_serving(libc::SYS_sendto, [9, 0, 100, 0, 1 << 40, 16]),
+            DENY,
+            "high half only"
+        );
+        assert_eq!(
+            verdict(libc::SYS_sendto, [9, 0, 100, 0, 0, 0]),
+            DENY,
+            "not serving"
+        );
     }
 
     #[test]
@@ -533,9 +626,18 @@ mod tests {
         let read_write = u64::from((libc::PROT_READ | libc::PROT_WRITE) as u32);
         let executable = u64::from((libc::PROT_READ | libc::PROT_EXEC) as u32);
 
-        assert_eq!(verdict(libc::SYS_mmap, [0, 4096, read_write, 0, 0, 0]), ALLOW);
-        assert_eq!(verdict(libc::SYS_mmap, [0, 4096, executable, 0, 0, 0]), DENY);
-        assert_eq!(verdict(libc::SYS_mprotect, [0, 4096, executable, 0, 0, 0]), DENY);
+        assert_eq!(
+            verdict(libc::SYS_mmap, [0, 4096, read_write, 0, 0, 0]),
+            ALLOW
+        );
+        assert_eq!(
+            verdict(libc::SYS_mmap, [0, 4096, executable, 0, 0, 0]),
+            DENY
+        );
+        assert_eq!(
+            verdict(libc::SYS_mprotect, [0, 4096, executable, 0, 0, 0]),
+            DENY
+        );
     }
 
     #[test]
@@ -556,7 +658,15 @@ mod tests {
 
     #[test]
     fn another_architecture_is_killed() {
-        assert_eq!(evaluate(&seccomp_filter(WriteAccess::StdioOnly), libc::SYS_read, AUDIT_ARCH ^ 1, [0; 6]), KILL);
+        assert_eq!(
+            evaluate(
+                &seccomp_filter(WriteAccess::StdioOnly),
+                libc::SYS_read,
+                AUDIT_ARCH ^ 1,
+                [0; 6]
+            ),
+            KILL
+        );
     }
 
     #[test]
@@ -568,8 +678,15 @@ mod tests {
             .filter(|(_, instruction)| u32::from(instruction.code) & 0x07 == libc::BPF_JMP);
         for (i, instruction) in jumps {
             let furthest = i + 1 + usize::from(instruction.jt.max(instruction.jf));
-            assert!(furthest < filter.len(), "instruction {i} jumps past the end");
+            assert!(
+                furthest < filter.len(),
+                "instruction {i} jumps past the end"
+            );
         }
-        assert_eq!(filter.last().map(|last| last.k), Some(DENY), "the filter ends by refusing");
+        assert_eq!(
+            filter.last().map(|last| last.k),
+            Some(DENY),
+            "the filter ends by refusing"
+        );
     }
 }

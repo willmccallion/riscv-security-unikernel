@@ -53,12 +53,12 @@ impl Version {
     const fn initial_salt(self) -> [u8; 20] {
         match self {
             Self::V1 => [
-                0x38, 0x76, 0x2C, 0xF7, 0xF5, 0x59, 0x34, 0xB3, 0x4D, 0x17, 0x9A, 0xE6, 0xA4, 0xC8, 0x0C, 0xAD, 0xCC, 0xBB,
-                0x7F, 0x0A,
+                0x38, 0x76, 0x2C, 0xF7, 0xF5, 0x59, 0x34, 0xB3, 0x4D, 0x17, 0x9A, 0xE6, 0xA4, 0xC8,
+                0x0C, 0xAD, 0xCC, 0xBB, 0x7F, 0x0A,
             ],
             Self::V2 => [
-                0x0D, 0xED, 0xE3, 0xDE, 0xF7, 0x00, 0xA6, 0xDB, 0x81, 0x93, 0x81, 0xBE, 0x6E, 0x26, 0x9D, 0xCB, 0xF9, 0xBD,
-                0x2E, 0xD9,
+                0x0D, 0xED, 0xE3, 0xDE, 0xF7, 0x00, 0xA6, 0xDB, 0x81, 0x93, 0x81, 0xBE, 0x6E, 0x26,
+                0x9D, 0xCB, 0xF9, 0xBD, 0x2E, 0xD9,
             ],
         }
     }
@@ -91,7 +91,8 @@ impl InitialKeys {
     /// Derives the client's Initial keys from the destination connection
     /// ID it chose (RFC 9001 §5.2).
     fn derive(version: Version, destination_id: &[u8]) -> Option<Self> {
-        let (initial_secret, _) = Hkdf::<Sha256>::extract(Some(&version.initial_salt()), destination_id);
+        let (initial_secret, _) =
+            Hkdf::<Sha256>::extract(Some(&version.initial_salt()), destination_id);
         let client_secret: [u8; 32] = expand_label(&initial_secret, "client in")?;
         let [key, iv, hp] = version.labels();
         Some(Self {
@@ -121,7 +122,10 @@ fn expand_label<const N: usize>(secret: &[u8], label: &str) -> Option<[u8; N]> {
     info.extend_from_slice(full_label.as_bytes());
     info.push(0);
     let mut out = [0u8; N];
-    Hkdf::<Sha256>::from_prk(secret).ok()?.expand(&info, &mut out).ok()?;
+    Hkdf::<Sha256>::from_prk(secret)
+        .ok()?
+        .expand(&info, &mut out)
+        .ok()?;
     Some(out)
 }
 
@@ -136,7 +140,9 @@ pub fn client_initial_crypto(datagram: &[u8]) -> Vec<CryptoData> {
         {
             found.extend(crypto_frames(&plaintext));
         }
-        let Some(next) = rest.get(packet.len..) else { break };
+        let Some(next) = rest.get(packet.len..) else {
+            break;
+        };
         rest = next;
     }
     found
@@ -199,7 +205,11 @@ impl<'a> LongHeaderPacket<'a> {
         let keys = InitialKeys::derive(self.version, self.destination_id)?;
         let pn_offset = self.packet_number_offset;
         let sample_start = pn_offset + SAMPLE_OFFSET;
-        let sample: &[u8; SAMPLE_LEN] = self.bytes.get(sample_start..sample_start + SAMPLE_LEN)?.try_into().ok()?;
+        let sample: &[u8; SAMPLE_LEN] = self
+            .bytes
+            .get(sample_start..sample_start + SAMPLE_LEN)?
+            .try_into()
+            .ok()?;
         let mask = keys.mask(sample);
 
         let [first_mask, packet_number_mask @ ..] = mask;
@@ -208,7 +218,11 @@ impl<'a> LongHeaderPacket<'a> {
         let mut header = self.bytes.get(..pn_offset + packet_number_len)?.to_vec();
         *header.first_mut()? = first;
         let mut packet_number: u64 = 0;
-        for (byte, mask_byte) in header.get_mut(pn_offset..)?.iter_mut().zip(packet_number_mask) {
+        for (byte, mask_byte) in header
+            .get_mut(pn_offset..)?
+            .iter_mut()
+            .zip(packet_number_mask)
+        {
             *byte ^= mask_byte;
             packet_number = packet_number << 8 | u64::from(*byte);
         }
@@ -222,10 +236,13 @@ impl<'a> LongHeaderPacket<'a> {
             return None;
         }
         let gcm = Aes128Gcm::new_from_slice(&keys.key).ok()?;
-        gcm.decrypt(GenericArray::from_slice(&nonce), Payload {
-            msg: ciphertext,
-            aad: &header,
-        })
+        gcm.decrypt(
+            GenericArray::from_slice(&nonce),
+            Payload {
+                msg: ciphertext,
+                aad: &header,
+            },
+        )
         .ok()
     }
 }
@@ -242,7 +259,9 @@ pub fn crypto_frames(mut payload: &[u8]) -> Vec<CryptoData> {
 
     let mut found = Vec::new();
     while let Some((frame_type, used)) = read_varint(payload) {
-        let Some(after_type) = payload.get(used..) else { break };
+        let Some(after_type) = payload.get(used..) else {
+            break;
+        };
         payload = after_type;
         let rest = match frame_type {
             PADDING | PING => Some(payload),
@@ -307,7 +326,9 @@ fn read_varint(bytes: &[u8]) -> Option<(u64, usize)> {
     let value = encoded
         .get(1..)?
         .iter()
-        .fold(u64::from(first & 0x3F), |value, &byte| value << 8 | u64::from(byte));
+        .fold(u64::from(first & 0x3F), |value, &byte| {
+            value << 8 | u64::from(byte)
+        });
     Some((value, len))
 }
 
@@ -337,11 +358,18 @@ mod tests {
 
     #[test]
     fn derives_the_rfc_9001_intermediate_secrets() {
-        let (initial, _) = Hkdf::<Sha256>::extract(Some(&Version::V1.initial_salt()), &hex(RFC_DESTINATION_ID));
+        let (initial, _) =
+            Hkdf::<Sha256>::extract(Some(&Version::V1.initial_salt()), &hex(RFC_DESTINATION_ID));
         let client: [u8; 32] = expand_label(&initial, "client in").unwrap();
 
-        assert_eq!(initial.to_vec(), hex("7db5df06e7a69e432496adedb00851923595221596ae2ae9fb8115c1e9ed0a44"));
-        assert_eq!(client.to_vec(), hex("c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea"));
+        assert_eq!(
+            initial.to_vec(),
+            hex("7db5df06e7a69e432496adedb00851923595221596ae2ae9fb8115c1e9ed0a44")
+        );
+        assert_eq!(
+            client.to_vec(),
+            hex("c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea")
+        );
     }
 
     #[test]
@@ -354,7 +382,12 @@ mod tests {
 
     /// Protects `payload` as a client Initial of `version` sent to
     /// `destination_id`, following RFC 9001 §5 in the sending direction.
-    fn protect(version: Version, destination_id: &[u8], packet_number: u32, payload: &[u8]) -> Vec<u8> {
+    fn protect(
+        version: Version,
+        destination_id: &[u8],
+        packet_number: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
         let keys = InitialKeys::derive(version, destination_id).unwrap();
         let wire_version: u32 = match version {
             Version::V1 => 1,
@@ -371,12 +404,21 @@ mod tests {
         header.extend_from_slice(&packet_number.to_be_bytes());
 
         let mut nonce = keys.iv;
-        for (n, p) in nonce[4..].iter_mut().zip(u64::from(packet_number).to_be_bytes()) {
+        for (n, p) in nonce[4..]
+            .iter_mut()
+            .zip(u64::from(packet_number).to_be_bytes())
+        {
             *n ^= p;
         }
         let gcm = Aes128Gcm::new_from_slice(&keys.key).unwrap();
         let ciphertext = gcm
-            .encrypt(GenericArray::from_slice(&nonce), Payload { msg: payload, aad: &header })
+            .encrypt(
+                GenericArray::from_slice(&nonce),
+                Payload {
+                    msg: payload,
+                    aad: &header,
+                },
+            )
             .unwrap();
         let mut packet = header;
         packet.extend_from_slice(&ciphertext);
@@ -426,16 +468,26 @@ mod tests {
 
         assert_eq!(fragments.len(), 3);
         let hello = tls::parse_handshake(&reassemble(fragments));
-        assert!(matches!(&hello, Hello::Named(name) if name.name == "www.youtube.com"), "{hello:?}");
+        assert!(
+            matches!(&hello, Hello::Named(name) if name.name == "www.youtube.com"),
+            "{hello:?}"
+        );
     }
 
     #[test]
     fn reads_version_2_initials() {
         let payload = crypto_frame(0, b"hello");
 
-        let fragments = client_initial_crypto(&protect(Version::V2, &hex("1122334455667788"), 3, &payload));
+        let fragments =
+            client_initial_crypto(&protect(Version::V2, &hex("1122334455667788"), 3, &payload));
 
-        assert_eq!(fragments, [CryptoData { offset: 0, bytes: b"hello".to_vec() }]);
+        assert_eq!(
+            fragments,
+            [CryptoData {
+                offset: 0,
+                bytes: b"hello".to_vec()
+            }]
+        );
     }
 
     #[test]
@@ -456,7 +508,10 @@ mod tests {
     fn varints_decode_in_all_four_lengths() {
         assert_eq!(read_varint(&[0x25]), Some((37, 1)));
         assert_eq!(read_varint(&[0x7B, 0xBD]), Some((15_293, 2)));
-        assert_eq!(read_varint(&[0x9D, 0x7F, 0x3E, 0x7D]), Some((494_878_333, 4)));
+        assert_eq!(
+            read_varint(&[0x9D, 0x7F, 0x3E, 0x7D]),
+            Some((494_878_333, 4))
+        );
         assert_eq!(
             read_varint(&[0xC2, 0x19, 0x7C, 0x5E, 0xFF, 0x14, 0xE8, 0x8C]),
             Some((151_288_809_941_952_652, 8))

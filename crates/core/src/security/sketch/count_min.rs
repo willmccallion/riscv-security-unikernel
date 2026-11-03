@@ -43,7 +43,10 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     /// Clears every counter and switches to hashing with `key`, in place,
     /// so a large sketch is never copied through the stack.
     pub fn rekey(&mut self, key: [u8; 16]) {
-        self.rows.iter_mut().flatten().for_each(|counter| *counter = 0);
+        self.rows
+            .iter_mut()
+            .flatten()
+            .for_each(|counter| *counter = 0);
         self.key = key;
     }
 
@@ -194,7 +197,9 @@ mod tests {
         let cms = CountMinSketch::<16, 4>::new([5; 16]);
         let mut columns = [[0u8; 4]; ITEMS];
         for (i, slot) in columns.iter_mut().enumerate() {
-            *slot = CountMinSketch::<16, 4>::columns(siphash24(&cms.key, &(i as u32).to_be_bytes())).map(|c| c as u8);
+            *slot =
+                CountMinSketch::<16, 4>::columns(siphash24(&cms.key, &(i as u32).to_be_bytes()))
+                    .map(|c| c as u8);
         }
 
         let mut full_collisions = 0;
@@ -206,7 +211,10 @@ mod tests {
 
         // About 2M pairs: ~30 expected if rows are independent (1/16^4 each),
         // ~7800 if rows were derived as h1 + i*h2 (1/16^2 each).
-        assert!(full_collisions < 200, "{full_collisions} pairs collide in every row");
+        assert!(
+            full_collisions < 200,
+            "{full_collisions} pairs collide in every row"
+        );
     }
 
     #[test]

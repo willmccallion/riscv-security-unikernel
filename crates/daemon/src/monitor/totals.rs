@@ -70,14 +70,23 @@ impl TrafficTotals {
     /// IP packets in every direction.
     pub const fn ip(&self) -> Counter {
         Counter {
-            packets: self.inbound.packets + self.outbound.packets + self.internal.packets + self.transit.packets,
-            bytes: self.inbound.bytes + self.outbound.bytes + self.internal.bytes + self.transit.bytes,
+            packets: self.inbound.packets
+                + self.outbound.packets
+                + self.internal.packets
+                + self.transit.packets,
+            bytes: self.inbound.bytes
+                + self.outbound.bytes
+                + self.internal.bytes
+                + self.transit.bytes,
         }
     }
 
     /// A one-line summary of these totals as rates over `elapsed`.
     pub const fn rates(&self, elapsed: Duration) -> Rates<'_> {
-        Rates { totals: self, elapsed }
+        Rates {
+            totals: self,
+            elapsed,
+        }
     }
 }
 
@@ -93,7 +102,12 @@ impl Rates<'_> {
         count as f64 / self.elapsed.as_secs_f64().max(1e-9)
     }
 
-    fn write_counter(&self, f: &mut fmt::Formatter<'_>, label: &str, counter: Counter) -> fmt::Result {
+    fn write_counter(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        label: &str,
+        counter: Counter,
+    ) -> fmt::Result {
         write!(
             f,
             "{label} {:>9}/s {:>7.0} pps",
@@ -113,7 +127,13 @@ impl fmt::Display for Rates<'_> {
             self.write_counter(f, " | transit", t.transit)?;
         }
         let ip = t.ip();
-        let share = |c: Counter| if ip.bytes == 0 { 0.0 } else { 100.0 * c.bytes as f64 / ip.bytes as f64 };
+        let share = |c: Counter| {
+            if ip.bytes == 0 {
+                0.0
+            } else {
+                100.0 * c.bytes as f64 / ip.bytes as f64
+            }
+        };
         write!(
             f,
             " | IPv6 {:.0}% TCP {:.0}% UDP {:.0}% of bytes | non-IP {} frames",
@@ -174,14 +194,42 @@ mod tests {
 
         totals.record(&packet("1.1.1.1", TCP), Direction::Inbound, 1500);
         totals.record(&packet("2001:db8::1", UDP), Direction::Outbound, 100);
-        totals.record(&packet("10.0.0.1", Transport::Icmp), Direction::Internal, 64);
+        totals.record(
+            &packet("10.0.0.1", Transport::Icmp),
+            Direction::Internal,
+            64,
+        );
         totals.record_non_ip(42);
 
-        assert_eq!(totals.inbound, Counter { packets: 1, bytes: 1500 });
-        assert_eq!(totals.outbound, Counter { packets: 1, bytes: 100 });
-        assert_eq!(totals.ipv6, Counter { packets: 1, bytes: 100 });
+        assert_eq!(
+            totals.inbound,
+            Counter {
+                packets: 1,
+                bytes: 1500
+            }
+        );
+        assert_eq!(
+            totals.outbound,
+            Counter {
+                packets: 1,
+                bytes: 100
+            }
+        );
+        assert_eq!(
+            totals.ipv6,
+            Counter {
+                packets: 1,
+                bytes: 100
+            }
+        );
         assert_eq!(totals.tcp.bytes + totals.udp.bytes, 1600);
-        assert_eq!(totals.ip(), Counter { packets: 3, bytes: 1664 });
+        assert_eq!(
+            totals.ip(),
+            Counter {
+                packets: 3,
+                bytes: 1664
+            }
+        );
         assert_eq!(totals.non_ip.packets, 1);
     }
 

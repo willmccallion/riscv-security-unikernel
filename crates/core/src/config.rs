@@ -158,4 +158,3 @@ pub const FLOW_LOG_SAMPLE_MASK: usize = 0x0F;
 ///
 /// Only send alerts every N packets to prevent alert flooding.
 pub const DDOS_ALERT_SAMPLE_RATE: u64 = 50;
-

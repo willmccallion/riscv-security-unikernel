@@ -52,7 +52,10 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {
     let cli = Cli::parse();
-    let socket = match cli.socket.map_or_else(monitor_proto::default_socket_path, Ok) {
+    let socket = match cli
+        .socket
+        .map_or_else(monitor_proto::default_socket_path, Ok)
+    {
         Ok(socket) => socket,
         Err(e) => {
             eprintln!("[gui] cannot find the monitor's socket ({e}); pass --socket");

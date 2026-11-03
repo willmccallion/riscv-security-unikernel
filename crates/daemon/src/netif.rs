@@ -55,14 +55,24 @@ unsafe fn network_of(addr: *const libc::sockaddr, mask: *const libc::sockaddr) -
     match family {
         libc::AF_INET => {
             // SAFETY: an AF_INET sockaddr is a sockaddr_in.
-            let (a, m) = unsafe { (&*addr.cast::<libc::sockaddr_in>(), &*mask.cast::<libc::sockaddr_in>()) };
+            let (a, m) = unsafe {
+                (
+                    &*addr.cast::<libc::sockaddr_in>(),
+                    &*mask.cast::<libc::sockaddr_in>(),
+                )
+            };
             let ip = Ipv4Addr::from(u32::from_be(a.sin_addr.s_addr));
             let len = u32::from_be(m.sin_addr.s_addr).leading_ones();
             IpPrefix::new(IpAddr::V4(ip), u8::try_from(len).ok()?)
         }
         libc::AF_INET6 => {
             // SAFETY: an AF_INET6 sockaddr is a sockaddr_in6.
-            let (a, m) = unsafe { (&*addr.cast::<libc::sockaddr_in6>(), &*mask.cast::<libc::sockaddr_in6>()) };
+            let (a, m) = unsafe {
+                (
+                    &*addr.cast::<libc::sockaddr_in6>(),
+                    &*mask.cast::<libc::sockaddr_in6>(),
+                )
+            };
             let ip = Ipv6Addr::from(a.sin6_addr.s6_addr);
             let len = u128::from_be_bytes(m.sin6_addr.s6_addr).leading_ones();
             IpPrefix::new(IpAddr::V6(ip), u8::try_from(len).ok()?)

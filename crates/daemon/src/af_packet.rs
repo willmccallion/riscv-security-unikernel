@@ -60,9 +60,16 @@ fn setsockopt<T>(fd: &OwnedFd, option: libc::c_int, value: &T) -> Result<()> {
 fn bound_link_type(fd: &OwnedFd) -> Result<LinkType> {
     // SAFETY: sockaddr_ll is plain old data; all-zero is a valid value.
     let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
-    let mut len = libc::socklen_t::try_from(size_of::<libc::sockaddr_ll>()).context("sockaddr size")?;
+    let mut len =
+        libc::socklen_t::try_from(size_of::<libc::sockaddr_ll>()).context("sockaddr size")?;
     // SAFETY: addr and len are live and sized for the call.
-    let rc = unsafe { libc::getsockname(fd.as_raw_fd(), std::ptr::from_mut(&mut addr).cast(), &raw mut len) };
+    let rc = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            std::ptr::from_mut(&mut addr).cast(),
+            &raw mut len,
+        )
+    };
     if rc != 0 {
         return Err(io::Error::last_os_error()).context("getsockname(AF_PACKET)");
     }
@@ -91,9 +98,7 @@ fn bind_to(fd: &OwnedFd, ifindex: libc::c_int) -> Result<()> {
     addr.sll_ifindex = ifindex;
     let len = libc::socklen_t::try_from(size_of::<libc::sockaddr_ll>()).context("sockaddr size")?;
     // SAFETY: addr is a live sockaddr_ll of `len` bytes for the call.
-    let rc = unsafe {
-        libc::bind(fd.as_raw_fd(), std::ptr::from_ref(&addr).cast(), len)
-    };
+    let rc = unsafe { libc::bind(fd.as_raw_fd(), std::ptr::from_ref(&addr).cast(), len) };
     if rc != 0 {
         return Err(io::Error::last_os_error()).context("bind(AF_PACKET)");
     }
@@ -145,7 +150,11 @@ impl RxRing {
     pub fn open(interface: &str, outgoing: Outgoing) -> Result<Self> {
         let ifindex = interface_index(interface)?;
         let fd = packet_socket()?;
-        setsockopt(&fd, libc::PACKET_VERSION, &(libc::tpacket_versions::TPACKET_V3 as libc::c_int))?;
+        setsockopt(
+            &fd,
+            libc::PACKET_VERSION,
+            &(libc::tpacket_versions::TPACKET_V3 as libc::c_int),
+        )?;
         let req = libc::tpacket_req3 {
             tp_block_size: BLOCK_SIZE,
             tp_block_nr: BLOCK_COUNT,
@@ -192,7 +201,11 @@ impl RxRing {
     /// each one to `handle`. Returns the number of frames seen.
     // Blocks are page-aligned and the kernel aligns each frame header.
     #[allow(clippy::cast_ptr_alignment)]
-    pub fn poll(&mut self, timeout_ms: i32, mut handle: impl FnMut(CapturedFrame<'_>)) -> Result<usize> {
+    pub fn poll(
+        &mut self,
+        timeout_ms: i32,
+        mut handle: impl FnMut(CapturedFrame<'_>),
+    ) -> Result<usize> {
         let block = self.block_status(self.next_block);
         if block.load(Ordering::Acquire) & libc::TP_STATUS_USER == 0 {
             let mut pfd = libc::pollfd {
@@ -231,11 +244,13 @@ impl RxRing {
             if frame_start + frame_len <= BLOCK_SIZE as usize {
                 // SAFETY: the frame lies inside the block we own, and no
                 // other reference to these bytes exists while handle runs.
-                let data = unsafe { std::slice::from_raw_parts_mut(base.add(frame_start), frame_len) };
+                let data =
+                    unsafe { std::slice::from_raw_parts_mut(base.add(frame_start), frame_len) };
                 handle(CapturedFrame {
                     data,
                     wire_len: pkt.tp_len,
-                    captured_at_unix_ns: u64::from(pkt.tp_sec) * 1_000_000_000 + u64::from(pkt.tp_nsec),
+                    captured_at_unix_ns: u64::from(pkt.tp_sec) * 1_000_000_000
+                        + u64::from(pkt.tp_nsec),
                 });
             }
             offset += pkt.tp_next_offset as usize;
@@ -255,7 +270,8 @@ impl RxRing {
     pub fn stats(&self) -> Result<RingStats> {
         // SAFETY: tpacket_stats_v3 is plain old data; all-zero is valid.
         let mut stats: libc::tpacket_stats_v3 = unsafe { std::mem::zeroed() };
-        let mut len = libc::socklen_t::try_from(size_of::<libc::tpacket_stats_v3>()).context("stats size")?;
+        let mut len =
+            libc::socklen_t::try_from(size_of::<libc::tpacket_stats_v3>()).context("stats size")?;
         // SAFETY: stats and len are live and sized for the call.
         let rc = unsafe {
             libc::getsockopt(

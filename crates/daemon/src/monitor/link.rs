@@ -135,11 +135,16 @@ impl ViewerServer {
             if UnixStream::connect(path).is_ok() {
                 bail!("another monitor is already serving at {}", path.display());
             }
-            fs::remove_file(path).with_context(|| format!("remove stale socket {}", path.display()))?;
+            fs::remove_file(path)
+                .with_context(|| format!("remove stale socket {}", path.display()))?;
         }
-        let listener = UnixListener::bind(path).with_context(|| format!("listen at {}", path.display()))?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).context("restrict the socket to this user")?;
-        listener.set_nonblocking(true).context("make the socket non-blocking")?;
+        let listener =
+            UnixListener::bind(path).with_context(|| format!("listen at {}", path.display()))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .context("restrict the socket to this user")?;
+        listener
+            .set_nonblocking(true)
+            .context("make the socket non-blocking")?;
         let hello_line = proto::Message::Hello(hello.clone()).to_line()?;
         Ok(Self {
             listener,
@@ -150,7 +155,9 @@ impl ViewerServer {
 
     /// Accepts any viewers waiting to connect, up to `MAX_VIEWERS`.
     pub fn accept_viewers(&mut self) -> Result<()> {
-        while let Some(stream) = viewer_socket::accept_nonblocking(&self.listener).context("accept a viewer")? {
+        while let Some(stream) =
+            viewer_socket::accept_nonblocking(&self.listener).context("accept a viewer")?
+        {
             if self.viewers.len() >= MAX_VIEWERS {
                 continue;
             }
@@ -190,7 +197,8 @@ fn prepare_private_directory(directory: &Path) -> Result<()> {
             .create(directory)
             .with_context(|| format!("create {}", directory.display()))?;
     }
-    let metadata = fs::metadata(directory).with_context(|| format!("inspect {}", directory.display()))?;
+    let metadata =
+        fs::metadata(directory).with_context(|| format!("inspect {}", directory.display()))?;
     let ours = fs::metadata("/proc/self").context("read /proc/self")?.uid();
     if !metadata.is_dir() || metadata.uid() != ours || metadata.mode() & 0o077 != 0 {
         bail!(
@@ -213,22 +221,39 @@ mod tests {
 
     /// A fresh private directory for one test's socket.
     fn private_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("security-daemon-test-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "security-daemon-test-{}-{name}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         DirBuilder::new().mode(0o700).create(&dir).unwrap();
         dir
     }
 
     fn sample_hello() -> proto::Hello {
-        hello(&["enp4s0".into()], &LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap()]), 1000)
+        hello(
+            &["enp4s0".into()],
+            &LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap()]),
+            1000,
+        )
     }
 
     fn sample_summary() -> Summary {
-        let mut monitor = Monitor::new(LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap()]), Duration::from_secs(1));
+        let mut monitor = Monitor::new(
+            LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap()]),
+            Duration::from_secs(1),
+        );
         let mut frame = vec![0u8; 12];
-        frame.extend_from_slice(&[0x08, 0x00, 0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86]);
+        frame.extend_from_slice(&[
+            0x08, 0x00, 0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86,
+        ]);
         frame.extend_from_slice(&[0, 53, 0x9C, 0x40, 0, 8, 0, 0]);
-        let _ = monitor.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(1_000_000_000));
+        let _ = monitor.observe(
+            LinkType::Ethernet,
+            &frame,
+            60,
+            UnixNanos::new(1_000_000_000),
+        );
         monitor.finish().unwrap()
     }
 
@@ -246,7 +271,9 @@ mod tests {
         let second = proto::Message::from_line(&lines.next().unwrap().unwrap()).unwrap();
 
         assert!(matches!(first, proto::Message::Hello(h) if h.interfaces == ["enp4s0"]));
-        let proto::Message::Summary(summary) = second else { panic!("not a summary") };
+        let proto::Message::Summary(summary) = second else {
+            panic!("not a summary")
+        };
         assert_eq!(summary.totals.inbound.packets, 1);
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         fs::remove_dir_all(dir).unwrap();

@@ -272,5 +272,7 @@ fn load_be<const N: usize>(packet: &[u8], offset: u32) -> u64 {
     else {
         return 0;
     };
-    bytes.iter().fold(0, |acc, &byte| (acc << 8) | u64::from(byte))
+    bytes
+        .iter()
+        .fold(0, |acc, &byte| (acc << 8) | u64::from(byte))
 }

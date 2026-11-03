@@ -98,14 +98,9 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     }
     // Both fields are 2 bytes; checking only the high bytes would also
     // answer non-Ethernet ARP.
-    let hw_type = u16::from_be_bytes([
-        packet[arp::HW_TYPE_OFFSET],
-        packet[arp::HW_TYPE_OFFSET + 1],
-    ]);
-    let opcode = u16::from_be_bytes([
-        packet[arp::OPCODE_OFFSET],
-        packet[arp::OPCODE_OFFSET + 1],
-    ]);
+    let hw_type =
+        u16::from_be_bytes([packet[arp::HW_TYPE_OFFSET], packet[arp::HW_TYPE_OFFSET + 1]]);
+    let opcode = u16::from_be_bytes([packet[arp::OPCODE_OFFSET], packet[arp::OPCODE_OFFSET + 1]]);
     if hw_type != 1 || ArpOpcode::from_u16(opcode) != Some(ArpOpcode::Request) {
         return;
     }
@@ -216,8 +211,7 @@ fn handle_ipv4<'a, S: PacketSink>(
         // so we can decide whether to emit a SYN-ACK (which rewrites
         // `packet` in place) or hand the TCP application payload back
         // to the caller for DPI / firewall inspection.
-        let dof_flags_be =
-            ((packet[offset + 12] as u16) << 8) | (packet[offset + 13] as u16);
+        let dof_flags_be = ((packet[offset + 12] as u16) << 8) | (packet[offset + 13] as u16);
         let flags = dof_flags_be & 0x003F;
         let tcp_header_len = (((dof_flags_be >> 12) & 0x0F) as usize) * 4;
         // Same shape as the IHL check above: a data-offset under 5
@@ -391,7 +385,8 @@ fn finish_ipv4_header(packet: &mut [u8], ihl: usize, total_len: usize) {
     const TOTAL_LEN_OFFSET: usize = ipv4::HEADER_OFFSET + 2;
     const TTL_OFFSET: usize = ipv4::HEADER_OFFSET + 8;
     const CHECKSUM_OFFSET: usize = ipv4::HEADER_OFFSET + 10;
-    packet[TOTAL_LEN_OFFSET..TOTAL_LEN_OFFSET + 2].copy_from_slice(&(total_len as u16).to_be_bytes());
+    packet[TOTAL_LEN_OFFSET..TOTAL_LEN_OFFSET + 2]
+        .copy_from_slice(&(total_len as u16).to_be_bytes());
     packet[TTL_OFFSET] = ipv4::DEFAULT_TTL;
     packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&[0, 0]);
     let csum = checksum(&packet[ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ihl]);
@@ -454,4 +449,3 @@ pub const fn checksum(data: &[u8]) -> u16 {
     }
     !sum as u16
 }
-

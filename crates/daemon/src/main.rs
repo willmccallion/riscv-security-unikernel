@@ -18,8 +18,6 @@ mod synth;
 /// sketch-lab study, and a 16384 x 4 per-subnet one (128 KB).
 pub type DaemonEngine = sec_core::engine::Engine<65_536, 4, 16_384, 4>;
 
-use security_daemon::af_packet::{Outgoing, RxRing, TxSocket};
-use security_daemon::{monitor, sandbox};
 use anyhow::{Context, Result};
 use bench::VerdictCounts;
 use clap::{Parser, Subcommand};
@@ -29,6 +27,8 @@ use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES};
 use sec_core::engine::BootSecrets;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::time::TimeSource;
+use security_daemon::af_packet::{Outgoing, RxRing, TxSocket};
+use security_daemon::{monitor, sandbox};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -98,7 +98,12 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Bench { mix, packets, threads, offered_pps } => {
+        Command::Bench {
+            mix,
+            packets,
+            threads,
+            offered_pps,
+        } => {
             run_bench(bench::BenchConfig {
                 mix,
                 packets_per_thread: packets,
@@ -107,12 +112,18 @@ fn main() -> Result<()> {
             });
             Ok(())
         }
-        Command::Run { iface, duration_secs } => run_live(&iface, duration_secs.map(Duration::from_secs)),
+        Command::Run {
+            iface,
+            duration_secs,
+        } => run_live(&iface, duration_secs.map(Duration::from_secs)),
         Command::Monitor(args) => monitor::command::run(args),
         Command::SandboxCheck => sandbox::check(),
-        Command::Flood { iface, mix, duration_secs, threads } => {
-            run_flood(&iface, mix, Duration::from_secs(duration_secs), threads)
-        }
+        Command::Flood {
+            iface,
+            mix,
+            duration_secs,
+            threads,
+        } => run_flood(&iface, mix, Duration::from_secs(duration_secs), threads),
     }
 }
 
@@ -156,7 +167,10 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
     let mut tx = TxSocket::open(iface)?;
     let mut engine = new_engine(key);
     let started = Instant::now();
-    println!("run: inspecting {iface} (epoch {:#010x})", engine.mgmt_epoch());
+    println!(
+        "run: inspecting {iface} (epoch {:#010x})",
+        engine.mgmt_epoch()
+    );
 
     let mut counts = VerdictCounts::default();
     let mut frames = 0u64;
@@ -231,7 +245,9 @@ fn run_flood(iface: &str, mix: Mix, duration: Duration, threads: u64) -> Result<
     }
     stop.store(true, Ordering::Relaxed);
     for worker in workers {
-        worker.join().map_err(|_| anyhow::anyhow!("flood thread panicked"))?;
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("flood thread panicked"))?;
     }
     println!(
         "flood: sent {} frames in {:.1}s",

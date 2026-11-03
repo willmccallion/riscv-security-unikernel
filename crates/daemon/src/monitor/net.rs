@@ -56,10 +56,14 @@ impl FromStr for IpPrefix {
             Some((addr, len)) => (addr, Some(len)),
             None => (text, None),
         };
-        let addr: IpAddr = addr.parse().with_context(|| format!("bad address in {text:?}"))?;
+        let addr: IpAddr = addr
+            .parse()
+            .with_context(|| format!("bad address in {text:?}"))?;
         let host_len = if addr.is_ipv4() { 32 } else { 128 };
         let len = match len {
-            Some(len) => len.parse().with_context(|| format!("bad prefix length in {text:?}"))?,
+            Some(len) => len
+                .parse()
+                .with_context(|| format!("bad prefix length in {text:?}"))?,
             None => host_len,
         };
         let Some(prefix) = Self::new(addr, len) else {
@@ -185,13 +189,24 @@ mod tests {
         assert_eq!(v6.to_string(), "2001:56a:e9c4:700::/64");
         assert!(v6.contains(ip("2001:56a:e9c4:700::1")));
         assert!(!v6.contains(ip("2001:56a:e9c4:701::1")));
-        assert!(!v4.contains(ip("::ffff:192.168.1.5")), "families never match");
+        assert!(
+            !v4.contains(ip("::ffff:192.168.1.5")),
+            "families never match"
+        );
     }
 
     #[test]
     fn edge_lengths_parse_and_overlong_ones_are_rejected() {
-        assert!("0.0.0.0/0".parse::<IpPrefix>().unwrap().contains(ip("8.8.8.8")));
-        assert_eq!("10.0.0.1".parse::<IpPrefix>().unwrap().to_string(), "10.0.0.1/32");
+        assert!(
+            "0.0.0.0/0"
+                .parse::<IpPrefix>()
+                .unwrap()
+                .contains(ip("8.8.8.8"))
+        );
+        assert_eq!(
+            "10.0.0.1".parse::<IpPrefix>().unwrap().to_string(),
+            "10.0.0.1/32"
+        );
         assert!("10.0.0.0/33".parse::<IpPrefix>().is_err());
         assert!("::/129".parse::<IpPrefix>().is_err());
         assert!("10.0.0.0/x".parse::<IpPrefix>().is_err());
@@ -199,12 +214,27 @@ mod tests {
 
     #[test]
     fn direction_follows_which_ends_are_local() {
-        let local = LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap(), "fd00::/8".parse().unwrap()]);
+        let local = LocalNetworks::new(vec![
+            "192.168.1.0/24".parse().unwrap(),
+            "fd00::/8".parse().unwrap(),
+        ]);
 
-        assert_eq!(local.direction(ip("1.1.1.1"), ip("192.168.1.86")), Direction::Inbound);
-        assert_eq!(local.direction(ip("fd00::5"), ip("2606:4700::1")), Direction::Outbound);
-        assert_eq!(local.direction(ip("192.168.1.2"), ip("192.168.1.86")), Direction::Internal);
-        assert_eq!(local.direction(ip("8.8.8.8"), ip("1.1.1.1")), Direction::Transit);
+        assert_eq!(
+            local.direction(ip("1.1.1.1"), ip("192.168.1.86")),
+            Direction::Inbound
+        );
+        assert_eq!(
+            local.direction(ip("fd00::5"), ip("2606:4700::1")),
+            Direction::Outbound
+        );
+        assert_eq!(
+            local.direction(ip("192.168.1.2"), ip("192.168.1.86")),
+            Direction::Internal
+        );
+        assert_eq!(
+            local.direction(ip("8.8.8.8"), ip("1.1.1.1")),
+            Direction::Transit
+        );
     }
 
     #[test]
@@ -219,12 +249,28 @@ mod tests {
 
     #[test]
     fn multicast_broadcast_and_unspecified_addresses_are_not_hosts() {
-        let local = LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap(), "10.0.0.0/31".parse().unwrap()]);
+        let local = LocalNetworks::new(vec![
+            "192.168.1.0/24".parse().unwrap(),
+            "10.0.0.0/31".parse().unwrap(),
+        ]);
 
-        for shared in ["0.0.0.0", "255.255.255.255", "192.168.1.255", "224.0.0.252", "ff12::8384", "::"] {
+        for shared in [
+            "0.0.0.0",
+            "255.255.255.255",
+            "192.168.1.255",
+            "224.0.0.252",
+            "ff12::8384",
+            "::",
+        ] {
             assert!(!local.is_host_address(ip(shared)), "{shared}");
         }
-        for host in ["192.168.1.86", "192.168.1.0", "10.0.0.1", "8.8.8.8", "fe80::1"] {
+        for host in [
+            "192.168.1.86",
+            "192.168.1.0",
+            "10.0.0.1",
+            "8.8.8.8",
+            "fe80::1",
+        ] {
             assert!(local.is_host_address(ip(host)), "{host}");
         }
     }
@@ -233,12 +279,30 @@ mod tests {
     fn link_scoped_destinations_stay_local() {
         let local = LocalNetworks::new(vec!["192.168.1.0/24".parse().unwrap()]);
 
-        assert_eq!(local.direction(ip("192.168.1.9"), ip("224.0.0.251")), Direction::Internal);
-        assert_eq!(local.direction(ip("192.168.1.9"), ip("255.255.255.255")), Direction::Internal);
-        assert_eq!(local.direction(ip("fe80::1"), ip("ff02::fb")), Direction::Internal);
-        assert_eq!(local.direction(ip("0.0.0.0"), ip("255.255.255.255")), Direction::Internal);
-        assert_eq!(local.direction(ip("::"), ip("ff02::1:ff00:2")), Direction::Internal);
+        assert_eq!(
+            local.direction(ip("192.168.1.9"), ip("224.0.0.251")),
+            Direction::Internal
+        );
+        assert_eq!(
+            local.direction(ip("192.168.1.9"), ip("255.255.255.255")),
+            Direction::Internal
+        );
+        assert_eq!(
+            local.direction(ip("fe80::1"), ip("ff02::fb")),
+            Direction::Internal
+        );
+        assert_eq!(
+            local.direction(ip("0.0.0.0"), ip("255.255.255.255")),
+            Direction::Internal
+        );
+        assert_eq!(
+            local.direction(ip("::"), ip("ff02::1:ff00:2")),
+            Direction::Internal
+        );
         assert_eq!(local.direction(ip("::1"), ip("::1")), Direction::Internal);
-        assert_eq!(local.direction(ip("127.0.0.1"), ip("127.0.0.53")), Direction::Internal);
+        assert_eq!(
+            local.direction(ip("127.0.0.1"), ip("127.0.0.53")),
+            Direction::Internal
+        );
     }
 }

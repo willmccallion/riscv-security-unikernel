@@ -10,11 +10,11 @@ use crate::types::{
     CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, TrafficMode,
     UiEvent,
 };
-use sec_core::security::mgmt::MgmtOutcome;
 use eframe::egui;
-use sec_core::net::constants::IpProtocol;
-use sec_core::security::vm::Opcode;
 use egui_plot::{Line, Plot, PlotPoints};
+use sec_core::net::constants::IpProtocol;
+use sec_core::security::mgmt::MgmtOutcome;
+use sec_core::security::vm::Opcode;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -555,13 +555,7 @@ impl AegisApp {
     /// * `rate` - Current rate value (packets per second or count)
     /// * `total` - Cumulative total count
     /// * `color` - Text color for the rate value
-    fn stat_card(
-        ui: &mut egui::Ui,
-        title: &str,
-        rate: u64,
-        total: u64,
-        color: egui::Color32,
-    ) {
+    fn stat_card(ui: &mut egui::Ui, title: &str, rate: u64, total: u64, color: egui::Color32) {
         egui::Frame::none()
             .fill(egui::Color32::from_gray(25))
             .rounding(4.0)
@@ -656,7 +650,9 @@ impl AegisApp {
                         }
                         if let Some(port) = unblock {
                             let id = self.issue(MgmtCommand::UnblockPort(port));
-                            if let Some(rule) = self.blocked_ports.iter_mut().find(|r| r.item == port) {
+                            if let Some(rule) =
+                                self.blocked_ports.iter_mut().find(|r| r.item == port)
+                            {
                                 rule.removal = Some((id, CommandStatus::Pending));
                             }
                         }
@@ -671,7 +667,8 @@ impl AegisApp {
                     ui.text_edit_singleline(&mut self.sdn_sig);
                     if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
                         let sig = std::mem::take(&mut self.sdn_sig);
-                        let command = self.issue(MgmtCommand::AddDpiPattern(sig.as_bytes().to_vec()));
+                        let command =
+                            self.issue(MgmtCommand::AddDpiPattern(sig.as_bytes().to_vec()));
                         self.dpi_signatures.retain(|r| r.item != sig);
                         self.dpi_signatures.push(Rule::issued(sig, command));
                         self.sdn_sig.clear();
@@ -702,8 +699,11 @@ impl AegisApp {
                             });
                         }
                         if let Some(sig) = remove {
-                            let id = self.issue(MgmtCommand::RemoveDpiPattern(sig.as_bytes().to_vec()));
-                            if let Some(rule) = self.dpi_signatures.iter_mut().find(|r| r.item == sig) {
+                            let id =
+                                self.issue(MgmtCommand::RemoveDpiPattern(sig.as_bytes().to_vec()));
+                            if let Some(rule) =
+                                self.dpi_signatures.iter_mut().find(|r| r.item == sig)
+                            {
                                 rule.removal = Some((id, CommandStatus::Pending));
                             }
                         }
@@ -934,7 +934,9 @@ fn status_badge(ui: &mut egui::Ui, status: CommandStatus) {
     let (text, color) = match status {
         CommandStatus::Applied => ("applied", egui::Color32::GREEN),
         CommandStatus::Pending => ("pending", egui::Color32::GRAY),
-        CommandStatus::Rejected(MgmtOutcome::TableFull) => ("rejected: table full", egui::Color32::RED),
+        CommandStatus::Rejected(MgmtOutcome::TableFull) => {
+            ("rejected: table full", egui::Color32::RED)
+        }
         CommandStatus::Rejected(MgmtOutcome::Refused) => ("refused", egui::Color32::RED),
         CommandStatus::Rejected(MgmtOutcome::Invalid | MgmtOutcome::Applied) => {
             ("rejected: invalid", egui::Color32::RED)
@@ -1037,7 +1039,14 @@ mod tests {
         assert!(rest.is_empty(), "bytecode is whole instructions");
         chunks
             .iter()
-            .map(|c| Instruction::new(c[0], c[1], c[2], u32::from_be_bytes([c[3], c[4], c[5], c[6]])))
+            .map(|c| {
+                Instruction::new(
+                    c[0],
+                    c[1],
+                    c[2],
+                    u32::from_be_bytes([c[3], c[4], c[5], c[6]]),
+                )
+            })
             .collect()
     }
 
@@ -1053,7 +1062,9 @@ mod tests {
     fn run(code: &str, packet: &[u8]) -> VmAction {
         let program = decode(&compile_bpf(code).expect("compiles"));
         validate(&program).expect("kernel accepts the program");
-        VM::new().execute(&program, packet).expect("program returns")
+        VM::new()
+            .execute(&program, packet)
+            .expect("program returns")
     }
 
     #[test]

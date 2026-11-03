@@ -46,8 +46,10 @@ pub fn alert_body(meta: &AlertMeta, reason: AlertReason) -> [u8; alert_packet::A
     let mut body = [0u8; alert_packet::ALERT_BODY_LEN];
     body[0] = alert_packet::ALERT_MESSAGE_TYPE;
     body[alert_packet::REASON_OFFSET] = reason.as_u8();
-    body[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4].copy_from_slice(&meta.src_ip);
-    body[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + 4].copy_from_slice(&meta.dst_ip);
+    body[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4]
+        .copy_from_slice(&meta.src_ip);
+    body[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + 4]
+        .copy_from_slice(&meta.dst_ip);
     body[alert_packet::SRC_PORT_OFFSET..alert_packet::SRC_PORT_OFFSET + 2]
         .copy_from_slice(&meta.src_port.to_be_bytes());
     body[alert_packet::DST_PORT_OFFSET..alert_packet::DST_PORT_OFFSET + 2]
@@ -56,7 +58,8 @@ pub fn alert_body(meta: &AlertMeta, reason: AlertReason) -> [u8; alert_packet::A
     body[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
         .copy_from_slice(&meta.packet_len.to_be_bytes());
     body[alert_packet::PREFIX_LEN_OFFSET] = meta.prefix_len;
-    body[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4].copy_from_slice(&meta.value.to_be_bytes());
+    body[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4]
+        .copy_from_slice(&meta.value.to_be_bytes());
     body
 }
 
@@ -103,7 +106,12 @@ pub fn report_frame<'a>(
 
 /// Fills the Ethernet, IPv4 and UDP headers for a frame that spans all of
 /// `frame`, addressed to the operator or, before one is known, broadcast.
-fn write_udp_headers(frame: &mut [u8], operator: Option<OperatorAddr>, src_port: u16, dst_port: u16) {
+fn write_udp_headers(
+    frame: &mut [u8],
+    operator: Option<OperatorAddr>,
+    src_port: u16,
+    dst_port: u16,
+) {
     let (dst_mac, dst_ip) = operator.map_or((BROADCAST_MAC, BROADCAST_IP), |op| (op.mac, op.ip));
     let ip_len = (frame.len() - ipv4::HEADER_OFFSET) as u16;
     let udp_len = (frame.len() - UDP_OFFSET) as u16;

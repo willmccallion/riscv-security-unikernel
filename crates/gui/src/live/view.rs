@@ -83,8 +83,18 @@ impl LiveView {
         });
         ui.add_space(4.0);
         ui.columns(2, |columns| {
-            self.show_hosts(&mut columns[0], "Internet", Locality::Remote, ("from it", "to it"));
-            self.show_hosts(&mut columns[1], "Your network", Locality::Local, ("sent", "received"));
+            self.show_hosts(
+                &mut columns[0],
+                "Internet",
+                Locality::Remote,
+                ("from it", "to it"),
+            );
+            self.show_hosts(
+                &mut columns[1],
+                "Your network",
+                Locality::Local,
+                ("sent", "received"),
+            );
         });
         if self.selected.is_some() {
             ui.separator();
@@ -95,11 +105,17 @@ impl LiveView {
     fn show_status(&self, ui: &mut egui::Ui) {
         match &self.status {
             Status::Connected => {
-                let watched = self.network.hello().map_or_else(String::new, |h| h.interfaces.join(", "));
+                let watched = self
+                    .network
+                    .hello()
+                    .map_or_else(String::new, |h| h.interfaces.join(", "));
                 ui.colored_label(egui::Color32::GREEN, format!("Watching {watched}"));
             }
             Status::Connecting => {
-                ui.colored_label(egui::Color32::GRAY, format!("Connecting to {}", self.socket.display()));
+                ui.colored_label(
+                    egui::Color32::GRAY,
+                    format!("Connecting to {}", self.socket.display()),
+                );
             }
             Status::Disconnected(why) => {
                 ui.colored_label(egui::Color32::RED, why);
@@ -117,8 +133,15 @@ impl LiveView {
         let seconds = latest.length_ms.max(1) as f64 / 1000.0;
         let rate = |bytes: u64| format::bits_per_second(bytes as f64 * 8.0 / seconds);
         let totals = &latest.totals;
-        let ip_bytes = totals.inbound.bytes + totals.outbound.bytes + totals.internal.bytes + totals.transit.bytes;
-        let ipv6_share = if ip_bytes == 0 { 0.0 } else { 100.0 * totals.ipv6.bytes as f64 / ip_bytes as f64 };
+        let ip_bytes = totals.inbound.bytes
+            + totals.outbound.bytes
+            + totals.internal.bytes
+            + totals.transit.bytes;
+        let ipv6_share = if ip_bytes == 0 {
+            0.0
+        } else {
+            100.0 * totals.ipv6.bytes as f64 / ip_bytes as f64
+        };
         ui.horizontal(|ui| {
             stat(ui, "Internet in", &rate(totals.inbound.bytes));
             stat(ui, "Internet out", &rate(totals.outbound.bytes));
@@ -129,7 +152,10 @@ impl LiveView {
         if latest.untracked > 0 {
             ui.colored_label(
                 egui::Color32::YELLOW,
-                format!("{} packets could not be followed: the monitor's tables are full", latest.untracked),
+                format!(
+                    "{} packets could not be followed: the monitor's tables are full",
+                    latest.untracked
+                ),
             );
         }
     }
@@ -137,9 +163,16 @@ impl LiveView {
     fn show_chart(&self, ui: &mut egui::Ui) {
         let points = self.network.throughput();
         let now = points.last().map_or(0.0, |p| p.at_secs);
-        let recent: Vec<_> = points.iter().filter(|p| now - p.at_secs <= CHART_SECONDS).collect();
+        let recent: Vec<_> = points
+            .iter()
+            .filter(|p| now - p.at_secs <= CHART_SECONDS)
+            .collect();
         let series = |pick: fn(&super::model::Throughput) -> f64| -> PlotPoints {
-            recent.iter().map(|p| [p.at_secs - now, pick(p)]).collect::<Vec<[f64; 2]>>().into()
+            recent
+                .iter()
+                .map(|p| [p.at_secs - now, pick(p)])
+                .collect::<Vec<[f64; 2]>>()
+                .into()
         };
         Plot::new("live_throughput")
             .height(200.0)
@@ -150,8 +183,12 @@ impl LiveView {
             .allow_drag(false)
             .allow_zoom(false)
             .allow_scroll(false)
-            .x_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| format!("{:.0} s", mark.value))
-            .y_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| format::bits_per_second(mark.value))
+            .x_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| {
+                format!("{:.0} s", mark.value)
+            })
+            .y_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| {
+                format::bits_per_second(mark.value)
+            })
             .label_formatter(|name, point| format!("{name}\n{}", format::bits_per_second(point.y)))
             .show(ui, |plot| {
                 plot.line(Line::new(series(|p| p.inbound_bps)).name("Internet in"));
@@ -160,29 +197,45 @@ impl LiveView {
             });
     }
 
-    fn show_hosts(&mut self, ui: &mut egui::Ui, title: &str, locality: Locality, headings: (&str, &str)) {
+    fn show_hosts(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        locality: Locality,
+        headings: (&str, &str),
+    ) {
         let rows = self.network.hosts(self.window, locality);
         let seconds = self.window.seconds() as f64;
         ui.heading(format!("{title} ({})", rows.len()));
-        egui::ScrollArea::vertical().id_source(title).max_height(260.0).show(ui, |ui| {
-            egui::Grid::new(title).striped(true).num_columns(4).show(ui, |ui| {
-                ui.strong("Host");
-                ui.strong(headings.0);
-                ui.strong(headings.1);
-                ui.strong("total");
-                ui.end_row();
-                for row in rows.iter().take(HOST_ROWS) {
-                    let is_selected = self.selected == Some(row.addr);
-                    if ui.selectable_label(is_selected, host_label(row)).clicked() {
-                        self.selected = if is_selected { None } else { Some(row.addr) };
-                    }
-                    ui.label(format::bits_per_second(row.sent_bytes as f64 * 8.0 / seconds));
-                    ui.label(format::bits_per_second(row.received_bytes as f64 * 8.0 / seconds));
-                    ui.label(format::bytes(row.total_bytes()));
-                    ui.end_row();
-                }
+        egui::ScrollArea::vertical()
+            .id_source(title)
+            .max_height(260.0)
+            .show(ui, |ui| {
+                egui::Grid::new(title)
+                    .striped(true)
+                    .num_columns(4)
+                    .show(ui, |ui| {
+                        ui.strong("Host");
+                        ui.strong(headings.0);
+                        ui.strong(headings.1);
+                        ui.strong("total");
+                        ui.end_row();
+                        for row in rows.iter().take(HOST_ROWS) {
+                            let is_selected = self.selected == Some(row.addr);
+                            if ui.selectable_label(is_selected, host_label(row)).clicked() {
+                                self.selected = if is_selected { None } else { Some(row.addr) };
+                            }
+                            ui.label(format::bits_per_second(
+                                row.sent_bytes as f64 * 8.0 / seconds,
+                            ));
+                            ui.label(format::bits_per_second(
+                                row.received_bytes as f64 * 8.0 / seconds,
+                            ));
+                            ui.label(format::bytes(row.total_bytes()));
+                            ui.end_row();
+                        }
+                    });
             });
-        });
     }
 
     fn show_selected(&self, ui: &mut egui::Ui) {
@@ -196,8 +249,14 @@ impl LiveView {
         }
         let history = self.network.host_history(addr);
         let now = history.last().map_or(0.0, |&(at, _, _)| at);
-        let sent: Vec<[f64; 2]> = history.iter().map(|&(at, sent, _)| [at - now, sent as f64 * 8.0]).collect();
-        let received: Vec<[f64; 2]> = history.iter().map(|&(at, _, received)| [at - now, received as f64 * 8.0]).collect();
+        let sent: Vec<[f64; 2]> = history
+            .iter()
+            .map(|&(at, sent, _)| [at - now, sent as f64 * 8.0])
+            .collect();
+        let received: Vec<[f64; 2]> = history
+            .iter()
+            .map(|&(at, _, received)| [at - now, received as f64 * 8.0])
+            .collect();
         Plot::new("live_host")
             .height(140.0)
             .legend(Legend::default())
@@ -205,8 +264,12 @@ impl LiveView {
             .allow_drag(false)
             .allow_zoom(false)
             .allow_scroll(false)
-            .x_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| format!("{:.0} s", mark.value))
-            .y_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| format::bits_per_second(mark.value))
+            .x_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| {
+                format!("{:.0} s", mark.value)
+            })
+            .y_axis_formatter(|mark: GridMark, _, _: &RangeInclusive<f64>| {
+                format::bits_per_second(mark.value)
+            })
             .show(ui, |plot| {
                 plot.line(Line::new(PlotPoints::from(sent)).name("sent"));
                 plot.line(Line::new(PlotPoints::from(received)).name("received"));
@@ -225,7 +288,9 @@ fn stat(ui: &mut egui::Ui, label: &str, value: &str) {
 
 fn host_label(row: &HostRow) -> String {
     match &row.name {
-        Some(name) if name.source == NameSource::TlsCoverName => format!("{} (cover name)", name.name),
+        Some(name) if name.source == NameSource::TlsCoverName => {
+            format!("{} (cover name)", name.name)
+        }
         Some(name) => name.name.clone(),
         None => row.addr.to_string(),
     }
@@ -236,7 +301,9 @@ const fn describe(source: NameSource) -> &'static str {
         NameSource::TlsServerName => "the site name a client asked it for (TLS or QUIC)",
         NameSource::Dns => "a DNS answer",
         NameSource::Mdns => "its own mDNS announcement",
-        NameSource::TlsCoverName => "an Encrypted Client Hello's shared cover name, not the real site",
+        NameSource::TlsCoverName => {
+            "an Encrypted Client Hello's shared cover name, not the real site"
+        }
     }
 }
 
@@ -254,8 +321,14 @@ mod tests {
                 name: n.into(),
                 source: NameSource::TlsServerName,
             }),
-            sent: Counter { packets: 10, bytes: 9_000 },
-            received: Counter { packets: 8, bytes: 700 },
+            sent: Counter {
+                packets: 10,
+                bytes: 9_000,
+            },
+            received: Counter {
+                packets: 8,
+                bytes: 700,
+            },
             flows_opened: 1,
             flows_accepted: 0,
         };
@@ -263,9 +336,18 @@ mod tests {
             start_unix_ms: second * 1000,
             length_ms: 1000,
             totals: Totals {
-                inbound: Counter { packets: 10, bytes: 9_000 },
-                outbound: Counter { packets: 8, bytes: 700 },
-                ipv6: Counter { packets: 4, bytes: 3_000 },
+                inbound: Counter {
+                    packets: 10,
+                    bytes: 9_000,
+                },
+                outbound: Counter {
+                    packets: 8,
+                    bytes: 700,
+                },
+                ipv6: Counter {
+                    packets: 4,
+                    bytes: 3_000,
+                },
                 ..Totals::default()
             },
             hosts: vec![
@@ -319,12 +401,19 @@ mod tests {
         draw(&mut view);
 
         assert_eq!(view.status, Status::Connected);
-        assert_eq!(view.network.hosts(Window::OneMinute, Locality::Remote).len(), 1);
+        assert_eq!(
+            view.network
+                .hosts(Window::OneMinute, Locality::Remote)
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn draws_a_disconnected_view_with_no_data() {
-        let mut view = view_with(vec![LinkEvent::Disconnected("cannot reach the monitor".into())]);
+        let mut view = view_with(vec![LinkEvent::Disconnected(
+            "cannot reach the monitor".into(),
+        )]);
         view.selected = Some("10.0.0.1".parse().unwrap());
 
         draw(&mut view);

@@ -47,7 +47,9 @@ impl CaptureSink {
         self.report_bodies()
             .iter()
             .filter(|body| body[0] == alert_packet::ALERT_MESSAGE_TYPE)
-            .map(|body| AlertReason::from_u8(body[alert_packet::REASON_OFFSET]).expect("known reason"))
+            .map(|body| {
+                AlertReason::from_u8(body[alert_packet::REASON_OFFSET]).expect("known reason")
+            })
             .collect()
     }
 }
@@ -120,7 +122,12 @@ pub fn mgmt(seq: u32, body: &[u8]) -> Vec<u8> {
     let counter = (u64::from(EPOCH) << 32) | u64::from(seq);
     let mut sealed = vec![0u8; 16 + body.len()];
     let n = seal(&KEY, counter, body, &mut sealed).unwrap();
-    udp(PEER_IP, 40_000, sec_core::config::MANAGEMENT_PORT, &sealed[..n])
+    udp(
+        PEER_IP,
+        40_000,
+        sec_core::config::MANAGEMENT_PORT,
+        &sealed[..n],
+    )
 }
 
 /// `(seq, command, outcome)` of every mgmt ack emitted, in order.

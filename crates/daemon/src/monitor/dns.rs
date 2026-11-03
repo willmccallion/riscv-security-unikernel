@@ -89,8 +89,12 @@ pub fn parse_response(message: &[u8]) -> Option<DnsResponse> {
         let data = message.get(next + 10..next + 10 + data_len)?;
         offset = next + 10 + data_len;
         let addr = match (record_type, class) {
-            (TYPE_A, CLASS_IN) => <[u8; 4]>::try_from(data).ok().map(|a| IpAddr::V4(Ipv4Addr::from(a))),
-            (TYPE_AAAA, CLASS_IN) => <[u8; 16]>::try_from(data).ok().map(|a| IpAddr::V6(Ipv6Addr::from(a))),
+            (TYPE_A, CLASS_IN) => <[u8; 4]>::try_from(data)
+                .ok()
+                .map(|a| IpAddr::V4(Ipv4Addr::from(a))),
+            (TYPE_AAAA, CLASS_IN) => <[u8; 16]>::try_from(data)
+                .ok()
+                .map(|a| IpAddr::V6(Ipv6Addr::from(a))),
             _ => None,
         };
         let Some(addr) = addr else { continue };
@@ -149,11 +153,19 @@ fn read_name(message: &[u8], offset: usize) -> Option<(String, usize)> {
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    bytes.get(offset..)?.first_chunk().copied().map(u16::from_be_bytes)
+    bytes
+        .get(offset..)?
+        .first_chunk()
+        .copied()
+        .map(u16::from_be_bytes)
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    bytes.get(offset..)?.first_chunk().copied().map(u32::from_be_bytes)
+    bytes
+        .get(offset..)?
+        .first_chunk()
+        .copied()
+        .map(u32::from_be_bytes)
 }
 
 #[cfg(test)]
@@ -163,7 +175,11 @@ mod tests {
     /// Builds a response to `question` (if any) with the given records,
     /// each `(owner, type, data)`. Owners are written in full; the answer
     /// owners after the question use a compression pointer to it.
-    fn response(rcode: u16, question: Option<&str>, records: &[(Option<&str>, u16, &[u8])]) -> Vec<u8> {
+    fn response(
+        rcode: u16,
+        question: Option<&str>,
+        records: &[(Option<&str>, u16, &[u8])],
+    ) -> Vec<u8> {
         let mut m = vec![0x12, 0x34];
         m.extend_from_slice(&(0x8180 | rcode).to_be_bytes());
         m.extend_from_slice(&u16::from(question.is_some()).to_be_bytes());
@@ -204,8 +220,18 @@ mod tests {
             Some("WWW.YouTube.com"),
             &[
                 (None, 5, &cname_target),
-                (Some("youtube-ui.l.google.com"), TYPE_A, &[142, 250, 69, 206]),
-                (Some("youtube-ui.l.google.com"), TYPE_AAAA, &[0x26, 0x07, 0xF8, 0xB0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x20, 0x0E]),
+                (
+                    Some("youtube-ui.l.google.com"),
+                    TYPE_A,
+                    &[142, 250, 69, 206],
+                ),
+                (
+                    Some("youtube-ui.l.google.com"),
+                    TYPE_AAAA,
+                    &[
+                        0x26, 0x07, 0xF8, 0xB0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x20, 0x0E,
+                    ],
+                ),
             ],
         );
 
@@ -213,14 +239,28 @@ mod tests {
 
         assert_eq!(parsed.question.as_deref(), Some("www.youtube.com"));
         assert_eq!(parsed.outcome, Outcome::Answered);
-        let names: Vec<(&str, String)> = parsed.addresses.iter().map(|a| (a.name.as_str(), a.addr.to_string())).collect();
-        assert_eq!(names, [("www.youtube.com", "142.250.69.206".into()), ("www.youtube.com", "2607:f8b0::200e".into())]);
+        let names: Vec<(&str, String)> = parsed
+            .addresses
+            .iter()
+            .map(|a| (a.name.as_str(), a.addr.to_string()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("www.youtube.com", "142.250.69.206".into()),
+                ("www.youtube.com", "2607:f8b0::200e".into())
+            ]
+        );
         assert_eq!(parsed.addresses[0].ttl, 3600);
     }
 
     #[test]
     fn mdns_announcements_name_addresses_after_their_own_records() {
-        let message = response(0, None, &[(Some("Wills-iPhone.local"), TYPE_A, &[192, 168, 1, 40])]);
+        let message = response(
+            0,
+            None,
+            &[(Some("Wills-iPhone.local"), TYPE_A, &[192, 168, 1, 40])],
+        );
 
         let parsed = parse_response(&message).unwrap();
 

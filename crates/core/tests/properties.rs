@@ -12,7 +12,6 @@
 //! `audit.rs`. Run natively with `cargo test -p sec-core --test properties`.
 
 #![cfg(not(miri))]
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -23,9 +22,9 @@
 
 use proptest::prelude::*;
 use sec_core::security::dos::{PenaltyBox, TokenBucket};
-use sec_core::security::sketch::CountMinSketch;
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::{FlowKey, FlowTable};
+use sec_core::security::sketch::CountMinSketch;
 
 proptest! {
     /// An IP banned at time `t` for `dur` cycles must read as banned at

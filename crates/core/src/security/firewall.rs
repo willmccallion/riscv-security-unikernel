@@ -66,7 +66,10 @@ impl FirewallState {
     /// Removes `port` from the blocked list. Unblocking a port that is not
     /// blocked is a no-op. Does not preserve the order of the others.
     pub fn unblock_port(&mut self, port: u16) {
-        let Some(i) = self.blocked_ports[..self.count].iter().position(|&p| p == port) else {
+        let Some(i) = self.blocked_ports[..self.count]
+            .iter()
+            .position(|&p| p == port)
+        else {
             return;
         };
         self.count -= 1;

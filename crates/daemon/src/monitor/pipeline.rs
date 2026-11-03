@@ -2,13 +2,13 @@
 
 use super::decode::{self, LinkType, NotIp, Packet, Transport};
 use super::dns;
-use super::quic;
-use super::tls::ServerName;
 use super::flows::{FlowTable, PacketRole};
 use super::hosts::{HostActivity, HostTable, Locality, PacketEnd};
 use super::names::{HelloAssembler, HostName, NameSource, NameTable};
 use super::net::LocalNetworks;
+use super::quic;
 use super::time::UnixNanos;
+use super::tls::ServerName;
 use super::totals::TrafficTotals;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -130,7 +130,13 @@ impl Monitor {
     /// or inside one already closed, counts toward the next one open: the
     /// kernel hands over frames in blocks, so a frame can arrive after
     /// the wall clock has closed the interval it was captured in.
-    pub fn observe(&mut self, link: LinkType, frame: &[u8], wire_len: u32, at: UnixNanos) -> Option<Summary> {
+    pub fn observe(
+        &mut self,
+        link: LinkType,
+        frame: &[u8],
+        wire_len: u32,
+        at: UnixNanos,
+    ) -> Option<Summary> {
         let closed = self.tick(at);
         let at = at.max(self.closed_until);
         let open = self.current.get_or_insert_with(|| OpenInterval {
@@ -143,7 +149,11 @@ impl Monitor {
             self.track(&packet, wire_len, at);
         } else {
             open.totals.record_non_ip(wire_len);
-            *self.diagnostics.not_ip.entry(decode::classify_rejected(link, frame)).or_default() += 1;
+            *self
+                .diagnostics
+                .not_ip
+                .entry(decode::classify_rejected(link, frame))
+                .or_default() += 1;
         }
         closed
     }
@@ -153,7 +163,8 @@ impl Monitor {
         self.learn_names(packet, role.as_ref(), at);
         let sender = self.end(packet.src);
         let receiver = self.end(packet.dst);
-        self.hosts.record(sender, receiver, wire_len, role.as_ref(), at);
+        self.hosts
+            .record(sender, receiver, wire_len, role.as_ref(), at);
     }
 
     /// Learns names from DNS and mDNS responses, and from the server name
@@ -166,7 +177,10 @@ impl Monitor {
                     if !crypto.is_empty() {
                         self.diagnostics.quic_initials += 1;
                     }
-                    if let Some(hello) = self.hellos.observe_quic(role.client, role.server, &crypto, at) {
+                    if let Some(hello) =
+                        self.hellos
+                            .observe_quic(role.client, role.server, &crypto, at)
+                    {
                         self.diagnostics.quic_names += 1;
                         self.learn_server_name(role.server.addr, &hello, at);
                     }
@@ -182,11 +196,16 @@ impl Monitor {
                 }
             }
             Transport::Tcp(tcp) => {
-                let Some(role) = role.filter(|r| r.from_client) else { return };
+                let Some(role) = role.filter(|r| r.from_client) else {
+                    return;
+                };
                 if tcp.payload.starts_with(&[22, 3]) {
                     self.diagnostics.tls_hellos_seen += 1;
                 }
-                if let Some(hello) = self.hellos.observe_tcp(role.client, role.server, tcp.sequence, tcp.payload, at) {
+                if let Some(hello) =
+                    self.hellos
+                        .observe_tcp(role.client, role.server, tcp.sequence, tcp.payload, at)
+                {
                     self.diagnostics.tls_names += 1;
                     self.learn_server_name(role.server.addr, &hello, at);
                 }
@@ -196,7 +215,11 @@ impl Monitor {
     }
 
     fn learn_server_name(&mut self, server: IpAddr, hello: &ServerName, at: UnixNanos) {
-        let source = if hello.encrypted_hello { NameSource::TlsCoverName } else { NameSource::TlsServerName };
+        let source = if hello.encrypted_hello {
+            NameSource::TlsCoverName
+        } else {
+            NameSource::TlsServerName
+        };
         self.names.learn(server, &hello.name, source, at);
     }
 
@@ -205,7 +228,11 @@ impl Monitor {
         if !self.local.is_host_address(addr) {
             return None;
         }
-        let locality = if self.local.contains(addr) { Locality::Local } else { Locality::Remote };
+        let locality = if self.local.contains(addr) {
+            Locality::Local
+        } else {
+            Locality::Remote
+        };
         Some(PacketEnd { addr, locality })
     }
 
@@ -265,7 +292,9 @@ mod tests {
     fn udp_frame() -> Vec<u8> {
         let mut frame = vec![0u8; 12];
         frame.extend_from_slice(&[0x08, 0x00]);
-        frame.extend_from_slice(&[0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86]);
+        frame.extend_from_slice(&[
+            0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86,
+        ]);
         frame.extend_from_slice(&[0, 53, 0x9C, 0x40, 0, 8, 0, 0]);
         frame
     }
@@ -280,9 +309,21 @@ mod tests {
         let mut m = monitor();
         let frame = udp_frame();
 
-        let first = m.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(10 * SECOND + 5));
-        let second = m.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(10 * SECOND + 900));
-        let closed = m.observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(11 * SECOND)).unwrap();
+        let first = m.observe(
+            LinkType::Ethernet,
+            &frame,
+            60,
+            UnixNanos::new(10 * SECOND + 5),
+        );
+        let second = m.observe(
+            LinkType::Ethernet,
+            &frame,
+            60,
+            UnixNanos::new(10 * SECOND + 900),
+        );
+        let closed = m
+            .observe(LinkType::Ethernet, &frame, 60, UnixNanos::new(11 * SECOND))
+            .unwrap();
 
         assert_eq!((first, second), (None, None));
         assert_eq!(closed.start, UnixNanos::new(10 * SECOND));
@@ -292,22 +333,41 @@ mod tests {
     #[test]
     fn a_quiet_interval_closes_on_tick() {
         let mut m = monitor();
-        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(3 * SECOND + 1));
+        let _ = m.observe(
+            LinkType::Ethernet,
+            &udp_frame(),
+            60,
+            UnixNanos::new(3 * SECOND + 1),
+        );
 
         let early = m.tick(UnixNanos::new(3 * SECOND + SECOND / 2));
         let due = m.tick(UnixNanos::new(4 * SECOND));
 
         assert_eq!(early, None);
         assert_eq!(due.unwrap().totals.inbound.bytes, 60);
-        assert_eq!(m.tick(UnixNanos::new(9 * SECOND)), None, "nothing open after closing");
+        assert_eq!(
+            m.tick(UnixNanos::new(9 * SECOND)),
+            None,
+            "nothing open after closing"
+        );
     }
 
     #[test]
     fn late_frames_count_toward_the_open_interval() {
         let mut m = monitor();
-        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(5 * SECOND + 10));
+        let _ = m.observe(
+            LinkType::Ethernet,
+            &udp_frame(),
+            60,
+            UnixNanos::new(5 * SECOND + 10),
+        );
 
-        let late = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(4 * SECOND + 999));
+        let late = m.observe(
+            LinkType::Ethernet,
+            &udp_frame(),
+            60,
+            UnixNanos::new(4 * SECOND + 999),
+        );
 
         assert_eq!(late, None);
         assert_eq!(m.finish().unwrap().totals.inbound.packets, 2);
@@ -325,7 +385,10 @@ mod tests {
         let summary = m.finish().unwrap();
         assert_eq!(summary.totals.non_ip.packets, 1);
         assert_eq!(summary.totals.ip().packets, 0);
-        assert_eq!(summary.diagnostics.not_ip.get(&NotIp::EtherType(0x0806)), Some(&1));
+        assert_eq!(
+            summary.diagnostics.not_ip.get(&NotIp::EtherType(0x0806)),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -335,7 +398,11 @@ mod tests {
         let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(SECOND));
         let summary = m.finish().unwrap();
 
-        let addrs: Vec<String> = summary.hosts.iter().map(|h| h.activity.addr.to_string()).collect();
+        let addrs: Vec<String> = summary
+            .hosts
+            .iter()
+            .map(|h| h.activity.addr.to_string())
+            .collect();
         assert_eq!(addrs, ["1.1.1.1", "192.168.1.86"]);
         assert_eq!(summary.hosts[0].activity.locality, Locality::Remote);
         assert_eq!(summary.active_flows, 1);
@@ -346,13 +413,15 @@ mod tests {
     fn dns_answers_name_the_hosts_in_summaries() {
         let mut m = monitor();
         let answer = [
-            0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0, 3, b'o', b'n', b'e', 3, b'o', b'n', b'e', 0, 0, 1, 0, 1, 0xC0,
-            12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 1, 1, 1, 1,
+            0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0, 3, b'o', b'n', b'e', 3, b'o', b'n',
+            b'e', 0, 0, 1, 0, 1, 0xC0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 1, 1, 1, 1,
         ];
         let mut frame = vec![0u8; 12];
         frame.extend_from_slice(&[0x08, 0x00]);
         let total = u16::try_from(20 + 8 + answer.len()).unwrap();
-        frame.extend_from_slice(&[0x45, 0, 0, 0, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86]);
+        frame.extend_from_slice(&[
+            0x45, 0, 0, 0, 0, 0, 0, 0, 64, 17, 0, 0, 1, 1, 1, 1, 192, 168, 1, 86,
+        ]);
         frame[16..18].copy_from_slice(&total.to_be_bytes());
         frame.extend_from_slice(&[0, 53, 0x9C, 0x40]);
         frame.extend_from_slice(&u16::try_from(8 + answer.len()).unwrap().to_be_bytes());
@@ -363,21 +432,39 @@ mod tests {
         let summary = m.finish().unwrap();
 
         assert_eq!(summary.diagnostics.dns_responses, 1);
-        let resolver = summary.hosts.iter().find(|h| h.activity.addr.to_string() == "1.1.1.1").unwrap();
+        let resolver = summary
+            .hosts
+            .iter()
+            .find(|h| h.activity.addr.to_string() == "1.1.1.1")
+            .unwrap();
         assert_eq!(resolver.name.as_ref().map(|n| &*n.name), Some("one.one"));
     }
 
     #[test]
     fn a_frame_arriving_after_its_interval_closed_never_reopens_it() {
         let mut m = monitor();
-        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(12 * SECOND + 1));
+        let _ = m.observe(
+            LinkType::Ethernet,
+            &udp_frame(),
+            60,
+            UnixNanos::new(12 * SECOND + 1),
+        );
         let closed = m.tick(UnixNanos::new(13 * SECOND + 5)).unwrap();
 
-        let _ = m.observe(LinkType::Ethernet, &udp_frame(), 60, UnixNanos::new(12 * SECOND + 995_000_000));
+        let _ = m.observe(
+            LinkType::Ethernet,
+            &udp_frame(),
+            60,
+            UnixNanos::new(12 * SECOND + 995_000_000),
+        );
         let next = m.finish().unwrap();
 
         assert_eq!(closed.start, UnixNanos::new(12 * SECOND));
-        assert_eq!(next.start, UnixNanos::new(13 * SECOND), "the late frame joins the next second");
+        assert_eq!(
+            next.start,
+            UnixNanos::new(13 * SECOND),
+            "the late frame joins the next second"
+        );
         assert_eq!(next.totals.inbound.packets, 1);
     }
 }

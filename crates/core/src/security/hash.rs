@@ -100,7 +100,11 @@ pub const MAX_LABEL_LEN: usize = 31;
 /// Lets one secret key several hashes without their outputs being related.
 /// Labels longer than [`MAX_LABEL_LEN`] are truncated.
 pub const fn derive_key(key: &[u8; 16], label: &[u8]) -> [u8; 16] {
-    let len = if label.len() < MAX_LABEL_LEN { label.len() } else { MAX_LABEL_LEN };
+    let len = if label.len() < MAX_LABEL_LEN {
+        label.len()
+    } else {
+        MAX_LABEL_LEN
+    };
     let mut input = [0u8; MAX_LABEL_LEN + 1];
     let mut i = 0;
     while i < len {

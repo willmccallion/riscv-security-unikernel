@@ -9,22 +9,24 @@
 mod report;
 
 use crate::config::{
-    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH, PREFIX_SKETCH_DEPTH,
-    PREFIX_SKETCH_WIDTH, SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM,
-    SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
-    DDOS_ALERT_SAMPLE_RATE, DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD,
-    IP_ADDR, IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
-    MGMT_TOKEN_COST_CYCLES, RATE_LIMIT_TOKEN_COST_CYCLES, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
+    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH, DDOS_ALERT_SAMPLE_RATE,
+    DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD, IP_ADDR,
+    IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
+    MGMT_TOKEN_COST_CYCLES, PREFIX_SKETCH_DEPTH, PREFIX_SKETCH_WIDTH, RATE_LIMIT_TOKEN_COST_CYCLES,
+    SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM, SUBNET_16_THRESHOLD,
+    SUBNET_24_THRESHOLD, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
 use crate::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
+use crate::security::hash::{derive_key, siphash24};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
-use crate::security::hash::{derive_key, siphash24};
-use crate::security::{anomaly, dos, scan, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, sketch, vm};
+use crate::security::{
+    anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, scan, sketch, vm,
+};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
 
@@ -136,8 +138,12 @@ pub struct Engine<
     stats: IntervalStats,
 }
 
-impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: usize, const PREFIX_DEPTH: usize>
-    Engine<SKETCH_WIDTH, SKETCH_DEPTH, PREFIX_WIDTH, PREFIX_DEPTH>
+impl<
+    const SKETCH_WIDTH: usize,
+    const SKETCH_DEPTH: usize,
+    const PREFIX_WIDTH: usize,
+    const PREFIX_DEPTH: usize,
+> Engine<SKETCH_WIDTH, SKETCH_DEPTH, PREFIX_WIDTH, PREFIX_DEPTH>
 {
     /// Creates an engine whose mgmt plane verifies with `mgmt_key`.
     ///
@@ -154,7 +160,10 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
             port_scans: scan::PortScanDetector::new([0; 16]),
             source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
             pbox: dos::PenaltyBox::new(),
-            limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY as u64, RATE_LIMIT_TOKEN_COST_CYCLES),
+            limiter: dos::TokenBucket::new(
+                TOKEN_BUCKET_CAPACITY as u64,
+                RATE_LIMIT_TOKEN_COST_CYCLES,
+            ),
             mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
             alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES),
             vm: VM::new(),
@@ -195,8 +204,10 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
         self.syn_secret = secrets.syn_cookie;
         self.cms.rekey(secrets.cms_key);
         self.source_key = secrets.cms_key;
-        self.prefixes.rekey(derive_key(&secrets.cms_key, b"subnet sketch"));
-        self.port_scans.rekey(derive_key(&secrets.cms_key, b"port scans"));
+        self.prefixes
+            .rekey(derive_key(&secrets.cms_key, b"subnet sketch"));
+        self.port_scans
+            .rekey(derive_key(&secrets.cms_key, b"port scans"));
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
@@ -277,7 +288,8 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
         let mut src_mac = [0u8; 6];
         if packet.len() >= ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE {
             src_mac.copy_from_slice(
-                &packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
+                &packet
+                    [ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
             );
         }
         let ip = parse_ipv4(packet);
@@ -299,10 +311,12 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
             if self.pbox.is_banned(&meta.src_ip, now) {
                 drop = true;
             } else if self.cms.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
-                self.pbox.ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
+                self.pbox
+                    .ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
                 drop = true;
             } else if let Some(subnet) = self.count_subnets(meta.src_ip) {
-                self.pbox.ban_prefix(subnet.prefix, IP_BAN_DURATION_CYCLES as u64, now);
+                self.pbox
+                    .ban_prefix(subnet.prefix, IP_BAN_DURATION_CYCLES as u64, now);
                 let alert = AlertMeta {
                     src_ip: subnet.prefix.network(),
                     prefix_len: subnet.prefix.prefix_len(),
@@ -312,7 +326,8 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
                 self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
                 drop = true;
             } else if let Some(scan) = self.count_connection_attempt(packet, ip, meta.dst_port) {
-                self.pbox.ban(&scan.source, IP_BAN_DURATION_CYCLES as u64, now);
+                self.pbox
+                    .ban(&scan.source, IP_BAN_DURATION_CYCLES as u64, now);
                 let alert = AlertMeta {
                     value: scan.distinct_ports,
                     ..meta
@@ -431,7 +446,9 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
                 continue;
             }
             let network = prefix.network();
-            let rate = self.prefixes.insert(&[len, network[0], network[1], network[2]]);
+            let rate = self
+                .prefixes
+                .insert(&[len, network[0], network[1], network[2]]);
             if heavy.is_none() && rate > threshold {
                 heavy = Some(HeavySubnet { prefix, rate });
             }
@@ -442,7 +459,12 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
     /// Feeds a TCP connection attempt (SYN without ACK) to the port-scan
     /// detector. Replies and established traffic never count, so a server
     /// answering many client ports is not mistaken for a scanner.
-    fn count_connection_attempt(&mut self, packet: &[u8], ip: &Ipv4Fields, dst_port: u16) -> Option<scan::ConfirmedScan> {
+    fn count_connection_attempt(
+        &mut self,
+        packet: &[u8],
+        ip: &Ipv4Fields,
+        dst_port: u16,
+    ) -> Option<scan::ConfirmedScan> {
         let flags = u16::from(tcp_flags(packet, ip)?);
         let is_connection_attempt = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
         if !is_connection_attempt {
@@ -481,19 +503,40 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
     /// Sends an alert raised at the end of a detection interval. Detectors
     /// report at most once per interval each, so these skip the per-packet
     /// alert limit, which a flood of routine alerts could otherwise drain.
-    fn detector_alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, sink: &mut S) {
+    fn detector_alert<S: PacketSink>(
+        &mut self,
+        meta: &AlertMeta,
+        reason: AlertReason,
+        sink: &mut S,
+    ) {
         self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
     }
 
-    fn alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, now: u64, sink: &mut S) {
+    fn alert<S: PacketSink>(
+        &mut self,
+        meta: &AlertMeta,
+        reason: AlertReason,
+        now: u64,
+        sink: &mut S,
+    ) {
         if self.alert_limiter.allow(now) {
             self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
         }
     }
 
-    fn send_ack<S: PacketSink>(&mut self, seq: u32, body: &[u8], outcome: MgmtOutcome, sink: &mut S) {
+    fn send_ack<S: PacketSink>(
+        &mut self,
+        seq: u32,
+        body: &[u8],
+        outcome: MgmtOutcome,
+        sink: &mut S,
+    ) {
         let command = body.get(mgmt_packet::MSG_TYPE_OFFSET).copied().unwrap_or(0);
-        self.send_report(MANAGEMENT_PORT, &report::ack_body(seq, command, outcome), sink);
+        self.send_report(
+            MANAGEMENT_PORT,
+            &report::ack_body(seq, command, outcome),
+            sink,
+        );
     }
 
     /// Signs `body` as the next report of this boot and sends it to the
@@ -599,9 +642,9 @@ impl<const SKETCH_WIDTH: usize, const SKETCH_DEPTH: usize, const PREFIX_WIDTH: u
         if count > upload_bpf::MAX_INSTR_COUNT {
             return MgmtOutcome::Invalid;
         }
-        let Some(encoded) =
-            body.get(upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + count * upload_bpf::INSTR_SIZE)
-        else {
+        let Some(encoded) = body.get(
+            upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + count * upload_bpf::INSTR_SIZE,
+        ) else {
             return MgmtOutcome::Invalid;
         };
         let mut staged = [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE];
@@ -638,7 +681,9 @@ fn pattern_operand(body: &[u8]) -> Option<&[u8]> {
 /// The IPv4 operand of a (Un)BanIp body.
 fn ip_operand(body: &[u8]) -> Option<[u8; 4]> {
     use mgmt_packet::ban_ip::IP_OFFSET;
-    body.get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?.try_into().ok()
+    body.get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?
+        .try_into()
+        .ok()
 }
 
 /// A subnet whose packet rate passed its threshold.
@@ -679,9 +724,7 @@ fn parse_ipv4(packet: &[u8]) -> Option<Ipv4Fields> {
 /// ICMP checksum match a firewall rule.
 fn transport_ports(packet: &[u8], ip: &Ipv4Fields) -> Option<(u16, u16)> {
     match IpProtocol::from_u8(ip.protocol)? {
-        IpProtocol::Tcp | IpProtocol::Udp => {
-            packet.get(ip.l4_offset..).and_then(extract_ports)
-        }
+        IpProtocol::Tcp | IpProtocol::Udp => packet.get(ip.l4_offset..).and_then(extract_ports),
         IpProtocol::Icmp => None,
     }
 }
@@ -730,7 +773,9 @@ fn is_for_us(packet: &[u8]) -> bool {
         .map(|t| u16::from_be_bytes([t[0], t[1]]));
     let target_ip = match ethertype {
         Some(0x0800) => packet.get(ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE),
-        Some(0x0806) => packet.get(arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE),
+        Some(0x0806) => {
+            packet.get(arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE)
+        }
         _ => None,
     };
     target_ip == Some(&IP_ADDR[..])

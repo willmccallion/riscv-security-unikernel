@@ -92,7 +92,11 @@ mod tests {
         }
         let _ = d.observe(500.0);
 
-        assert_eq!(d.observe(6000.0), Some(6000.0), "the next surge is still a surge");
+        assert_eq!(
+            d.observe(6000.0),
+            Some(6000.0),
+            "the next surge is still a surge"
+        );
     }
 
     #[test]

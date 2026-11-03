@@ -3,8 +3,8 @@
 use super::hosts::Locality;
 use super::net::LocalNetworks;
 use super::pipeline::{Diagnostics, Summary};
-use super::totals::SiBits;
 use super::time::UnixNanos;
+use super::totals::SiBits;
 use std::fmt;
 use std::time::Duration;
 
@@ -33,7 +33,11 @@ pub enum Detail {
 /// Prints one interval's summary, stamped with its start in UTC, and the
 /// busiest remote hosts; with [`Detail::Verbose`], diagnostics too.
 pub fn print_summary(summary: &Summary, detail: Detail) {
-    println!("{} {}", UtcClock(summary.start), summary.totals.rates(summary.length));
+    println!(
+        "{} {}",
+        UtcClock(summary.start),
+        summary.totals.rates(summary.length)
+    );
     let seconds = summary.length.as_secs_f64().max(1e-9);
     let top: Vec<String> = summary
         .hosts
@@ -41,7 +45,10 @@ pub fn print_summary(summary: &Summary, detail: Detail) {
         .filter(|h| h.activity.locality == Locality::Remote)
         .take(TOP_REMOTE_HOSTS)
         .map(|h| {
-            let label = h.name.as_ref().map_or_else(|| h.activity.addr.to_string(), |n| n.name.to_string());
+            let label = h
+                .name
+                .as_ref()
+                .map_or_else(|| h.activity.addr.to_string(), |n| n.name.to_string());
             format!(
                 "{label} \u{2193}{}/s \u{2191}{}/s",
                 SiBits(h.activity.sent.bytes as f64 * 8.0 / seconds),
@@ -54,7 +61,11 @@ pub fn print_summary(summary: &Summary, detail: Detail) {
             "          top: {} | {} flows{}",
             top.join(", "),
             summary.active_flows,
-            if summary.untracked > 0 { format!(", {} packets untracked", summary.untracked) } else { String::new() }
+            if summary.untracked > 0 {
+                format!(", {} packets untracked", summary.untracked)
+            } else {
+                String::new()
+            }
         );
     }
     if detail == Detail::Verbose {
@@ -68,7 +79,11 @@ struct DiagnosticsLine<'a>(&'a Diagnostics);
 impl fmt::Display for DiagnosticsLine<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let d = self.0;
-        let not_ip: Vec<String> = d.not_ip.iter().map(|(why, count)| format!("{why} {count}")).collect();
+        let not_ip: Vec<String> = d
+            .not_ip
+            .iter()
+            .map(|(why, count)| format!("{why} {count}"))
+            .collect();
         write!(
             f,
             "non-IP [{}] | dns {} mdns {} | tls hellos {} named {} | quic initials {} named {}",

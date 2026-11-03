@@ -69,10 +69,8 @@ fn build_tcp_frame(
     seq: u32,
     payload: &[u8],
 ) -> Vec<u8> {
-    let total = ethernet::MIN_FRAME_SIZE
-        + ipv4::MIN_HEADER_SIZE
-        + tcp::MIN_HEADER_SIZE
-        + payload.len();
+    let total =
+        ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE + tcp::MIN_HEADER_SIZE + payload.len();
     let mut f = vec![0u8; total];
 
     f[0..6].copy_from_slice(&KERNEL_MAC);
@@ -241,8 +239,7 @@ fn non_syn_tcp_returns_payload_to_caller() {
 fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
     let frame = build_tcp_frame([10, 0, 0, 5], 4444, 23, TCP_SYN, 0, &[]);
     let l4_offset = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
-    let (sp, dp) =
-        extract_ports(&frame[l4_offset..]).expect("ports must extract from frame");
+    let (sp, dp) = extract_ports(&frame[l4_offset..]).expect("ports must extract from frame");
     assert_eq!(sp, 4444);
     assert_eq!(dp, 23);
 }
@@ -378,7 +375,10 @@ fn process_packet_rejects_ipv4_with_wrong_version() {
     let mut sink = CaptureSink::default();
     let secret = test_syn_secret();
     let result = process_packet(&mut frame, &mut sink, &secret);
-    assert!(sink.sent.is_empty(), "version!=4 must not generate any reply");
+    assert!(
+        sink.sent.is_empty(),
+        "version!=4 must not generate any reply"
+    );
     assert!(result.is_none(), "version!=4 must not return a payload");
 }
 
@@ -632,7 +632,8 @@ fn penalty_box_does_not_clobber_a_single_slot_when_full() {
 #[test]
 fn arp_hw_type_offset_matches_wire_layout() {
     assert_eq!(
-        arp::HW_TYPE_OFFSET, 14,
+        arp::HW_TYPE_OFFSET,
+        14,
         "ARP hw_type lives at offset 14 of the Ethernet frame, not {}",
         arp::HW_TYPE_OFFSET
     );
@@ -708,11 +709,7 @@ fn flow_table_protects_existing_flow_from_unique_tuple_flood() {
         let _ = ft.update(&flood, 100, now + i as u64 + 1);
     }
 
-    let still_known = !ft.update(
-        &real,
-        100,
-        now + 200,
-    );
+    let still_known = !ft.update(&real, 100, now + 200);
     assert!(
         still_known,
         "the original flow was evicted by a unique-5-tuple flood"
@@ -875,7 +872,11 @@ fn vm_out_of_bounds_loads_all_clear_the_register() {
 
         let action = VM::new().execute(&program, &[0xAB, 0xCD]);
 
-        assert_eq!(action, Ok(VmAction::Pass), "opcode {load:#x} left a stale register");
+        assert_eq!(
+            action,
+            Ok(VmAction::Pass),
+            "opcode {load:#x} left a stale register"
+        );
     }
 }
 
@@ -898,5 +899,8 @@ fn penalty_box_reuses_a_ban_ending_now_before_evicting_an_active_one() {
 
     pbox.ban(&[10, 0, 1, 1], 100, 100);
 
-    assert!(pbox.is_banned(&[10, 0, 0, 0], 100), "an active ban was evicted");
+    assert!(
+        pbox.is_banned(&[10, 0, 0, 0], 100),
+        "an active ban was evicted"
+    );
 }

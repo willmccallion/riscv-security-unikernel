@@ -136,10 +136,18 @@ const MAX_IPV6_EXTENSIONS: usize = 8;
 /// packet or is too short to be one.
 pub fn decode(link: LinkType, frame: &[u8]) -> Option<Packet<'_>> {
     match link {
-        LinkType::Ethernet => decode_ethertype(read_u16(frame, 12)?, frame.get(ETHERNET_HEADER_LEN..)?),
+        LinkType::Ethernet => {
+            decode_ethertype(read_u16(frame, 12)?, frame.get(ETHERNET_HEADER_LEN..)?)
+        }
         LinkType::RawIp => decode_ip(frame),
-        LinkType::LinuxSll => decode_ethertype(read_u16(frame, SLL_PROTOCOL_OFFSET)?, frame.get(SLL_HEADER_LEN..)?),
-        LinkType::LinuxSll2 => decode_ethertype(read_u16(frame, SLL2_PROTOCOL_OFFSET)?, frame.get(SLL2_HEADER_LEN..)?),
+        LinkType::LinuxSll => decode_ethertype(
+            read_u16(frame, SLL_PROTOCOL_OFFSET)?,
+            frame.get(SLL_HEADER_LEN..)?,
+        ),
+        LinkType::LinuxSll2 => decode_ethertype(
+            read_u16(frame, SLL2_PROTOCOL_OFFSET)?,
+            frame.get(SLL2_HEADER_LEN..)?,
+        ),
     }
 }
 
@@ -183,8 +191,14 @@ pub fn classify_rejected(link: LinkType, frame: &[u8]) -> NotIp {
             };
         }
         LinkType::Ethernet => (read_u16(frame, 12), frame.get(ETHERNET_HEADER_LEN..)),
-        LinkType::LinuxSll => (read_u16(frame, SLL_PROTOCOL_OFFSET), frame.get(SLL_HEADER_LEN..)),
-        LinkType::LinuxSll2 => (read_u16(frame, SLL2_PROTOCOL_OFFSET), frame.get(SLL2_HEADER_LEN..)),
+        LinkType::LinuxSll => (
+            read_u16(frame, SLL_PROTOCOL_OFFSET),
+            frame.get(SLL_HEADER_LEN..),
+        ),
+        LinkType::LinuxSll2 => (
+            read_u16(frame, SLL2_PROTOCOL_OFFSET),
+            frame.get(SLL2_HEADER_LEN..),
+        ),
     };
     let (Some(mut ethertype), Some(mut rest)) = (ethertype, rest) else {
         return NotIp::Truncated;
@@ -237,7 +251,11 @@ fn decode_ipv4(packet: &[u8]) -> Option<Packet<'_>> {
         return None;
     }
     let total_len = usize::from(read_u16(packet, 2)?);
-    let end = if total_len == 0 { packet.len() } else { total_len.min(packet.len()) };
+    let end = if total_len == 0 {
+        packet.len()
+    } else {
+        total_len.min(packet.len())
+    };
     let packet = packet.get(..end)?;
     if packet.len() < header_len {
         return None;
@@ -266,7 +284,11 @@ fn decode_ipv6(packet: &[u8]) -> Option<Packet<'_>> {
     let src = Ipv6Addr::from(read_array::<16>(packet, 8)?);
     let dst = Ipv6Addr::from(read_array::<16>(packet, 24)?);
     let jumbo = payload_len == 0 && packet.get(6) == Some(&IPV6_HOP_BY_HOP);
-    let end = if jumbo { packet.len() } else { (HEADER_LEN + payload_len).min(packet.len()) };
+    let end = if jumbo {
+        packet.len()
+    } else {
+        (HEADER_LEN + payload_len).min(packet.len())
+    };
     let payload = packet.get(HEADER_LEN..end)?;
     let next_header = *packet.get(6)?;
     let transport = ipv6_transport(next_header, payload).unwrap_or(Transport::Other(next_header));
@@ -282,7 +304,9 @@ fn decode_ipv6(packet: &[u8]) -> Option<Packet<'_>> {
 fn ipv6_transport(mut next_header: u8, mut rest: &[u8]) -> Option<Transport<'_>> {
     for _ in 0..MAX_IPV6_EXTENSIONS {
         let header_len = match next_header {
-            IPV6_HOP_BY_HOP | IPV6_ROUTING | IPV6_DEST_OPTIONS => (usize::from(*rest.get(1)?) + 1) * 8,
+            IPV6_HOP_BY_HOP | IPV6_ROUTING | IPV6_DEST_OPTIONS => {
+                (usize::from(*rest.get(1)?) + 1) * 8
+            }
             IPV6_AUTH => (usize::from(*rest.get(1)?) + 2) * 4,
             IPV6_FRAGMENT => {
                 if read_u16(rest, 2)? & 0xFFF8 != 0 {
@@ -325,7 +349,11 @@ fn decode_tcp(segment: &[u8]) -> Option<TcpSegment<'_>> {
 fn decode_udp(datagram: &[u8]) -> Option<UdpDatagram<'_>> {
     const HEADER_LEN: usize = 8;
     let length = usize::from(read_u16(datagram, 4)?);
-    let end = if length >= HEADER_LEN { length.min(datagram.len()) } else { datagram.len() };
+    let end = if length >= HEADER_LEN {
+        length.min(datagram.len())
+    } else {
+        datagram.len()
+    };
     Some(UdpDatagram {
         src_port: read_u16(datagram, 0)?,
         dst_port: read_u16(datagram, 2)?,
@@ -354,7 +382,9 @@ mod tests {
 
     fn ipv4(protocol: u8, l4: &[u8]) -> Vec<u8> {
         let total = u16::try_from(20 + l4.len()).unwrap();
-        let mut p = vec![0x45, 0, 0, 0, 0, 0, 0, 0, 64, protocol, 0, 0, 10, 0, 0, 1, 93, 184, 216, 34];
+        let mut p = vec![
+            0x45, 0, 0, 0, 0, 0, 0, 0, 64, protocol, 0, 0, 10, 0, 0, 1, 93, 184, 216, 34,
+        ];
         p[2..4].copy_from_slice(&total.to_be_bytes());
         p.extend_from_slice(l4);
         p
@@ -392,14 +422,22 @@ mod tests {
 
     #[test]
     fn decodes_tcp_over_ipv4_over_ethernet() {
-        let frame = ethernet(ETHERTYPE_IPV4, &ipv4(PROTO_TCP, &tcp(51000, 443, 0x02, b"")));
+        let frame = ethernet(
+            ETHERTYPE_IPV4,
+            &ipv4(PROTO_TCP, &tcp(51000, 443, 0x02, b"")),
+        );
 
         let packet = decode(LinkType::Ethernet, &frame).unwrap();
 
         assert_eq!(packet.src, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         assert_eq!(packet.dst, IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)));
-        let Transport::Tcp(segment) = packet.transport else { panic!("not TCP") };
-        assert_eq!((segment.src_port, segment.dst_port, segment.sequence), (51000, 443, 7));
+        let Transport::Tcp(segment) = packet.transport else {
+            panic!("not TCP")
+        };
+        assert_eq!(
+            (segment.src_port, segment.dst_port, segment.sequence),
+            (51000, 443, 7)
+        );
         assert!(segment.flags.is_connection_attempt());
     }
 
@@ -410,7 +448,9 @@ mod tests {
 
         let packet = decode(LinkType::Ethernet, &frame).unwrap();
 
-        let Transport::Udp(datagram) = packet.transport else { panic!("not UDP") };
+        let Transport::Udp(datagram) = packet.transport else {
+            panic!("not UDP")
+        };
         assert_eq!(datagram.payload, b"dns");
     }
 
@@ -420,7 +460,10 @@ mod tests {
         inner.extend_from_slice(&ipv4(PROTO_UDP, &udp(1, 2, b"")));
         let frame = ethernet(ETHERTYPE_QINQ, &[&[0x00, 0x14][..], &inner].concat());
 
-        assert!(matches!(decode(LinkType::Ethernet, &frame).unwrap().transport, Transport::Udp(_)));
+        assert!(matches!(
+            decode(LinkType::Ethernet, &frame).unwrap().transport,
+            Transport::Udp(_)
+        ));
     }
 
     #[test]
@@ -428,11 +471,19 @@ mod tests {
         let ip = ipv4(PROTO_UDP, &udp(53, 40000, b"x"));
         let mut sll = vec![0, 4, 0, 1, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0, 0x08, 0x00];
         sll.extend_from_slice(&ip);
-        let mut sll2 = vec![0x08, 0x00, 0, 0, 0, 0, 0, 2, 0, 1, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0];
+        let mut sll2 = vec![
+            0x08, 0x00, 0, 0, 0, 0, 0, 2, 0, 1, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0,
+        ];
         sll2.extend_from_slice(&ip);
 
-        assert!(matches!(decode(LinkType::LinuxSll, &sll).unwrap().transport, Transport::Udp(_)));
-        assert!(matches!(decode(LinkType::LinuxSll2, &sll2).unwrap().transport, Transport::Udp(_)));
+        assert!(matches!(
+            decode(LinkType::LinuxSll, &sll).unwrap().transport,
+            Transport::Udp(_)
+        ));
+        assert!(matches!(
+            decode(LinkType::LinuxSll2, &sll2).unwrap().transport,
+            Transport::Udp(_)
+        ));
     }
 
     #[test]
@@ -446,7 +497,9 @@ mod tests {
         let packet = decode(LinkType::RawIp, &bytes).unwrap();
 
         assert_eq!(packet.dst, IpAddr::V6("2606:4700::1111".parse().unwrap()));
-        let Transport::Udp(datagram) = packet.transport else { panic!("not UDP") };
+        let Transport::Udp(datagram) = packet.transport else {
+            panic!("not UDP")
+        };
         assert_eq!((datagram.src_port, datagram.payload), (443, &b"quic"[..]));
     }
 
@@ -455,7 +508,9 @@ mod tests {
         let mut v4 = ipv4(PROTO_TCP, &tcp(443, 50000, 0x10, &[7; 3000]));
         v4[2..4].copy_from_slice(&[0, 0]);
 
-        let Transport::Tcp(segment) = decode(LinkType::RawIp, &v4).unwrap().transport else { panic!("not TCP") };
+        let Transport::Tcp(segment) = decode(LinkType::RawIp, &v4).unwrap().transport else {
+            panic!("not TCP")
+        };
 
         assert_eq!(segment.payload.len(), 3000);
     }
@@ -466,8 +521,14 @@ mod tests {
         v4[6..8].copy_from_slice(&0x00B9u16.to_be_bytes());
         let v6 = ipv6(IPV6_FRAGMENT, &[PROTO_UDP, 0, 0x05, 0x00, 0, 0, 0, 1, 0, 0]);
 
-        assert_eq!(decode(LinkType::RawIp, &v4).unwrap().transport, Transport::Fragment);
-        assert_eq!(decode(LinkType::RawIp, &v6).unwrap().transport, Transport::Fragment);
+        assert_eq!(
+            decode(LinkType::RawIp, &v4).unwrap().transport,
+            Transport::Fragment
+        );
+        assert_eq!(
+            decode(LinkType::RawIp, &v6).unwrap().transport,
+            Transport::Fragment
+        );
     }
 
     #[test]
@@ -486,12 +547,30 @@ mod tests {
         let stp = ethertype_frame(0x0026, &[0; 38]);
         let bad_ip = ethertype_frame(ETHERTYPE_IPV4, &[0x45, 0, 0]);
 
-        assert_eq!(classify_rejected(LinkType::Ethernet, &arp).to_string(), "ARP");
-        assert_eq!(classify_rejected(LinkType::Ethernet, &stp).to_string(), "802.3/LLC");
-        assert_eq!(classify_rejected(LinkType::Ethernet, &bad_ip), NotIp::MalformedIp);
-        assert_eq!(classify_rejected(LinkType::Ethernet, &[0; 5]), NotIp::Truncated);
-        assert_eq!(classify_rejected(LinkType::RawIp, &[0x00, 0x01]), NotIp::UnknownRaw(0));
-        assert_eq!(classify_rejected(LinkType::RawIp, &[0x60]), NotIp::MalformedIp);
+        assert_eq!(
+            classify_rejected(LinkType::Ethernet, &arp).to_string(),
+            "ARP"
+        );
+        assert_eq!(
+            classify_rejected(LinkType::Ethernet, &stp).to_string(),
+            "802.3/LLC"
+        );
+        assert_eq!(
+            classify_rejected(LinkType::Ethernet, &bad_ip),
+            NotIp::MalformedIp
+        );
+        assert_eq!(
+            classify_rejected(LinkType::Ethernet, &[0; 5]),
+            NotIp::Truncated
+        );
+        assert_eq!(
+            classify_rejected(LinkType::RawIp, &[0x00, 0x01]),
+            NotIp::UnknownRaw(0)
+        );
+        assert_eq!(
+            classify_rejected(LinkType::RawIp, &[0x60]),
+            NotIp::MalformedIp
+        );
     }
 
     fn ethertype_frame(ethertype: u16, payload: &[u8]) -> Vec<u8> {

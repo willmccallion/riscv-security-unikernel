@@ -18,7 +18,11 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     use crate::kprintln;
     // Display, not Debug: {:?} on PanicInfo links in ~10 KB of fmt tables.
     if let Some(location) = info.location() {
-        kprintln!("\n\x1b[31m[KERNEL PANIC]\x1b[0m {} at {}", info.message(), location);
+        kprintln!(
+            "\n\x1b[31m[KERNEL PANIC]\x1b[0m {} at {}",
+            info.message(),
+            location
+        );
     } else {
         kprintln!("\n\x1b[31m[KERNEL PANIC]\x1b[0m {}", info.message());
     }

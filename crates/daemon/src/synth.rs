@@ -62,7 +62,13 @@ fn attack(rng: &mut StdRng) -> Vec<u8> {
     let src_port = rng.gen_range(1024..65535);
     match rng.gen_range(0..5) {
         0 => udp(src, src_port, 80, b"id=1 UNION SELECT password FROM users"),
-        1 => tcp(src, src_port, 80, 0x18, b"<script>alert(document.cookie)</script>"),
+        1 => tcp(
+            src,
+            src_port,
+            80,
+            0x18,
+            b"<script>alert(document.cookie)</script>",
+        ),
         2 => tcp(src, src_port, rng.gen_range(1..1024), 0x29, b""),
         3 => udp(src, src_port, 80, &[0x90; 64]),
         _ => udp(src, src_port, DEFAULT_BLOCKED_PORT, b"login"),

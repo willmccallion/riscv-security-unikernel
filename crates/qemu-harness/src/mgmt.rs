@@ -3,8 +3,8 @@
 use crate::{Kernel, frame};
 use anyhow::{Context, Result, bail};
 use sec_core::config::MANAGEMENT_PORT;
-use sec_core::security::mgmt_auth::{COUNTER_LEN, MAC_LEN, seal};
 use sec_core::security::mgmt_auth::parse_hex_key;
+use sec_core::security::mgmt_auth::{COUNTER_LEN, MAC_LEN, seal};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
 use std::path::Path;
 use std::time::Duration;

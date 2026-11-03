@@ -7,8 +7,8 @@ use super::pipeline::{Monitor, Summary};
 use super::report::{self, Detail};
 use super::time::UnixNanos;
 use crate::af_packet::{self, Outgoing, RxRing};
-use crate::{netif, privileges};
 use crate::sandbox::WriteAccess;
+use crate::{netif, privileges};
 use anyhow::{Context, Result};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
@@ -23,7 +23,11 @@ const IDLE_WAIT_MS: i32 = 100;
 /// drops its privileges and is confined as `options` say, still able to
 /// write to viewers but never to a capture socket. The interfaces' own
 /// networks, and the extra ones in `options`, are local.
-pub fn run(interfaces: &[String], duration: Option<Duration>, options: &MonitorOptions) -> Result<()> {
+pub fn run(
+    interfaces: &[String],
+    duration: Option<Duration>,
+    options: &MonitorOptions,
+) -> Result<()> {
     let mut rings = interfaces
         .iter()
         .map(|name| RxRing::open(name, Outgoing::Include))
@@ -38,10 +42,15 @@ pub fn run(interfaces: &[String], duration: Option<Duration>, options: &MonitorO
     let mut viewers = start_serving(&options.serving, interfaces, &local)?;
     let mut monitor = Monitor::new(local, report::INTERVAL);
     for (name, ring) in interfaces.iter().zip(&rings) {
-        println!("monitor: capturing on {name} ({:?}), receive-only, no privileges", ring.link_type());
+        println!(
+            "monitor: capturing on {name} ({:?}), receive-only, no privileges",
+            ring.link_type()
+        );
     }
     report::print_local_networks(monitor.local_networks());
-    options.sandboxing.apply(write_access(&rings, viewers.is_some())?)?;
+    options
+        .sandboxing
+        .apply(write_access(&rings, viewers.is_some())?)?;
 
     let started = Instant::now();
     while duration.is_none_or(|d| started.elapsed() < d) {
@@ -72,8 +81,14 @@ pub fn run(interfaces: &[String], duration: Option<Duration>, options: &MonitorO
 }
 
 /// Opens the viewers' socket if serving, and says where to find it.
-fn start_serving(serving: &Serving, interfaces: &[String], local: &LocalNetworks) -> Result<Option<ViewerServer>> {
-    let Some(path) = serving.path()? else { return Ok(None) };
+fn start_serving(
+    serving: &Serving,
+    interfaces: &[String],
+    local: &LocalNetworks,
+) -> Result<Option<ViewerServer>> {
+    let Some(path) = serving.path()? else {
+        return Ok(None);
+    };
     let interval_ms = u64::try_from(report::INTERVAL.as_millis()).unwrap_or(u64::MAX);
     let server = ViewerServer::bind(&path, &link::hello(interfaces, local, interval_ms))?;
     println!("monitor: serving viewers at {}", path.display());
@@ -92,18 +107,26 @@ fn write_access(rings: &[RxRing], serving: bool) -> Result<WriteAccess> {
         return Ok(WriteAccess::StdioOnly);
     }
     let highest_capture_fd = rings.iter().map(AsRawFd::as_raw_fd).max().unwrap_or(2);
-    let fds_from = u32::try_from(highest_capture_fd).context("capture descriptor out of range")? + 1;
+    let fds_from =
+        u32::try_from(highest_capture_fd).context("capture descriptor out of range")? + 1;
     Ok(WriteAccess::StdioAndViewers { fds_from })
 }
 
-fn report_closed(closed: &[Summary], interfaces: &[String], rings: &[RxRing], detail: Detail) -> Result<()> {
+fn report_closed(
+    closed: &[Summary],
+    interfaces: &[String],
+    rings: &[RxRing],
+    detail: Detail,
+) -> Result<()> {
     for summary in closed {
         report::print_summary(summary, detail);
     }
     for (name, ring) in interfaces.iter().zip(rings) {
         let drops = ring.stats()?.drops;
         if drops > 0 {
-            println!("monitor: capture on {name} dropped {drops} frames; the summaries above undercount");
+            println!(
+                "monitor: capture on {name} dropped {drops} frames; the summaries above undercount"
+            );
         }
     }
     Ok(())

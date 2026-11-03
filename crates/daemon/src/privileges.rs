@@ -70,7 +70,11 @@ fn maps_root_to_host_root(uid_map: &str) -> bool {
 fn become_sudo_user() -> Result<()> {
     let id = |name: &str| -> Result<u32> {
         std::env::var(name)
-            .with_context(|| format!("running as root without {name}; use `setcap cap_net_raw+ep` instead of root"))?
+            .with_context(|| {
+                format!(
+                    "running as root without {name}; use `setcap cap_net_raw+ep` instead of root"
+                )
+            })?
             .parse()
             .with_context(|| format!("{name} is not a number"))
     };
@@ -95,8 +99,20 @@ fn become_sudo_user() -> Result<()> {
 
 fn clear_capabilities() -> Result<()> {
     // SAFETY: PR_CAP_AMBIENT_CLEAR_ALL takes integer arguments only.
-    if unsafe { libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) } != 0 {
-        bail!("prctl(PR_CAP_AMBIENT_CLEAR_ALL): {}", io::Error::last_os_error());
+    if unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    } != 0
+    {
+        bail!(
+            "prctl(PR_CAP_AMBIENT_CLEAR_ALL): {}",
+            io::Error::last_os_error()
+        );
     }
     let header = CapHeader {
         version: CAPABILITY_VERSION_3,
@@ -137,7 +153,9 @@ mod tests {
 
     #[test]
     fn a_user_namespace_root_is_an_ordinary_host_user() {
-        assert!(!maps_root_to_host_root("         0       1000          1\n"));
+        assert!(!maps_root_to_host_root(
+            "         0       1000          1\n"
+        ));
         assert!(!maps_root_to_host_root(""));
     }
 }

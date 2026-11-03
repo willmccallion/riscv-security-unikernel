@@ -126,7 +126,11 @@ struct FlowKey {
 impl FlowKey {
     fn new(protocol: Protocol, a: Endpoint, b: Endpoint) -> Self {
         let (low, high) = if a <= b { (a, b) } else { (b, a) };
-        Self { protocol, low, high }
+        Self {
+            protocol,
+            low,
+            high,
+        }
     }
 }
 
@@ -175,7 +179,9 @@ impl Exchange {
         match self.tcp_flags {
             Some(flags) if flags.is_connection_attempt() => (self.sender, Opening::Seen),
             Some(flags) if flags.is_syn_ack() => (self.receiver, Opening::Seen),
-            _ if looks_like_server_port(self.sender.port, self.receiver.port) => (self.receiver, Opening::Inferred),
+            _ if looks_like_server_port(self.sender.port, self.receiver.port) => {
+                (self.receiver, Opening::Inferred)
+            }
             _ => (self.sender, Opening::Inferred),
         }
     }
@@ -211,7 +217,12 @@ impl FlowTable {
     /// Places a packet in its flow, starting one if needed. Returns
     /// `None` if it cannot be tracked: a later fragment, or a new flow
     /// while the table is full.
-    pub fn observe(&mut self, packet: &Packet<'_>, wire_len: u32, at: UnixNanos) -> Option<PacketRole> {
+    pub fn observe(
+        &mut self,
+        packet: &Packet<'_>,
+        wire_len: u32,
+        at: UnixNanos,
+    ) -> Option<PacketRole> {
         let exchange = Exchange::of(packet)?;
         let key = FlowKey::new(exchange.protocol, exchange.sender, exchange.receiver);
         let reused = self
@@ -225,7 +236,11 @@ impl FlowTable {
         }
         if opened {
             let (client, opening) = exchange.client();
-            let server = if client == exchange.sender { exchange.receiver } else { exchange.sender };
+            let server = if client == exchange.sender {
+                exchange.receiver
+            } else {
+                exchange.sender
+            };
             let _ = self.flows.insert(
                 key,
                 Flow {
@@ -326,8 +341,16 @@ mod tests {
     fn both_directions_share_one_flow_with_the_syn_sender_as_client() {
         let mut table = FlowTable::new(100);
 
-        let syn = table.observe(&tcp("192.168.1.86", 51000, "1.1.1.1", 443, SYN), 60, at(1)).unwrap();
-        let reply = table.observe(&tcp("1.1.1.1", 443, "192.168.1.86", 51000, SYN_ACK), 60, at(1)).unwrap();
+        let syn = table
+            .observe(&tcp("192.168.1.86", 51000, "1.1.1.1", 443, SYN), 60, at(1))
+            .unwrap();
+        let reply = table
+            .observe(
+                &tcp("1.1.1.1", 443, "192.168.1.86", 51000, SYN_ACK),
+                60,
+                at(1),
+            )
+            .unwrap();
 
         assert!(syn.opened && syn.from_client);
         assert!(!reply.opened && !reply.from_client);
@@ -340,7 +363,13 @@ mod tests {
     fn a_syn_ack_names_the_client_when_the_syn_was_missed() {
         let mut table = FlowTable::new(100);
 
-        let role = table.observe(&tcp("1.1.1.1", 443, "192.168.1.86", 51000, SYN_ACK), 60, at(1)).unwrap();
+        let role = table
+            .observe(
+                &tcp("1.1.1.1", 443, "192.168.1.86", 51000, SYN_ACK),
+                60,
+                at(1),
+            )
+            .unwrap();
 
         assert_eq!(role.client.addr, ip("192.168.1.86"));
         assert_eq!(role.opening, Opening::Seen);
@@ -350,13 +379,30 @@ mod tests {
     fn mid_stream_flows_take_the_fixed_or_well_known_port_as_the_server() {
         let mut table = FlowTable::new(100);
 
-        let download = table.observe(&tcp("1.1.1.1", 443, "192.168.1.86", 51000, ACK), 1500, at(1)).unwrap();
-        let dns = table.observe(&udp("8.8.8.8", 53, "192.168.1.86", 5353), 90, at(1)).unwrap();
-        let peer = table.observe(&udp("5.5.5.5", 6000, "192.168.1.86", 7000), 90, at(1)).unwrap();
+        let download = table
+            .observe(
+                &tcp("1.1.1.1", 443, "192.168.1.86", 51000, ACK),
+                1500,
+                at(1),
+            )
+            .unwrap();
+        let dns = table
+            .observe(&udp("8.8.8.8", 53, "192.168.1.86", 5353), 90, at(1))
+            .unwrap();
+        let peer = table
+            .observe(&udp("5.5.5.5", 6000, "192.168.1.86", 7000), 90, at(1))
+            .unwrap();
 
-        assert_eq!((download.server.port, download.opening), (443, Opening::Inferred));
+        assert_eq!(
+            (download.server.port, download.opening),
+            (443, Opening::Inferred)
+        );
         assert_eq!(dns.server.addr, ip("8.8.8.8"));
-        assert_eq!(peer.client.addr, ip("5.5.5.5"), "no port hint: the first sender is the client");
+        assert_eq!(
+            peer.client.addr,
+            ip("5.5.5.5"),
+            "no port hint: the first sender is the client"
+        );
     }
 
     #[test]
@@ -382,7 +428,9 @@ mod tests {
         let _ = table.observe(&tcp("10.0.0.1", 40000, "1.1.1.1", 443, SYN), 60, at(0));
         let _ = table.observe(&tcp("1.1.1.1", 443, "10.0.0.1", 40000, FIN_ACK), 60, at(1));
 
-        let again = table.observe(&tcp("10.0.0.1", 40000, "1.1.1.1", 443, SYN), 60, at(2)).unwrap();
+        let again = table
+            .observe(&tcp("10.0.0.1", 40000, "1.1.1.1", 443, SYN), 60, at(2))
+            .unwrap();
 
         assert!(again.opened);
         assert_eq!(table.active_count(), 1);
@@ -412,6 +460,10 @@ mod tests {
         };
 
         assert_eq!(table.observe(&fragment, 60, at(0)), None);
-        assert_eq!(table.take_untracked(), 0, "fragments are not a capacity problem");
+        assert_eq!(
+            table.take_untracked(),
+            0,
+            "fragments are not a capacity problem"
+        );
     }
 }

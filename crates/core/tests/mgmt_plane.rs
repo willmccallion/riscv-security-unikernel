@@ -21,7 +21,17 @@ fn block_port(port: u16) -> Vec<u8> {
 }
 
 fn pass_all_program() -> Vec<u8> {
-    vec![ManagementMessageType::UploadBpfProgram as u8, 1, Opcode::Ret as u8, 0, 0, 0, 0, 0, 1]
+    vec![
+        ManagementMessageType::UploadBpfProgram as u8,
+        1,
+        Opcode::Ret as u8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+    ]
 }
 
 /// True if fresh commands from the operator take effect: replace any BPF
@@ -30,9 +40,17 @@ fn pass_all_program() -> Vec<u8> {
 fn operator_can_still_manage(e: &mut Engine, first_seq: u32, now: u64) -> bool {
     let mut sink = CaptureSink::default();
     let _ = e.process(&mut mgmt(first_seq, &pass_all_program()), now, &mut sink);
-    let _ = e.process(&mut mgmt(first_seq + 1, &block_port(PROBE_PORT)), now, &mut sink);
+    let _ = e.process(
+        &mut mgmt(first_seq + 1, &block_port(PROBE_PORT)),
+        now,
+        &mut sink,
+    );
     let later = now + 1_000_000_000;
-    let probe = e.process(&mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"), later, &mut sink);
+    let probe = e.process(
+        &mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"),
+        later,
+        &mut sink,
+    );
     probe == Verdict::Dropped(AlertReason::Firewall)
 }
 
@@ -86,7 +104,11 @@ fn mgmt_body_resembling_a_nop_sled_is_dispatched() {
     body.extend_from_slice(&[0x90; 16]);
     let _ = e.process(&mut mgmt(1, &body), 1, &mut sink);
 
-    let v = e.process(&mut udp([10, 9, 9, 9], 5000, 0x9090, b"probe"), 2, &mut sink);
+    let v = e.process(
+        &mut udp([10, 9, 9, 9], 5000, 0x9090, b"probe"),
+        2,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Dropped(AlertReason::Firewall));
 }
@@ -99,7 +121,11 @@ fn ethernet_padding_after_a_mgmt_datagram_does_not_break_its_mac() {
     frame.extend_from_slice(&[0; 6]);
     let _ = e.process(&mut frame, 1, &mut sink);
 
-    let v = e.process(&mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"), 2, &mut sink);
+    let v = e.process(
+        &mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"),
+        2,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Dropped(AlertReason::Firewall));
 }
@@ -109,7 +135,11 @@ fn tcp_to_the_mgmt_port_is_still_inspected() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
 
-    let v = e.process(&mut tcp([10, 9, 9, 9], 5000, MANAGEMENT_PORT, 0x18, b"UNION SELECT"), 1, &mut sink);
+    let v = e.process(
+        &mut tcp([10, 9, 9, 9], 5000, MANAGEMENT_PORT, 0x18, b"UNION SELECT"),
+        1,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Dropped(AlertReason::Malware));
 }
@@ -120,7 +150,11 @@ fn unauthenticated_mgmt_flood_is_rate_limited() {
     let mut sink = CaptureSink::default();
 
     for i in 0..500u16 {
-        let _ = e.process(&mut udp([10, 2, 0, 1], 1000 + i, MANAGEMENT_PORT, &[0xEE; 24]), 1, &mut sink);
+        let _ = e.process(
+            &mut udp([10, 2, 0, 1], 1000 + i, MANAGEMENT_PORT, &[0xEE; 24]),
+            1,
+            &mut sink,
+        );
     }
 
     let auth_failures = sink
@@ -128,7 +162,10 @@ fn unauthenticated_mgmt_flood_is_rate_limited() {
         .iter()
         .filter(|&&r| r == AlertReason::MgmtAuthFail)
         .count();
-    assert!(auth_failures <= 32, "{auth_failures} auth-failure alerts for one instant");
+    assert!(
+        auth_failures <= 32,
+        "{auth_failures} auth-failure alerts for one instant"
+    );
 }
 
 #[test]
@@ -136,7 +173,11 @@ fn operator_regains_access_once_a_mgmt_flood_stops() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     for i in 0..500u16 {
-        let _ = e.process(&mut udp([10, 2, 0, 1], 1000 + i, MANAGEMENT_PORT, &[0xEE; 24]), 1, &mut sink);
+        let _ = e.process(
+            &mut udp([10, 2, 0, 1], 1000 + i, MANAGEMENT_PORT, &[0xEE; 24]),
+            1,
+            &mut sink,
+        );
     }
 
     assert!(operator_can_still_manage(&mut e, 1, 1_000_000_000));
@@ -171,7 +212,11 @@ fn full_firewall_table_is_reported_in_the_ack() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     for i in 0..15u16 {
-        let _ = e.process(&mut mgmt(u32::from(i) + 1, &block_port(9000 + i)), 1, &mut sink);
+        let _ = e.process(
+            &mut mgmt(u32::from(i) + 1, &block_port(9000 + i)),
+            1,
+            &mut sink,
+        );
     }
     sink.sent.clear();
 
@@ -192,10 +237,17 @@ fn unblock_port_reopens_a_blocked_port() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let _ = e.process(&mut mgmt(1, &block_port(PROBE_PORT)), 1, &mut sink);
-    let unblock = command(ManagementMessageType::UnblockPort, &PROBE_PORT.to_be_bytes());
+    let unblock = command(
+        ManagementMessageType::UnblockPort,
+        &PROBE_PORT.to_be_bytes(),
+    );
     let _ = e.process(&mut mgmt(2, &unblock), 2, &mut sink);
 
-    let v = e.process(&mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"), 3, &mut sink);
+    let v = e.process(
+        &mut udp([10, 9, 9, 9], 5000, PROBE_PORT, b"probe"),
+        3,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Passed);
 }
@@ -205,10 +257,25 @@ fn remove_dpi_pattern_stops_matching_it() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let operand = [&[6u8][..], b"needle"].concat();
-    let _ = e.process(&mut mgmt(1, &command(ManagementMessageType::AddDpiPattern, &operand)), 1, &mut sink);
-    let _ = e.process(&mut mgmt(2, &command(ManagementMessageType::RemoveDpiPattern, &operand)), 2, &mut sink);
+    let _ = e.process(
+        &mut mgmt(1, &command(ManagementMessageType::AddDpiPattern, &operand)),
+        1,
+        &mut sink,
+    );
+    let _ = e.process(
+        &mut mgmt(
+            2,
+            &command(ManagementMessageType::RemoveDpiPattern, &operand),
+        ),
+        2,
+        &mut sink,
+    );
 
-    let v = e.process(&mut udp([10, 9, 9, 9], 5000, 80, b"a needle here"), 3, &mut sink);
+    let v = e.process(
+        &mut udp([10, 9, 9, 9], 5000, 80, b"a needle here"),
+        3,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Passed);
 }
@@ -217,9 +284,23 @@ fn remove_dpi_pattern_stops_matching_it() {
 fn unload_bpf_program_stops_filtering() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
-    let drop_all = [ManagementMessageType::UploadBpfProgram as u8, 1, Opcode::Ret as u8, 0, 0, 0, 0, 0, 0];
+    let drop_all = [
+        ManagementMessageType::UploadBpfProgram as u8,
+        1,
+        Opcode::Ret as u8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
     let _ = e.process(&mut mgmt(1, &drop_all), 1, &mut sink);
-    let _ = e.process(&mut mgmt(2, &command(ManagementMessageType::UnloadBpfProgram, &[])), 2, &mut sink);
+    let _ = e.process(
+        &mut mgmt(2, &command(ManagementMessageType::UnloadBpfProgram, &[])),
+        2,
+        &mut sink,
+    );
 
     let v = e.process(&mut udp([10, 9, 9, 9], 5000, 80, b"hello"), 3, &mut sink);
 
@@ -231,8 +312,16 @@ fn unban_ip_lets_the_source_back_in() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let target = [10, 9, 9, 9];
-    let _ = e.process(&mut mgmt(1, &command(ManagementMessageType::BanIp, &target)), 1, &mut sink);
-    let _ = e.process(&mut mgmt(2, &command(ManagementMessageType::UnbanIp, &target)), 2, &mut sink);
+    let _ = e.process(
+        &mut mgmt(1, &command(ManagementMessageType::BanIp, &target)),
+        1,
+        &mut sink,
+    );
+    let _ = e.process(
+        &mut mgmt(2, &command(ManagementMessageType::UnbanIp, &target)),
+        2,
+        &mut sink,
+    );
 
     let v = e.process(&mut udp(target, 5000, 80, b"hello"), 3, &mut sink);
 

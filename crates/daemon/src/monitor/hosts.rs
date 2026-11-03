@@ -42,8 +42,14 @@ impl HostActivity {
         Self {
             addr,
             locality,
-            sent: Counter { packets: 0, bytes: 0 },
-            received: Counter { packets: 0, bytes: 0 },
+            sent: Counter {
+                packets: 0,
+                bytes: 0,
+            },
+            received: Counter {
+                packets: 0,
+                bytes: 0,
+            },
             flows_opened: 0,
             flows_accepted: 0,
         }
@@ -197,7 +203,13 @@ mod tests {
         let cdn = end("1.1.1.1", Locality::Remote);
         let dns = end("9.9.9.9", Locality::Remote);
 
-        table.record(Some(me), Some(cdn), 100, Some(&opened_by_client(true)), UnixNanos::new(0));
+        table.record(
+            Some(me),
+            Some(cdn),
+            100,
+            Some(&opened_by_client(true)),
+            UnixNanos::new(0),
+        );
         table.record(Some(cdn), Some(me), 1500, None, UnixNanos::new(1));
         table.record(Some(me), Some(dns), 80, None, UnixNanos::new(2));
         let active = table.close_interval();
@@ -217,10 +229,20 @@ mod tests {
         let _ = table.close_interval();
 
         let quiet = table.close_interval();
-        table.record(Some(end("10.0.0.2", Locality::Local)), Some(a), 10, None, UnixNanos::new(1));
+        table.record(
+            Some(end("10.0.0.2", Locality::Local)),
+            Some(a),
+            10,
+            None,
+            UnixNanos::new(1),
+        );
 
         assert!(quiet.is_empty());
-        assert_eq!(table.take_untracked(), 1, "the table is full of the remembered host");
+        assert_eq!(
+            table.take_untracked(),
+            1,
+            "the table is full of the remembered host"
+        );
     }
 
     #[test]

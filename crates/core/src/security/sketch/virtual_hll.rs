@@ -28,10 +28,7 @@ pub struct VirtualHyperLogLog<const POOL: usize, const PER_FLOW: usize> {
 impl<const POOL: usize, const PER_FLOW: usize> VirtualHyperLogLog<POOL, PER_FLOW> {
     const INDEX_BITS: u32 = PER_FLOW.trailing_zeros();
     const VALID: () = assert!(
-        POOL.is_power_of_two()
-            && PER_FLOW.is_power_of_two()
-            && PER_FLOW >= 16
-            && PER_FLOW < POOL,
+        POOL.is_power_of_two() && PER_FLOW.is_power_of_two() && PER_FLOW >= 16 && PER_FLOW < POOL,
         "POOL and PER_FLOW must be powers of two with 16 <= PER_FLOW < POOL"
     );
 
@@ -154,7 +151,10 @@ mod tests {
         let scanner_estimate = vhll.estimate(&scanner);
         let ordinary = vhll.estimate(&7u32.to_be_bytes());
 
-        assert!((300.0..800.0).contains(&scanner_estimate), "scanner: {scanner_estimate}");
+        assert!(
+            (300.0..800.0).contains(&scanner_estimate),
+            "scanner: {scanner_estimate}"
+        );
         assert!(ordinary < 40.0, "ordinary source: {ordinary}");
     }
 
@@ -185,13 +185,18 @@ mod tests {
     fn two_flows_almost_never_share_most_registers() {
         const FLOWS: u64 = 400;
         let positions: [[usize; 32]; FLOWS as usize] = core::array::from_fn(|f| {
-            core::array::from_fn(|i| VirtualHyperLogLog::<1024, 32>::physical(f as u64 * 0x1234_5678_9ABC, i))
+            core::array::from_fn(|i| {
+                VirtualHyperLogLog::<1024, 32>::physical(f as u64 * 0x1234_5678_9ABC, i)
+            })
         });
 
         let mut worst = 0;
         for a in 0..positions.len() {
             for b in a + 1..positions.len() {
-                let shared = positions[a].iter().filter(|p| positions[b].contains(p)).count();
+                let shared = positions[a]
+                    .iter()
+                    .filter(|p| positions[b].contains(p))
+                    .count();
                 worst = worst.max(shared);
             }
         }

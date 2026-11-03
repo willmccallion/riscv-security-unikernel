@@ -2,8 +2,8 @@
 //! ports in a short window.
 
 use crate::config::{
-    PORT_SCAN_CANDIDATES, PORT_SCAN_CONFIRM_PORTS, PORT_SCAN_NOMINATE_PORTS, PORT_SCAN_POOL_REGISTERS,
-    PORT_SCAN_REGISTERS_PER_SOURCE, PORT_SCAN_WINDOW_INTERVALS,
+    PORT_SCAN_CANDIDATES, PORT_SCAN_CONFIRM_PORTS, PORT_SCAN_NOMINATE_PORTS,
+    PORT_SCAN_POOL_REGISTERS, PORT_SCAN_REGISTERS_PER_SOURCE, PORT_SCAN_WINDOW_INTERVALS,
 };
 use crate::security::sketch::VirtualHyperLogLog;
 
@@ -43,7 +43,11 @@ impl Suspect {
     const fn new(source: [u8; 4], first_port: u16) -> Self {
         let mut ports = [0; PORT_SCAN_CONFIRM_PORTS];
         ports[0] = first_port;
-        Self { source, ports, seen: 1 }
+        Self {
+            source,
+            ports,
+            seen: 1,
+        }
     }
 
     /// Records `port`; returns whether the set is now full.
@@ -76,7 +80,11 @@ impl PortScanDetector {
     /// Records a connection attempt from `source` to `port`; returns the
     /// scan it confirms, if any.
     pub fn observe(&mut self, source: [u8; 4], port: u16) -> Option<ConfirmedScan> {
-        if let Some(slot) = self.suspects.iter_mut().find(|s| s.is_some_and(|s| s.source == source)) {
+        if let Some(slot) = self
+            .suspects
+            .iter_mut()
+            .find(|s| s.is_some_and(|s| s.source == source))
+        {
             let full = slot.as_mut().is_some_and(|suspect| suspect.record(port));
             if !full {
                 return None;
@@ -121,8 +129,14 @@ impl PortScanDetector {
 mod tests {
     use super::*;
 
-    fn scan(detector: &mut PortScanDetector, source: [u8; 4], ports: core::ops::Range<u16>) -> Option<ConfirmedScan> {
-        ports.into_iter().find_map(|port| detector.observe(source, port))
+    fn scan(
+        detector: &mut PortScanDetector,
+        source: [u8; 4],
+        ports: core::ops::Range<u16>,
+    ) -> Option<ConfirmedScan> {
+        ports
+            .into_iter()
+            .find_map(|port| detector.observe(source, port))
     }
 
     #[test]
@@ -146,7 +160,9 @@ mod tests {
 
         let confirmed = (0u32..5_000).find_map(|s| {
             let source = (s | 0x0A00_0000).to_be_bytes();
-            [80, 443, 22, 80].into_iter().find_map(|port| detector.observe(source, port))
+            [80, 443, 22, 80]
+                .into_iter()
+                .find_map(|port| detector.observe(source, port))
         });
 
         assert_eq!(confirmed, None);
@@ -173,7 +189,10 @@ mod tests {
             detector.end_interval();
         }
 
-        assert_eq!(scan(&mut detector, source, per_window..2 * per_window), None);
+        assert_eq!(
+            scan(&mut detector, source, per_window..2 * per_window),
+            None
+        );
     }
 
     #[test]
@@ -191,6 +210,11 @@ mod tests {
             detector.nominate(Suspect::new([1, 1, 1, i], 1));
         }
 
-        assert!(detector.suspects.iter().any(|s| s.is_some_and(|s| s.source == [9, 9, 9, 9])));
+        assert!(
+            detector
+                .suspects
+                .iter()
+                .any(|s| s.is_some_and(|s| s.source == [9, 9, 9, 9]))
+        );
     }
 }

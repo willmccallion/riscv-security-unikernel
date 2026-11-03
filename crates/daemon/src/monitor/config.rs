@@ -27,7 +27,8 @@ struct ConfigFile {
 impl MonitorConfig {
     /// Reads and parses the file at `path`.
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         Self::parse(&text).with_context(|| format!("in {}", path.display()))
     }
 
@@ -69,7 +70,10 @@ mod tests {
     fn the_example_configuration_parses() {
         let example = include_str!("../../monitor.example.toml");
 
-        assert_eq!(MonitorConfig::parse(example).unwrap().interfaces, ["enp4s0", "tailscale0"]);
+        assert_eq!(
+            MonitorConfig::parse(example).unwrap().interfaces,
+            ["enp4s0", "tailscale0"]
+        );
     }
 
     #[test]
@@ -79,8 +83,13 @@ mod tests {
 
     #[test]
     fn misspelt_keys_and_bad_prefixes_are_errors() {
-        assert!(MonitorConfig::parse(r#"interfaces = ["eth0"]
-interfce = "eth1""#).is_err());
+        assert!(
+            MonitorConfig::parse(
+                r#"interfaces = ["eth0"]
+interfce = "eth1""#
+            )
+            .is_err()
+        );
         let bad = MonitorConfig::parse(r#"local_networks = ["10.0.0.0/40"]"#).unwrap_err();
         assert!(format!("{bad:#}").contains("local_networks"), "{bad:#}");
     }

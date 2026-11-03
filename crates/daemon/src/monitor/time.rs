@@ -16,7 +16,9 @@ impl UnixNanos {
 
     /// The current wall-clock time.
     pub fn now() -> Self {
-        let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+        let since_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO);
         Self(u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX))
     }
 
@@ -30,7 +32,11 @@ impl UnixNanos {
     #[must_use]
     pub const fn floor_to(self, period: Duration) -> Self {
         let period = period.as_nanos() as u64;
-        if period == 0 { self } else { Self(self.0 - self.0 % period) }
+        if period == 0 {
+            self
+        } else {
+            Self(self.0 - self.0 % period)
+        }
     }
 
     /// This moment plus `duration`, saturating at the far future.
@@ -48,7 +54,10 @@ mod tests {
     fn floors_to_epoch_aligned_slots() {
         let t = UnixNanos::new(12_345_678_901);
 
-        assert_eq!(t.floor_to(Duration::from_secs(1)), UnixNanos::new(12_000_000_000));
+        assert_eq!(
+            t.floor_to(Duration::from_secs(1)),
+            UnixNanos::new(12_000_000_000)
+        );
         assert_eq!(t.floor_to(Duration::ZERO), t);
     }
 }

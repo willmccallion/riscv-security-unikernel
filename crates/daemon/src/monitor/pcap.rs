@@ -58,21 +58,30 @@ impl<R: Read> PcapReader<R> {
     /// Reads the file header from `reader`.
     pub fn new(mut reader: R) -> Result<Self> {
         let mut header = [0u8; 24];
-        reader.read_exact(&mut header).context("read pcap file header")?;
+        reader
+            .read_exact(&mut header)
+            .context("read pcap file header")?;
         let magic_bytes = [header[0], header[1], header[2], header[3]];
-        let (byte_order, resolution) = match (u32::from_le_bytes(magic_bytes), u32::from_be_bytes(magic_bytes)) {
+        let (byte_order, resolution) = match (
+            u32::from_le_bytes(magic_bytes),
+            u32::from_be_bytes(magic_bytes),
+        ) {
             (MAGIC_MICROS, _) => (ByteOrder::Little, Resolution::Micros),
             (MAGIC_NANOS, _) => (ByteOrder::Little, Resolution::Nanos),
             (_, MAGIC_MICROS) => (ByteOrder::Big, Resolution::Micros),
             (_, MAGIC_NANOS) => (ByteOrder::Big, Resolution::Nanos),
-            (PCAPNG_MAGIC, _) => bail!("pcapng is not supported; convert with `editcap -F pcap in.pcapng out.pcap`"),
+            (PCAPNG_MAGIC, _) => {
+                bail!("pcapng is not supported; convert with `editcap -F pcap in.pcapng out.pcap`")
+            }
             _ => bail!("not a pcap file"),
         };
         let [.., l0, l1, l2, l3] = header;
         let link = read_u32(byte_order, [l0, l1, l2, l3]) & 0x0FFF_FFFF;
         let link_type = match link {
             LINKTYPE_ETHERNET => LinkType::Ethernet,
-            LINKTYPE_RAW | LINKTYPE_IPV4 | LINKTYPE_IPV6 | DLT_RAW_BSD | DLT_RAW_OPENBSD => LinkType::RawIp,
+            LINKTYPE_RAW | LINKTYPE_IPV4 | LINKTYPE_IPV6 | DLT_RAW_BSD | DLT_RAW_OPENBSD => {
+                LinkType::RawIp
+            }
             LINKTYPE_LINUX_SLL => LinkType::LinuxSll,
             LINKTYPE_LINUX_SLL2 => LinkType::LinuxSll2,
             other => bail!("pcap link type {other} is not supported"),
@@ -97,7 +106,24 @@ impl<R: Read> PcapReader<R> {
         if !read_unless_at_end(&mut self.reader, &mut header)? {
             return Ok(None);
         }
-        let [s0, s1, s2, s3, f0, f1, f2, f3, c0, c1, c2, c3, w0, w1, w2, w3] = header;
+        let [
+            s0,
+            s1,
+            s2,
+            s3,
+            f0,
+            f1,
+            f2,
+            f3,
+            c0,
+            c1,
+            c2,
+            c3,
+            w0,
+            w1,
+            w2,
+            w3,
+        ] = header;
         let order = self.byte_order;
         let seconds = read_u32(order, [s0, s1, s2, s3]);
         let fraction = read_u32(order, [f0, f1, f2, f3]);
@@ -107,7 +133,9 @@ impl<R: Read> PcapReader<R> {
             bail!("pcap record of {captured_len} bytes is implausibly large; the file is corrupt");
         }
         frame.resize(captured_len as usize, 0);
-        self.reader.read_exact(frame).context("pcap record is truncated")?;
+        self.reader
+            .read_exact(frame)
+            .context("pcap record is truncated")?;
         let fraction_nanos = match self.resolution {
             Resolution::Micros => u64::from(fraction) * 1_000,
             Resolution::Nanos => u64::from(fraction),
@@ -147,8 +175,20 @@ mod tests {
     use super::*;
 
     fn file(magic: u32, link: u32, records: &[(u32, u32, &[u8])], big_endian: bool) -> Vec<u8> {
-        let word = |v: u32| if big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
-        let half = |v: u16| if big_endian { v.to_be_bytes() } else { v.to_le_bytes() };
+        let word = |v: u32| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let half = |v: u16| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&word(magic));
         bytes.extend_from_slice(&half(2));
@@ -168,7 +208,12 @@ mod tests {
 
     #[test]
     fn reads_little_endian_microsecond_records() {
-        let bytes = file(MAGIC_MICROS, LINKTYPE_ETHERNET, &[(7, 250, b"abc"), (8, 0, b"de")], false);
+        let bytes = file(
+            MAGIC_MICROS,
+            LINKTYPE_ETHERNET,
+            &[(7, 250, b"abc"), (8, 0, b"de")],
+            false,
+        );
         let mut reader = PcapReader::new(bytes.as_slice()).unwrap();
         let mut frame = Vec::new();
 
@@ -180,7 +225,10 @@ mod tests {
         assert_eq!(reader.link_type(), LinkType::Ethernet);
         assert_eq!(first.at, UnixNanos::new(7_000_250_000));
         assert_eq!((first_bytes.as_slice(), first.wire_len), (&b"abc"[..], 103));
-        assert_eq!((second.at, frame.as_slice()), (UnixNanos::new(8_000_000_000), &b"de"[..]));
+        assert_eq!(
+            (second.at, frame.as_slice()),
+            (UnixNanos::new(8_000_000_000), &b"de"[..])
+        );
         assert_eq!(end, None);
     }
 
@@ -197,14 +245,28 @@ mod tests {
 
     #[test]
     fn rejects_pcapng_unknown_links_and_oversized_records() {
-        let pcapng = [0x0A, 0x0D, 0x0D, 0x0A].iter().copied().chain([0; 20]).collect::<Vec<u8>>();
+        let pcapng = [0x0A, 0x0D, 0x0D, 0x0A]
+            .iter()
+            .copied()
+            .chain([0; 20])
+            .collect::<Vec<u8>>();
         let unknown = file(MAGIC_MICROS, 147, &[], false);
         let mut huge = file(MAGIC_MICROS, LINKTYPE_ETHERNET, &[], false);
         huge.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x7F, 0, 0, 0, 0]);
 
-        assert!(PcapReader::new(pcapng.as_slice()).unwrap_err().to_string().contains("pcapng"));
+        assert!(
+            PcapReader::new(pcapng.as_slice())
+                .unwrap_err()
+                .to_string()
+                .contains("pcapng")
+        );
         assert!(PcapReader::new(unknown.as_slice()).is_err());
-        assert!(PcapReader::new(huge.as_slice()).unwrap().next_record(&mut Vec::new()).is_err());
+        assert!(
+            PcapReader::new(huge.as_slice())
+                .unwrap()
+                .next_record(&mut Vec::new())
+                .is_err()
+        );
     }
 
     #[test]
@@ -213,7 +275,17 @@ mod tests {
         let in_data = &whole[..whole.len() - 2];
         let in_header = &whole[..24 + 5];
 
-        assert!(PcapReader::new(in_data).unwrap().next_record(&mut Vec::new()).is_err());
-        assert!(PcapReader::new(in_header).unwrap().next_record(&mut Vec::new()).is_err());
+        assert!(
+            PcapReader::new(in_data)
+                .unwrap()
+                .next_record(&mut Vec::new())
+                .is_err()
+        );
+        assert!(
+            PcapReader::new(in_header)
+                .unwrap()
+                .next_record(&mut Vec::new())
+                .is_err()
+        );
     }
 }

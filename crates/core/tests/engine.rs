@@ -26,7 +26,11 @@ fn traffic_to_blocked_port_is_dropped_with_firewall_alert() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
 
-    let v = e.process(&mut udp(PEER_IP, 5000, DEFAULT_BLOCKED_PORT, b"hello"), 1, &mut sink);
+    let v = e.process(
+        &mut udp(PEER_IP, 5000, DEFAULT_BLOCKED_PORT, b"hello"),
+        1,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Dropped(AlertReason::Firewall));
     assert!(sink.alert_reasons().contains(&AlertReason::Firewall));
@@ -37,7 +41,11 @@ fn signature_match_is_dropped_as_malware() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
 
-    let v = e.process(&mut udp(PEER_IP, 5000, 80, b"x UNION SELECT 1"), 1, &mut sink);
+    let v = e.process(
+        &mut udp(PEER_IP, 5000, 80, b"x UNION SELECT 1"),
+        1,
+        &mut sink,
+    );
 
     assert_eq!(v, Verdict::Dropped(AlertReason::Malware));
 }
@@ -59,7 +67,11 @@ fn heavy_hitter_is_banned_after_threshold() {
     let mut last = Verdict::Passed;
 
     for i in 0..200u64 {
-        last = e.process(&mut udp([10, 0, 0, 9], 5000, 80, b"flood"), i * 1_000_000, &mut sink);
+        last = e.process(
+            &mut udp([10, 0, 0, 9], 5000, 80, b"flood"),
+            i * 1_000_000,
+            &mut sink,
+        );
     }
 
     assert_eq!(last, Verdict::Dropped(AlertReason::Ddos));
@@ -71,7 +83,12 @@ fn unsigned_mgmt_packet_raises_auth_failure() {
     let mut sink = CaptureSink::default();
 
     let v = e.process(
-        &mut udp(PEER_IP, 40_000, sec_core::config::MANAGEMENT_PORT, &[0u8; 24]),
+        &mut udp(
+            PEER_IP,
+            40_000,
+            sec_core::config::MANAGEMENT_PORT,
+            &[0u8; 24],
+        ),
         1,
         &mut sink,
     );
@@ -96,7 +113,11 @@ fn authenticated_block_port_takes_effect() {
 fn alerts_go_to_the_operator_after_it_authenticates() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
-    let _ = e.process(&mut mgmt(1, &[ManagementMessageType::BlockPort as u8, 0, 99]), 1, &mut sink);
+    let _ = e.process(
+        &mut mgmt(1, &[ManagementMessageType::BlockPort as u8, 0, 99]),
+        1,
+        &mut sink,
+    );
     sink.sent.clear();
 
     let _ = e.process(&mut udp(PEER_IP, 5000, 99, b"x"), 2, &mut sink);
@@ -127,12 +148,20 @@ fn banned_source_does_not_create_flows() {
     let mut sink = CaptureSink::default();
     let attacker = [10, 0, 0, 66];
     for i in 0..150u64 {
-        let _ = e.process(&mut udp(attacker, 5000, 80, b"flood"), i * 1_000_000, &mut sink);
+        let _ = e.process(
+            &mut udp(attacker, 5000, 80, b"flood"),
+            i * 1_000_000,
+            &mut sink,
+        );
     }
     let flows_when_banned = e.active_flows();
 
     for port in 0..50u16 {
-        let _ = e.process(&mut udp(attacker, 6000 + port, 80, b"x"), 200_000_000, &mut sink);
+        let _ = e.process(
+            &mut udp(attacker, 6000 + port, 80, b"x"),
+            200_000_000,
+            &mut sink,
+        );
     }
 
     assert_eq!(e.active_flows(), flows_when_banned);
@@ -160,11 +189,23 @@ fn a_flood_of_blocked_traffic_raises_a_bounded_number_of_alerts() {
 
     for i in 0..500u16 {
         let src = [10, 3, (i >> 8) as u8, i as u8];
-        let _ = e.process(&mut udp(src, 5000, DEFAULT_BLOCKED_PORT, b"x"), u64::from(i), &mut sink);
+        let _ = e.process(
+            &mut udp(src, 5000, DEFAULT_BLOCKED_PORT, b"x"),
+            u64::from(i),
+            &mut sink,
+        );
     }
 
-    assert_eq!(e.interval_stats().firewall, 50, "the global rate limit admits 50");
-    assert!(sink.alert_reasons().len() <= 32, "{} alerts", sink.alert_reasons().len());
+    assert_eq!(
+        e.interval_stats().firewall,
+        50,
+        "the global rate limit admits 50"
+    );
+    assert!(
+        sink.alert_reasons().len() <= 32,
+        "{} alerts",
+        sink.alert_reasons().len()
+    );
 }
 
 #[test]
@@ -186,7 +227,11 @@ fn a_burst_straddling_a_decay_is_still_caught() {
     e.end_detection_interval(&mut CaptureSink::default());
     let second = send_burst(&mut e, &mut now);
 
-    assert_eq!(first, Verdict::Passed, "90 packets alone stay under the threshold");
+    assert_eq!(
+        first,
+        Verdict::Passed,
+        "90 packets alone stay under the threshold"
+    );
     assert_eq!(second, Verdict::Dropped(AlertReason::Ddos));
 }
 
@@ -212,6 +257,10 @@ fn a_sudden_surge_of_distinct_sources_is_reported_once() {
     interval(&mut e, 5_000, &mut sink);
 
     assert!(!quiet, "steady traffic raised a surge alert");
-    let surges = sink.alert_reasons().iter().filter(|&&r| r == AlertReason::SourceSurge).count();
+    let surges = sink
+        .alert_reasons()
+        .iter()
+        .filter(|&&r| r == AlertReason::SourceSurge)
+        .count();
     assert_eq!(surges, 1);
 }

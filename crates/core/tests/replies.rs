@@ -34,7 +34,11 @@ fn echo_reply_carries_the_whole_request_payload() {
     let reply = reply_to(request.clone());
 
     assert_eq!(reply.len(), request.len());
-    assert_eq!(&reply[42..], &request[42..], "echo data must be returned unchanged");
+    assert_eq!(
+        &reply[42..],
+        &request[42..],
+        "echo data must be returned unchanged"
+    );
 }
 
 #[test]
@@ -43,7 +47,10 @@ fn echo_reply_has_valid_ip_and_icmp_checksums() {
 
     let ihl = ip_header_len(&reply);
     assert_eq!(ip_total_len(&reply), reply.len() - 14);
-    assert!(sums_to_zero(&reply[14..14 + ihl]), "bad IPv4 header checksum");
+    assert!(
+        sums_to_zero(&reply[14..14 + ihl]),
+        "bad IPv4 header checksum"
+    );
     assert!(sums_to_zero(&reply[14 + ihl..]), "bad ICMP checksum");
 }
 
@@ -54,7 +61,10 @@ fn syn_ack_has_valid_lengths_and_checksums() {
     let ihl = ip_header_len(&reply);
     let segment = &reply[14 + ihl..];
     assert_eq!(ip_total_len(&reply), reply.len() - 14);
-    assert!(sums_to_zero(&reply[14..14 + ihl]), "bad IPv4 header checksum");
+    assert!(
+        sums_to_zero(&reply[14..14 + ihl]),
+        "bad IPv4 header checksum"
+    );
     let mut pseudo = Vec::new();
     pseudo.extend_from_slice(&reply[26..34]);
     pseudo.extend_from_slice(&[0, 6]);

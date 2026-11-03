@@ -109,11 +109,9 @@ impl LiveNetwork {
         }
         self.history.push_back(summary);
         let newest = self.history.back().map_or(0, |s| s.start_unix_ms);
-        while self
-            .history
-            .front()
-            .is_some_and(|oldest| newest.saturating_sub(oldest.start_unix_ms) >= HISTORY_SECONDS * 1000)
-        {
+        while self.history.front().is_some_and(|oldest| {
+            newest.saturating_sub(oldest.start_unix_ms) >= HISTORY_SECONDS * 1000
+        }) {
             let _ = self.history.pop_front();
         }
     }
@@ -183,7 +181,11 @@ impl LiveNetwork {
                 ..row
             })
             .collect();
-        rows.sort_by(|a, b| b.total_bytes().cmp(&a.total_bytes()).then(a.addr.cmp(&b.addr)));
+        rows.sort_by(|a, b| {
+            b.total_bytes()
+                .cmp(&a.total_bytes())
+                .then(a.addr.cmp(&b.addr))
+        });
         rows
     }
 
@@ -225,8 +227,14 @@ mod tests {
                 name: name.into(),
                 source: NameSource::TlsServerName,
             }),
-            sent: Counter { packets: 1, bytes: sent },
-            received: Counter { packets: 1, bytes: received },
+            sent: Counter {
+                packets: 1,
+                bytes: sent,
+            },
+            received: Counter {
+                packets: 1,
+                bytes: received,
+            },
             flows_opened: 0,
             flows_accepted: 1,
         }
@@ -237,7 +245,10 @@ mod tests {
             start_unix_ms: second * 1000,
             length_ms: 1000,
             totals: Totals {
-                inbound: Counter { packets: 1, bytes: inbound_bytes },
+                inbound: Counter {
+                    packets: 1,
+                    bytes: inbound_bytes,
+                },
                 ..Totals::default()
             },
             hosts,
@@ -250,14 +261,33 @@ mod tests {
     #[test]
     fn hosts_are_totalled_over_the_window_busiest_first() {
         let mut live = LiveNetwork::default();
-        live.add(summary(100, 0, vec![host("1.1.1.1", Locality::Remote, 100, 10, None)]));
-        live.add(summary(105, 0, vec![host("1.1.1.1", Locality::Remote, 100, 10, None), host("8.8.8.8", Locality::Remote, 500, 0, None)]));
-        live.add(summary(115, 0, vec![host("1.1.1.1", Locality::Remote, 100, 10, None)]));
+        live.add(summary(
+            100,
+            0,
+            vec![host("1.1.1.1", Locality::Remote, 100, 10, None)],
+        ));
+        live.add(summary(
+            105,
+            0,
+            vec![
+                host("1.1.1.1", Locality::Remote, 100, 10, None),
+                host("8.8.8.8", Locality::Remote, 500, 0, None),
+            ],
+        ));
+        live.add(summary(
+            115,
+            0,
+            vec![host("1.1.1.1", Locality::Remote, 100, 10, None)],
+        ));
 
         let last_ten = live.hosts(Window::TenSeconds, Locality::Remote);
         let last_minute = live.hosts(Window::OneMinute, Locality::Remote);
 
-        assert_eq!(last_ten.len(), 1, "the 8.8.8.8 second fell out of the 10 s window");
+        assert_eq!(
+            last_ten.len(),
+            1,
+            "the 8.8.8.8 second fell out of the 10 s window"
+        );
         assert_eq!(last_minute[0].addr.to_string(), "8.8.8.8");
         assert_eq!(last_minute[1].sent_bytes, 300);
         assert_eq!(last_minute[1].flows_accepted, 3);
@@ -266,18 +296,42 @@ mod tests {
     #[test]
     fn names_are_remembered_after_later_summaries_omit_them() {
         let mut live = LiveNetwork::default();
-        live.add(summary(1, 0, vec![host("2606:4700::1", Locality::Remote, 1, 1, Some("www.cloudflare.com"))]));
-        live.add(summary(2, 0, vec![host("2606:4700::1", Locality::Remote, 1, 1, None)]));
+        live.add(summary(
+            1,
+            0,
+            vec![host(
+                "2606:4700::1",
+                Locality::Remote,
+                1,
+                1,
+                Some("www.cloudflare.com"),
+            )],
+        ));
+        live.add(summary(
+            2,
+            0,
+            vec![host("2606:4700::1", Locality::Remote, 1, 1, None)],
+        ));
 
         let rows = live.hosts(Window::TenSeconds, Locality::Remote);
 
-        assert_eq!(rows[0].name.as_ref().map(|n| n.name.as_str()), Some("www.cloudflare.com"));
+        assert_eq!(
+            rows[0].name.as_ref().map(|n| n.name.as_str()),
+            Some("www.cloudflare.com")
+        );
     }
 
     #[test]
     fn local_and_remote_hosts_are_listed_separately() {
         let mut live = LiveNetwork::default();
-        live.add(summary(1, 0, vec![host("192.168.1.86", Locality::Local, 5, 5, None), host("1.1.1.1", Locality::Remote, 5, 5, None)]));
+        live.add(summary(
+            1,
+            0,
+            vec![
+                host("192.168.1.86", Locality::Local, 5, 5, None),
+                host("1.1.1.1", Locality::Remote, 5, 5, None),
+            ],
+        ));
 
         assert_eq!(live.hosts(Window::TenSeconds, Locality::Local).len(), 1);
         assert_eq!(live.hosts(Window::TenSeconds, Locality::Remote).len(), 1);
@@ -292,7 +346,10 @@ mod tests {
         let points = live.throughput();
 
         let rates: Vec<(f64, f64)> = points.iter().map(|p| (p.at_secs, p.inbound_bps)).collect();
-        assert_eq!(rates, [(10.0, 1000.0), (11.0, 0.0), (12.0, 0.0), (13.0, 2000.0)]);
+        assert_eq!(
+            rates,
+            [(10.0, 1000.0), (11.0, 0.0), (12.0, 0.0), (13.0, 2000.0)]
+        );
     }
 
     #[test]
@@ -311,7 +368,11 @@ mod tests {
     #[test]
     fn a_hosts_history_has_zero_where_it_was_quiet() {
         let mut live = LiveNetwork::default();
-        live.add(summary(1, 0, vec![host("1.1.1.1", Locality::Remote, 7, 3, None)]));
+        live.add(summary(
+            1,
+            0,
+            vec![host("1.1.1.1", Locality::Remote, 7, 3, None)],
+        ));
         live.add(summary(2, 0, vec![]));
 
         let history = live.host_history("1.1.1.1".parse().unwrap());

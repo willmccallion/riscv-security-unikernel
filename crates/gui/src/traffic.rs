@@ -4,8 +4,8 @@
 //! receiving telemetry data and security alerts, sending management commands,
 //! and generating test traffic patterns for security testing.
 
-use crate::netns::NsPool;
 use crate::acks::PendingAcks;
+use crate::netns::NsPool;
 use crate::types::{
     CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, MgmtCommand, NetStats,
     TrafficMode, UiEvent,
@@ -363,7 +363,18 @@ fn parse_telemetry(body: &[u8]) -> Option<[u64; telemetry_packet::SLOTS]> {
 /// Stores one interval's counters. Slot 9 (the epoch) is taken from the
 /// authenticated envelope instead.
 fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
-    let [passed, ddos, fw, mal, bpf, heur, memory, flows, mgmt, _epoch] = *slots;
+    let [
+        passed,
+        ddos,
+        fw,
+        mal,
+        bpf,
+        heur,
+        memory,
+        flows,
+        mgmt,
+        _epoch,
+    ] = *slots;
     stats.passed.store(passed, Ordering::Relaxed);
     stats.total_passed.fetch_add(passed, Ordering::Relaxed);
     for (gauge, value) in [
@@ -429,8 +440,8 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         };
     }
     let reason_byte = data[alert_packet::REASON_OFFSET];
-    let src_ip_bytes = &data[alert_packet::SRC_IP_OFFSET
-        ..alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE];
+    let src_ip_bytes =
+        &data[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE];
     let prefix_len = data[alert_packet::PREFIX_LEN_OFFSET];
     let ip = if prefix_len < 32 {
         format!(
@@ -443,8 +454,8 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
         )
     };
-    let dst_ip_bytes = &data[alert_packet::DST_IP_OFFSET
-        ..alert_packet::DST_IP_OFFSET + alert_packet::SRC_IP_SIZE];
+    let dst_ip_bytes =
+        &data[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + alert_packet::SRC_IP_SIZE];
     let dst_ip = format!(
         "{}.{}.{}.{}",
         dst_ip_bytes[0], dst_ip_bytes[1], dst_ip_bytes[2], dst_ip_bytes[3],
@@ -463,7 +474,8 @@ fn parse_alert(data: &[u8]) -> LogEntry {
         data[alert_packet::PACKET_LEN_OFFSET + 1],
     ]);
     let value = &data[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4];
-    let measured = Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]])).filter(|&v| v != 0);
+    let measured =
+        Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]])).filter(|&v| v != 0);
 
     let (msg, color) = match AlertReason::from_u8(reason_byte) {
         Some(AlertReason::Ddos) => (
@@ -503,7 +515,10 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             egui::Color32::from_rgb(255, 80, 0),
         ),
         Some(AlertReason::SourceSurge) => (
-            format!("[SURGE] ~{} distinct sources in one interval (spoofed flood?)", measured.unwrap_or(0)),
+            format!(
+                "[SURGE] ~{} distinct sources in one interval (spoofed flood?)",
+                measured.unwrap_or(0)
+            ),
             egui::Color32::YELLOW,
         ),
         Some(AlertReason::SubnetFlood) => (
@@ -511,7 +526,10 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             egui::Color32::YELLOW,
         ),
         Some(AlertReason::PortScan) => (
-            format!("[SCAN] {ip} banned after trying {} ports", measured.unwrap_or(0)),
+            format!(
+                "[SCAN] {ip} banned after trying {} ports",
+                measured.unwrap_or(0)
+            ),
             egui::Color32::YELLOW,
         ),
         Some(AlertReason::BpfInvalidAction) => (
@@ -739,8 +757,8 @@ mod tests {
         let len = verified[mgmt_packet::add_dpi::LEN_OFFSET] as usize;
         assert_eq!(len, pattern.len());
         assert_eq!(
-            &verified[mgmt_packet::add_dpi::PATTERN_OFFSET
-                ..mgmt_packet::add_dpi::PATTERN_OFFSET + len],
+            &verified
+                [mgmt_packet::add_dpi::PATTERN_OFFSET..mgmt_packet::add_dpi::PATTERN_OFFSET + len],
             pattern,
         );
     }
@@ -883,7 +901,11 @@ mod tests {
         assert_eq!(classify_report(&body), ReportKind::Ack);
         assert_eq!(
             parse_ack(&body),
-            Some(Ack { seq: 0x0102, command: 0x01, outcome: MgmtOutcome::TableFull })
+            Some(Ack {
+                seq: 0x0102,
+                command: 0x01,
+                outcome: MgmtOutcome::TableFull
+            })
         );
     }
 
@@ -903,8 +925,20 @@ mod tests {
         let remove = mgmt_body(&MgmtCommand::RemoveDpiPattern(b"abc".to_vec())).unwrap();
 
         assert_eq!(unban, [ManagementMessageType::UnbanIp as u8, 10, 0, 0, 42]);
-        assert_eq!(unblock, [ManagementMessageType::UnblockPort as u8, 0x20, 0xFB]);
-        assert_eq!(remove, [ManagementMessageType::RemoveDpiPattern as u8, 3, b'a', b'b', b'c']);
+        assert_eq!(
+            unblock,
+            [ManagementMessageType::UnblockPort as u8, 0x20, 0xFB]
+        );
+        assert_eq!(
+            remove,
+            [
+                ManagementMessageType::RemoveDpiPattern as u8,
+                3,
+                b'a',
+                b'b',
+                b'c'
+            ]
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@
 
 use super::dns::{DnsResponse, NamedAddress};
 use super::flows::Endpoint;
-use super::time::UnixNanos;
 use super::quic::CryptoData;
+use super::time::UnixNanos;
 use super::tls::{self, Hello, ServerName};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -85,7 +85,13 @@ impl NameTable {
             name: Arc::from(name),
             source,
         };
-        let _ = self.names.insert(addr, NameEntry { name, learned_at: at });
+        let _ = self.names.insert(
+            addr,
+            NameEntry {
+                name,
+                learned_at: at,
+            },
+        );
     }
 
     /// Records every address a DNS or mDNS response gave.
@@ -140,7 +146,9 @@ impl PendingHello {
     /// Places `data` at `offset` in the stream; anything past
     /// [`MAX_HELLO_BYTES`] is dropped.
     fn write_at(&mut self, offset: u64, data: &[u8]) {
-        let Ok(offset) = usize::try_from(offset) else { return };
+        let Ok(offset) = usize::try_from(offset) else {
+            return;
+        };
         if offset >= MAX_HELLO_BYTES {
             return;
         }
@@ -185,7 +193,14 @@ impl HelloAssembler {
     /// Feeds a TCP segment the client sent the server; returns the server
     /// name once the ClientHello is complete. Only streams that begin like
     /// a TLS handshake are buffered.
-    pub fn observe_tcp(&mut self, client: Endpoint, server: Endpoint, sequence: u32, payload: &[u8], at: UnixNanos) -> Option<ServerName> {
+    pub fn observe_tcp(
+        &mut self,
+        client: Endpoint,
+        server: Endpoint,
+        sequence: u32,
+        payload: &[u8],
+        at: UnixNanos,
+    ) -> Option<ServerName> {
         if payload.is_empty() {
             return None;
         }
@@ -204,7 +219,13 @@ impl HelloAssembler {
 
     /// Feeds the CRYPTO data of a client's QUIC Initial packets; returns
     /// the server name once the ClientHello is complete.
-    pub fn observe_quic(&mut self, client: Endpoint, server: Endpoint, fragments: &[CryptoData], at: UnixNanos) -> Option<ServerName> {
+    pub fn observe_quic(
+        &mut self,
+        client: Endpoint,
+        server: Endpoint,
+        fragments: &[CryptoData],
+        at: UnixNanos,
+    ) -> Option<ServerName> {
         if fragments.is_empty() {
             return None;
         }
@@ -313,7 +334,13 @@ mod tests {
 
         let from_first = assembler.observe_tcp(client, server, base, &hello[..1400], at(0));
         let from_retransmit = assembler.observe_tcp(client, server, base, &hello[..1400], at(0));
-        let from_second = assembler.observe_tcp(client, server, base.wrapping_add(second_offset), &hello[1400..], at(0));
+        let from_second = assembler.observe_tcp(
+            client,
+            server,
+            base.wrapping_add(second_offset),
+            &hello[1400..],
+            at(0),
+        );
 
         assert_eq!((from_first, from_retransmit), (None, None));
         assert_eq!(from_second.unwrap().name, "www.example.com");
@@ -331,7 +358,12 @@ mod tests {
         };
         let mut assembler = HelloAssembler::default();
 
-        let early = assembler.observe_quic(client, server, &[fragment(1000, message.len()), fragment(500, 1000)], at(0));
+        let early = assembler.observe_quic(
+            client,
+            server,
+            &[fragment(1000, message.len()), fragment(500, 1000)],
+            at(0),
+        );
         let done = assembler.observe_quic(client, server, &[fragment(0, 500)], at(0));
 
         assert_eq!(early, None);
