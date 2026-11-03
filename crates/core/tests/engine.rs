@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{CaptureSink, PEER_IP, engine, mgmt, tcp, udp};
+use common::{CaptureSink, PEER_IP, engine, ipv4, mgmt, tcp, udp};
 use sec_core::config::DEFAULT_BLOCKED_PORT;
 use sec_core::engine::Verdict;
 use sec_core::security::alert::AlertReason;
@@ -357,4 +357,77 @@ fn tcp_segment_without_payload_is_consumed() {
     let v = e.process(&mut tcp(PEER_IP, 5000, 80, ack, b""), 1, &mut sink);
 
     assert_eq!(v, Verdict::Consumed);
+}
+
+/// Bytes 16-17 of the frame: the IPv4 total length.
+fn with_ip_total_length(mut frame: Vec<u8>, total: u16) -> Vec<u8> {
+    frame[16..18].copy_from_slice(&total.to_be_bytes());
+    frame
+}
+
+#[test]
+fn tcp_payload_inspection_stops_at_the_ip_total_length() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut frame = tcp(PEER_IP, 5000, 80, PSH_ACK, b"hello");
+    frame.extend_from_slice(b"UNION SELECT");
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}
+
+#[test]
+fn udp_payload_inspection_skips_the_udp_header() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let payload = b"al(1)";
+    let mut l4 = Vec::new();
+    l4.extend_from_slice(&5000u16.to_be_bytes());
+    l4.extend_from_slice(&80u16.to_be_bytes());
+    l4.extend_from_slice(&u16::try_from(8 + payload.len()).unwrap().to_be_bytes());
+    l4.extend_from_slice(b"ev");
+    l4.extend_from_slice(payload);
+    let mut frame = ipv4(PEER_IP, 17, &l4);
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}
+
+#[test]
+fn udp_payload_inspection_stops_at_the_udp_length() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut frame = udp(PEER_IP, 5000, 80, b"hello UNION SELECT");
+    let udp_length = u16::try_from(8 + b"hello".len()).unwrap();
+    frame[38..40].copy_from_slice(&udp_length.to_be_bytes());
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}
+
+#[test]
+fn ipv4_total_length_beyond_the_frame_is_dropped_as_malformed() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let frame = udp(PEER_IP, 5000, 80, b"hello");
+    let past_the_end = u16::try_from(frame.len() - 14 + 1).unwrap();
+    let mut frame = with_ip_total_length(frame, past_the_end);
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::MalformedIp));
+}
+
+#[test]
+fn ipv4_total_length_shorter_than_its_header_is_dropped_as_malformed() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut frame = with_ip_total_length(udp(PEER_IP, 5000, 80, b"hello"), 19);
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::MalformedIp));
 }

@@ -751,8 +751,7 @@ fn parse_ipv4(packet: &[u8]) -> Result<Option<Ipv4Fields>, RejectedIpv4> {
     let src_ip = [header[12], header[13], header[14], header[15]];
     let dst_ip = [header[16], header[17], header[18], header[19]];
     let protocol = header[9];
-    let flags_fragment = u16::from_be_bytes([header[6], header[7]]);
-    if let Some(reason) = ipv4_rejection(header[0], flags_fragment) {
+    if let Some(reason) = ipv4_rejection(header, packet.len()) {
         return Err(RejectedIpv4 {
             src_ip,
             dst_ip,
@@ -769,11 +768,20 @@ fn parse_ipv4(packet: &[u8]) -> Result<Option<Ipv4Fields>, RejectedIpv4> {
     }))
 }
 
-/// Why an IPv4 header with this version/IHL byte and flags/fragment field
-/// cannot be inspected, if it cannot.
-const fn ipv4_rejection(version_ihl: u8, flags_fragment: u16) -> Option<AlertReason> {
+/// Why the minimal IPv4 `header` of a frame `frame_len` bytes long cannot be
+/// inspected, if it cannot: a bad version or header length, a total length
+/// shorter than the header or longer than the frame, or a fragment.
+fn ipv4_rejection(header: &[u8], frame_len: usize) -> Option<AlertReason> {
     const MIN_IHL_WORDS: u8 = 5;
-    if version_ihl >> 4 != 4 || version_ihl & ipv4::IHL_MASK < MIN_IHL_WORDS {
+    let version_ihl = header[0];
+    let header_len = usize::from(version_ihl & ipv4::IHL_MASK) * 4;
+    let total_len = usize::from(u16::from_be_bytes([header[2], header[3]]));
+    let flags_fragment = u16::from_be_bytes([header[6], header[7]]);
+    if version_ihl >> 4 != 4
+        || version_ihl & ipv4::IHL_MASK < MIN_IHL_WORDS
+        || total_len < header_len
+        || ipv4::HEADER_OFFSET + total_len > frame_len
+    {
         Some(AlertReason::MalformedIp)
     } else if flags_fragment & ipv4::FRAGMENT_MASK != 0 {
         Some(AlertReason::IpFragment)

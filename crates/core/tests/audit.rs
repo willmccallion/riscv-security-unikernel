@@ -79,6 +79,9 @@ fn build_tcp_frame(
     f[ethernet::TYPE_OFFSET + 1] = 0x00;
 
     f[ipv4::VERSION_IHL_OFFSET] = 0x45;
+    let ip_total = ipv4::MIN_HEADER_SIZE + tcp::MIN_HEADER_SIZE + payload.len();
+    f[ipv4::TOTAL_LENGTH_OFFSET..ipv4::TOTAL_LENGTH_OFFSET + 2]
+        .copy_from_slice(&u16::try_from(ip_total).unwrap().to_be_bytes());
     f[ipv4::PROTOCOL_OFFSET] = 6;
     f[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + 4].copy_from_slice(&src_ip);
     f[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP);
@@ -307,6 +310,9 @@ fn process_packet_handles_syn_with_extended_ip_options() {
     frame[ethernet::TYPE_OFFSET + 1] = 0x00;
 
     frame[ipv4::VERSION_IHL_OFFSET] = 0x40 | (IHL_WORDS as u8);
+    let ip_total = IHL_BYTES + tcp::MIN_HEADER_SIZE;
+    frame[ipv4::TOTAL_LENGTH_OFFSET..ipv4::TOTAL_LENGTH_OFFSET + 2]
+        .copy_from_slice(&u16::try_from(ip_total).unwrap().to_be_bytes());
     frame[ipv4::PROTOCOL_OFFSET] = 6;
     frame[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + 4].copy_from_slice(&[10, 0, 0, 5]);
     frame[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP);

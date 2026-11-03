@@ -7,7 +7,7 @@
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::PacketSink;
 use crate::net::constants::{
-    ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp,
+    ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp, udp,
 };
 use crate::net::tcp::{TCP_ACK, TCP_SYN};
 use crate::security::hash::siphash24;
@@ -181,13 +181,13 @@ fn handle_ipv4<'a, S: PacketSink>(
     if packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
         return None;
     }
+    let ip_end = ipv4_end(packet, usize::from(ihl))?;
 
     if IpProtocol::from_u8(protocol) == Some(IpProtocol::Icmp) {
         // Type, code and checksum are rewritten in place.
         const ICMP_HEADER_MIN: usize = 4;
         let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        if let Some(ip_end) = ipv4_end(packet, usize::from(ihl))
-            && offset + ICMP_HEADER_MIN <= ip_end
+        if offset + ICMP_HEADER_MIN <= ip_end
             && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
         {
             swap_addresses(packet);
@@ -203,7 +203,7 @@ fn handle_ipv4<'a, S: PacketSink>(
 
     if IpProtocol::from_u8(protocol) == Some(IpProtocol::Tcp) {
         let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        if offset + tcp::MIN_HEADER_SIZE > packet.len() {
+        if offset + tcp::MIN_HEADER_SIZE > ip_end {
             return None;
         }
 
@@ -239,20 +239,22 @@ fn handle_ipv4<'a, S: PacketSink>(
             return None;
         }
 
-        let payload_offset = offset + tcp_header_len;
-        return if payload_offset <= packet.len() {
-            Some(&packet[payload_offset..])
-        } else {
-            None
-        };
+        return packet.get(offset + tcp_header_len..ip_end);
     }
 
-    let payload_offset = ipv4::HEADER_OFFSET + ihl as usize;
-    if payload_offset < packet.len() {
-        Some(&packet[payload_offset..])
-    } else {
-        None
+    let offset = ipv4::HEADER_OFFSET + ihl as usize;
+    if IpProtocol::from_u8(protocol) == Some(IpProtocol::Udp) {
+        return udp_payload(packet, offset, ip_end);
     }
+    packet.get(offset..ip_end)
+}
+
+/// The payload of the UDP datagram whose header is at `offset`, bounded by
+/// both its length field and the end of the IP datagram.
+fn udp_payload(packet: &[u8], offset: usize, ip_end: usize) -> Option<&[u8]> {
+    let length = packet.get(offset + udp::LENGTH_OFFSET..offset + udp::LENGTH_OFFSET + 2)?;
+    let udp_end = offset + usize::from(u16::from_be_bytes([length[0], length[1]]));
+    packet.get(offset + udp::HEADER_SIZE..udp_end.min(ip_end))
 }
 
 /// Handles TCP packets with SYN flood protection.
@@ -357,7 +359,10 @@ fn send_tcp_reply_inplace<S: PacketSink>(
 /// or `None` if that length is shorter than the header or longer than the
 /// frame.
 fn ipv4_end(packet: &[u8], ihl: usize) -> Option<usize> {
-    let total = usize::from(u16::from_be_bytes([packet[16], packet[17]]));
+    let total = usize::from(u16::from_be_bytes([
+        packet[ipv4::TOTAL_LENGTH_OFFSET],
+        packet[ipv4::TOTAL_LENGTH_OFFSET + 1],
+    ]));
     let end = ipv4::HEADER_OFFSET + total;
     (total >= ihl && end <= packet.len()).then_some(end)
 }

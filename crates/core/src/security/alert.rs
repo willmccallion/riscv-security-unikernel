@@ -48,8 +48,9 @@ pub enum AlertReason {
     /// A source opened connections to many distinct ports within one
     /// window and was banned. The value is the distinct ports counted.
     PortScan = 15,
-    /// An IPv4 header whose version is not 4 or whose length is under 20
-    /// bytes. The packet is dropped unread.
+    /// An IPv4 header whose version is not 4, whose length is under 20
+    /// bytes, or whose total length is shorter than the header or longer
+    /// than the frame. The packet is dropped unread.
     MalformedIp = 16,
     /// An IPv4 fragment. The kernel cannot reassemble, and inspecting the
     /// pieces alone would let a header or signature split across them slip

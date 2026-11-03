@@ -117,6 +117,8 @@ pub mod ipv4 {
     pub const HEADER_OFFSET: usize = 14;
     /// Offset to IP version and IHL field (byte 14).
     pub const VERSION_IHL_OFFSET: usize = 14;
+    /// Offset to the total length field (bytes 16-17).
+    pub const TOTAL_LENGTH_OFFSET: usize = 16;
     /// Bits of the flags and fragment offset field set on any fragment: More
     /// Fragments and the 13-bit fragment offset. Don't Fragment alone does
     /// not make a fragment.
@@ -180,6 +182,8 @@ pub mod tcp {
 pub mod udp {
     /// UDP header size in bytes.
     pub const HEADER_SIZE: usize = 8;
+    /// Offset of the length field within the UDP header.
+    pub const LENGTH_OFFSET: usize = 4;
 }
 
 /// Broadcast MAC address (all ones).
