@@ -63,6 +63,15 @@ const fn mask(len: u8) -> u32 {
     }
 }
 
+/// Who imposed a ban.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum BanSource {
+    /// A flood or scan detector; may be evicted when the table is full.
+    Detector,
+    /// An authenticated operator command; never evicted by a detector ban.
+    Operator,
+}
+
 /// Entry in the penalty box tracking a banned network.
 #[derive(Copy, Clone, Debug)]
 struct BanEntry {
@@ -70,6 +79,7 @@ struct BanEntry {
     prefix: Ipv4Prefix,
     /// Time-source value at which the ban expires.
     expiry: u64,
+    source: BanSource,
 }
 
 impl BanEntry {
@@ -79,14 +89,20 @@ impl BanEntry {
     }
 }
 
+/// The penalty box refused an operator ban because every slot already holds
+/// an active operator ban.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct PenaltyBoxFull;
+
 /// Penalty box for tracking banned addresses and subnets.
 ///
 /// Maintains a fixed-size table of banned prefixes with expiration times.
-/// When the table is full, new bans overwrite the oldest entries.
+/// When the table is full, a new ban evicts a detector ban in round-robin
+/// order; operator bans are only lifted by the operator or by expiring.
 #[derive(Debug)]
 pub struct PenaltyBox {
-    /// Array of ban entries, limited to 16 for memory efficiency.
-    entries: [BanEntry; 16],
+    /// Array of ban entries, limited to [`Self::SLOTS`] for memory efficiency.
+    entries: [BanEntry; Self::SLOTS],
     /// Round-robin pointer for eviction when every slot is still active.
     /// Without this, every overflow ban lands in slot 0, so an attacker
     /// who learns the table is full can pin one IP and watch every
@@ -101,45 +117,87 @@ impl Default for PenaltyBox {
 }
 
 impl PenaltyBox {
+    /// Number of bans the table holds at once.
+    const SLOTS: usize = 16;
+
     /// Creates a new empty penalty box.
     pub const fn new() -> Self {
         Self {
             entries: [BanEntry {
                 prefix: Ipv4Prefix::host([0; 4]),
                 expiry: 0,
-            }; 16],
+                source: BanSource::Detector,
+            }; Self::SLOTS],
             next_evict: 0,
         }
     }
 
-    /// Bans a single address until `now + duration`.
+    /// Bans a single address until `now + duration` on a detector's behalf.
     pub fn ban(&mut self, ip_bytes: &[u8; 4], duration: u64, now: u64) {
         self.ban_prefix(Ipv4Prefix::host(*ip_bytes), duration, now);
     }
 
-    /// Bans every address in `prefix` until `now + duration`.
-    ///
-    /// Refreshes the prefix's existing ban if it has one; otherwise takes a
-    /// slot whose ban has ended, and only when every slot holds an active
-    /// ban evicts one in round-robin order.
+    /// Bans every address in `prefix` until `now + duration` on a
+    /// detector's behalf. If every slot holds an operator ban, the ban is
+    /// not recorded.
     pub fn ban_prefix(&mut self, prefix: Ipv4Prefix, duration: u64, now: u64) {
-        let expiry = now.saturating_add(duration);
+        let _ = self.store(prefix, BanSource::Detector, duration, now);
+    }
 
+    /// Bans a single address until `now + duration` for the operator.
+    ///
+    /// # Errors
+    ///
+    /// [`PenaltyBoxFull`] if every slot already holds an active operator ban.
+    pub fn ban_by_operator(
+        &mut self,
+        ip_bytes: &[u8; 4],
+        duration: u64,
+        now: u64,
+    ) -> Result<(), PenaltyBoxFull> {
+        let prefix = Ipv4Prefix::host(*ip_bytes);
+        self.store(prefix, BanSource::Operator, duration, now)
+            .then_some(())
+            .ok_or(PenaltyBoxFull)
+    }
+
+    /// Records a ban, returning whether it found a slot.
+    ///
+    /// Refreshes the prefix's existing ban, keeping the later expiry and the
+    /// operator's claim; otherwise takes a slot whose ban has ended, and only
+    /// when every slot is active evicts a detector ban in round-robin order.
+    fn store(&mut self, prefix: Ipv4Prefix, source: BanSource, duration: u64, now: u64) -> bool {
+        let expiry = now.saturating_add(duration);
         if let Some(entry) = self
             .entries
             .iter_mut()
             .find(|e| e.prefix == prefix && e.is_active(now))
         {
-            entry.expiry = expiry;
-            return;
+            entry.expiry = entry.expiry.max(expiry);
+            if source == BanSource::Operator {
+                entry.source = BanSource::Operator;
+            }
+            return true;
         }
-        if let Some(entry) = self.entries.iter_mut().find(|e| !e.is_active(now)) {
-            *entry = BanEntry { prefix, expiry };
-            return;
-        }
-        let idx = self.next_evict;
-        self.next_evict = (self.next_evict + 1) % 16;
-        self.entries[idx] = BanEntry { prefix, expiry };
+        let free = self.entries.iter().position(|e| !e.is_active(now));
+        let Some(idx) = free.or_else(|| self.next_evictable_detector_ban()) else {
+            return false;
+        };
+        self.entries[idx] = BanEntry {
+            prefix,
+            expiry,
+            source,
+        };
+        true
+    }
+
+    /// The next detector ban in round-robin order, advancing the pointer.
+    fn next_evictable_detector_ban(&mut self) -> Option<usize> {
+        let idx = (0..Self::SLOTS)
+            .map(|step| (self.next_evict + step) % Self::SLOTS)
+            .find(|&i| self.entries[i].source == BanSource::Detector)?;
+        self.next_evict = (idx + 1) % Self::SLOTS;
+        Some(idx)
     }
 
     /// Lifts every ban covering `ip_bytes`, whether on the address itself

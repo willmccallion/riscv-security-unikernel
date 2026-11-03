@@ -646,8 +646,13 @@ impl<
         let Some(ip) = ip_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.pbox.ban(&ip, IP_BAN_DURATION_CYCLES as u64, now);
-        MgmtOutcome::Applied
+        match self
+            .pbox
+            .ban_by_operator(&ip, IP_BAN_DURATION_CYCLES as u64, now)
+        {
+            Ok(()) => MgmtOutcome::Applied,
+            Err(dos::PenaltyBoxFull) => MgmtOutcome::TableFull,
+        }
     }
 
     fn unban_ip(&mut self, body: &[u8]) -> MgmtOutcome {

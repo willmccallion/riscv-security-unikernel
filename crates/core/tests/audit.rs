@@ -21,7 +21,7 @@ use sec_core::net::constants::{arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
 use sec_core::net::tcp::{TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, extract_ports};
 use sec_core::security::alert::should_emit_ddos_alert;
-use sec_core::security::dos::PenaltyBox;
+use sec_core::security::dos::{PenaltyBox, PenaltyBoxFull};
 use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
 use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::{FlowKey, FlowTable};
@@ -976,6 +976,61 @@ fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
     pbox.ban(&[10, 0, 0, 1], u64::MAX, u64::MAX - 5);
 
     assert!(pbox.is_banned(&[10, 0, 0, 1], u64::MAX - 1));
+}
+
+/// Detector bans rotate through the full table, but must never push out
+/// a ban the operator chose.
+#[test]
+fn penalty_box_detector_bans_never_evict_an_operator_ban() {
+    let mut pbox = PenaltyBox::new();
+    pbox.ban_by_operator(&[10, 9, 9, 9], 1_000, 0).unwrap();
+
+    for i in 0..32u8 {
+        pbox.ban(&[20, 0, 0, i], 1_000, 0);
+    }
+
+    assert!(pbox.is_banned(&[10, 9, 9, 9], 1));
+}
+
+#[test]
+fn penalty_box_operator_ban_evicts_a_detector_ban_when_full() {
+    let mut pbox = PenaltyBox::new();
+    for i in 0..16u8 {
+        pbox.ban(&[20, 0, 0, i], 1_000, 0);
+    }
+
+    let result = pbox.ban_by_operator(&[10, 9, 9, 9], 1_000, 0);
+
+    assert_eq!(result, Ok(()));
+    assert!(pbox.is_banned(&[10, 9, 9, 9], 1));
+}
+
+#[test]
+fn penalty_box_refuses_an_operator_ban_when_every_slot_holds_one() {
+    let mut pbox = PenaltyBox::new();
+    for i in 0..16u8 {
+        pbox.ban_by_operator(&[10, 0, 0, i], 1_000, 0).unwrap();
+    }
+
+    let result = pbox.ban_by_operator(&[10, 0, 1, 1], 1_000, 0);
+
+    assert_eq!(result, Err(PenaltyBoxFull));
+    assert!((0..16u8).all(|i| pbox.is_banned(&[10, 0, 0, i], 1)));
+}
+
+/// A detector re-banning an address the operator banned must not shorten
+/// the operator's ban or make it evictable.
+#[test]
+fn penalty_box_detector_reban_keeps_the_operator_ban() {
+    let mut pbox = PenaltyBox::new();
+    pbox.ban_by_operator(&[10, 9, 9, 9], 10_000, 0).unwrap();
+    pbox.ban(&[10, 9, 9, 9], 100, 0);
+
+    for i in 0..32u8 {
+        pbox.ban(&[20, 0, 0, i], 1_000, 200);
+    }
+
+    assert!(pbox.is_banned(&[10, 9, 9, 9], 5_000));
 }
 
 #[test]

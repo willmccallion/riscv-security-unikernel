@@ -211,9 +211,53 @@ fn operator_commands_take_effect_during_a_mgmt_flood() {
     assert!(operator_can_still_manage(&mut e, 1, 1));
 }
 
+fn ban_ip(ip: [u8; 4]) -> Vec<u8> {
+    command(ManagementMessageType::BanIp, &ip)
+}
+
+/// Floods from `src` until the heavy-hitter sketch bans it.
+fn flood_until_banned(e: &mut Engine, src: [u8; 4], now: u64, sink: &mut CaptureSink) {
+    for i in 0..=sec_core::config::HEAVY_HITTER_THRESHOLD {
+        let _ = e.process(&mut udp(src, 6000 + i, 80, b"flood"), now, sink);
+    }
+}
+
+#[test]
+fn automatic_bans_do_not_evict_an_operator_ban() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let target = [10, 9, 9, 9];
+    let _ = e.process(&mut mgmt(1, &ban_ip(target)), 1, &mut sink);
+    for i in 0..16u8 {
+        flood_until_banned(&mut e, [20 + i, 1, 1, 1], 2, &mut sink);
+    }
+
+    let later = 1_000_000_000;
+    let v = e.process(&mut udp(target, 5000, 80, b"hello"), later, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Ddos));
+}
+
+#[test]
+fn operator_ban_beyond_a_table_full_of_operator_bans_is_acked_as_table_full() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    for i in 0..16u8 {
+        let _ = e.process(
+            &mut mgmt(u32::from(i) + 1, &ban_ip([10, 0, 0, i])),
+            1,
+            &mut sink,
+        );
+    }
+
+    let _ = e.process(&mut mgmt(17, &ban_ip([10, 0, 1, 1])), 1, &mut sink);
+
+    let outcome = acks(&sink).last().map(|&(_, _, outcome)| outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
+}
+
 #[test]
 fn every_authenticated_command_is_acknowledged_with_its_outcome() {
-    use sec_core::security::mgmt::MgmtOutcome;
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let block = ManagementMessageType::BlockPort as u8;
