@@ -26,9 +26,14 @@ use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
 use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::heuristic::HeuristicEngine;
-use sec_core::security::mgmt_auth::{MgmtAuth, seal};
+use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, REPLY_ADDR_LEN, seal, sealed_len};
 use sec_core::security::vm::{
     Instruction, Opcode, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
+};
+
+const OPERATOR: OperatorAddr = OperatorAddr {
+    mac: [0x02, 0, 0, 0, 0, 0x01],
+    ip: [192, 168, 100, 1],
 };
 
 /// Captures every frame the stack hands to its sink so tests can
@@ -860,9 +865,10 @@ fn mgmt_auth_rejects_unsigned_packet() {
     let mut auth = MgmtAuth::new(key);
     auth.set_epoch(0x1234_5678);
     let body = [0x04u8, 10, 0, 0, 7];
-    let mut packet = vec![0u8; 8 + body.len() + 8];
+    let mut packet = vec![0u8; sealed_len(body.len())];
     packet[..8].copy_from_slice(&((0x1234_5678u64 << 32) | 1).to_be_bytes());
-    packet[8..8 + body.len()].copy_from_slice(&body);
+    let body_start = 8 + REPLY_ADDR_LEN;
+    packet[body_start..body_start + body.len()].copy_from_slice(&body);
     assert!(
         auth.verify(&packet).is_none(),
         "MgmtAuth must reject a packet whose MAC region is unsigned"
@@ -879,7 +885,14 @@ fn mgmt_auth_rejects_replayed_packet() {
     auth.set_epoch(epoch);
     let body = [0x01u8, 0x00, 0x50];
     let mut packet = [0u8; 32];
-    let n = seal(&key, ((epoch as u64) << 32) | 7, &body, &mut packet).expect("buffer fits");
+    let n = seal(
+        &key,
+        ((epoch as u64) << 32) | 7,
+        &OPERATOR,
+        &body,
+        &mut packet,
+    )
+    .expect("buffer fits");
     assert!(auth.verify(&packet[..n]).is_some(), "first verify");
     assert!(
         auth.verify(&packet[..n]).is_none(),
@@ -896,10 +909,11 @@ fn mgmt_auth_rejects_a_packet_longer_than_the_longest_command() {
     let epoch: u32 = 0x1234_5678;
     let mut auth = MgmtAuth::new(key);
     auth.set_epoch(epoch);
-    let mut packet = [0u8; 8 + MAX_PAYLOAD_LEN + 1 + 8];
+    let mut packet = [0u8; sealed_len(MAX_PAYLOAD_LEN + 1)];
     let longest = seal(
         &key,
         (u64::from(epoch) << 32) | 1,
+        &OPERATOR,
         &[0x03; MAX_PAYLOAD_LEN],
         &mut packet,
     )
@@ -908,6 +922,7 @@ fn mgmt_auth_rejects_a_packet_longer_than_the_longest_command() {
     let too_long = seal(
         &key,
         (u64::from(epoch) << 32) | 2,
+        &OPERATOR,
         &[0x03; MAX_PAYLOAD_LEN + 1],
         &mut packet,
     )

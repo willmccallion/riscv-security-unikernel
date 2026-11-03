@@ -5,9 +5,10 @@
 
 mod common;
 
-use common::{CaptureSink, PEER_IP, acks, engine, mgmt, tcp, udp};
+use common::{CaptureSink, PEER_IP, PEER_MAC, acks, engine, mgmt, tcp, udp};
 use sec_core::config::MANAGEMENT_PORT;
 use sec_core::engine::{Engine, Verdict};
+use sec_core::net::stack::checksum;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome};
 use sec_core::security::vm::Opcode;
@@ -415,4 +416,40 @@ fn unban_ip_lets_the_source_back_in() {
     let v = e.process(&mut udp(target, 5000, 80, b"hello"), 3, &mut sink);
 
     assert_eq!(v, Verdict::Passed);
+}
+
+/// A copy of `frame` that appears to come from another host on the mgmt LAN.
+fn resent_from_another_host(frame: &[u8]) -> Vec<u8> {
+    let mut resent = frame.to_vec();
+    resent[6..12].copy_from_slice(&[0x02, 0, 0, 0, 0, 0x66]);
+    resent[26..30].copy_from_slice(&[192, 168, 100, 66]);
+    resent[24..26].copy_from_slice(&[0, 0]);
+    let csum = checksum(&resent[14..34]);
+    resent[24..26].copy_from_slice(&csum.to_be_bytes());
+    resent
+}
+
+#[test]
+fn a_captured_command_resent_from_another_host_does_not_redirect_reports() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut resent = resent_from_another_host(&mgmt(1, &block_port(9000)));
+
+    let _ = e.process(&mut resent, 1, &mut sink);
+
+    let destinations: Vec<_> = sink
+        .sent
+        .iter()
+        .map(|f| {
+            (
+                <[u8; 6]>::try_from(&f[0..6]).unwrap(),
+                <[u8; 4]>::try_from(&f[30..34]).unwrap(),
+            )
+        })
+        .collect();
+    assert!(!destinations.is_empty(), "the command was not acked");
+    assert!(
+        destinations.iter().all(|&dest| dest == (PEER_MAC, PEER_IP)),
+        "reports went to {destinations:?}"
+    );
 }

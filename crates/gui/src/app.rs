@@ -7,8 +7,8 @@
 
 use crate::live::view::LiveView;
 use crate::types::{
-    CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, TrafficMode,
-    UiEvent,
+    CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, NotSentReason,
+    TrafficMode, UiEvent,
 };
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
@@ -941,7 +941,15 @@ fn status_badge(ui: &mut egui::Ui, status: CommandStatus) {
         CommandStatus::Rejected(MgmtOutcome::Invalid | MgmtOutcome::Applied) => {
             ("rejected: invalid", egui::Color32::RED)
         }
-        CommandStatus::NotSent => ("not sent: kernel not seen yet", orange),
+        CommandStatus::NotSent(NotSentReason::InvalidCommand) => {
+            ("not sent: invalid command", egui::Color32::RED)
+        }
+        CommandStatus::NotSent(NotSentReason::KernelNotSeen) => {
+            ("not sent: kernel not seen yet", orange)
+        }
+        CommandStatus::NotSent(NotSentReason::NoReplyAddress) => {
+            ("not sent: no local address reaches the kernel", orange)
+        }
         CommandStatus::NoAck => ("no ack from kernel", orange),
     };
     ui.colored_label(color, text);

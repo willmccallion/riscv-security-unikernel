@@ -6,14 +6,15 @@
 
 use crate::acks::PendingAcks;
 use crate::netns::NsPool;
+use crate::reply_addr::reply_address;
 use crate::types::{
     CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, MgmtCommand, NetStats,
-    TrafficMode, UiEvent,
+    NotSentReason, TrafficMode, UiEvent,
 };
 use eframe::egui;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
-use sec_core::security::mgmt_auth::{parse_hex_key, seal};
+use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, parse_hex_key, seal};
 use sec_core::security::report_auth::{Report, ReportVerifier, report_key, telemetry_packet};
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
@@ -32,15 +33,19 @@ const NETNS_DEFAULT_COUNT: usize = 200;
 /// construction live in exactly one place — the kernel rejects anything
 /// signed differently, so it must match `mgmt_auth::seal` byte-for-byte.
 ///
+/// The command asks the kernel to report to this host's address on the
+/// interface that routes to it, so its acks and alerts come back here.
+///
 /// Returns the sequence number the packet was sealed with, which the
-/// kernel echoes in its ack, or `None` if nothing was sent because no
-/// telemetry has announced the kernel's boot epoch yet.
-async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Option<u32> {
-    let counter = MGMT_COUNTER.next()?;
-    let mut packet = vec![0u8; 8 + body.len() + 8];
-    seal(key, counter, body, &mut packet)?;
-    let _ = sock.send_to(&packet, MGMT_ADDR).await;
-    u32::try_from(counter & u64::from(u32::MAX)).ok()
+/// kernel echoes in its ack, or why nothing was sent.
+async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Result<u32, NotSentReason> {
+    let reply_to = reply_address(MGMT_ADDR).map_err(|_| NotSentReason::NoReplyAddress)?;
+    let counter = MGMT_COUNTER.next().ok_or(NotSentReason::KernelNotSeen)?;
+    let mut packet = [0u8; MAX_PACKET_LEN];
+    let len =
+        seal(key, counter, &reply_to, body, &mut packet).ok_or(NotSentReason::InvalidCommand)?;
+    let _ = sock.send_to(&packet[..len], MGMT_ADDR).await;
+    Ok(counter as u32)
 }
 use rand::Rng;
 use rand::SeedableRng;
@@ -215,13 +220,14 @@ pub async fn start_background_task(
                         }
                         let sent = match mgmt_body(&command) {
                             Some(body) => send_sealed(&socket_pool[0], &mgmt_key, &body).await,
-                            None => None,
+                            None => Err(NotSentReason::InvalidCommand),
                         };
-                        let status = if let Some(seq) = sent {
-                            pending.sent(seq, id, Instant::now());
-                            CommandStatus::Pending
-                        } else {
-                            CommandStatus::NotSent
+                        let status = match sent {
+                            Ok(seq) => {
+                                pending.sent(seq, id, Instant::now());
+                                CommandStatus::Pending
+                            }
+                            Err(reason) => CommandStatus::NotSent(reason),
                         };
                         let _ = events.send(UiEvent::CommandStatus { id, status });
                     }
@@ -721,7 +727,7 @@ mod tests {
     use super::*;
     use sec_core::security::alert::{AlertReason, alert_packet};
     use sec_core::security::mgmt::{ManagementMessageType, mgmt_packet};
-    use sec_core::security::mgmt_auth::{MgmtAuth, seal};
+    use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, seal, sealed_len};
 
     const TEST_KEY: [u8; 16] = *b"TEST-KEY-TEST!KE";
     const TEST_EPOCH: u32 = 0xABCD_1234;
@@ -731,9 +737,14 @@ mod tests {
     /// verify would mean the GUI is signing a packet the kernel will
     /// reject — which was the original C1 bug.
     fn seal_and_verify(body: &[u8]) -> Vec<u8> {
-        let mut packet = vec![0u8; 8 + body.len() + 8];
+        let mut packet = vec![0u8; sealed_len(body.len())];
         let counter = ((TEST_EPOCH as u64) << 32) | 1;
-        let n = seal(&TEST_KEY, counter, body, &mut packet).expect("seal into sized buffer");
+        let operator = OperatorAddr {
+            mac: [0x02, 0, 0, 0, 0, 0x01],
+            ip: [192, 168, 100, 1],
+        };
+        let n =
+            seal(&TEST_KEY, counter, &operator, body, &mut packet).expect("seal into sized buffer");
         let mut auth = MgmtAuth::new(TEST_KEY);
         auth.set_epoch(TEST_EPOCH);
         auth.verify(&packet[..n])

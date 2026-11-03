@@ -15,6 +15,7 @@ mod app;
 mod live;
 /// Per-namespace UDP sender pool for realistic multi-source traffic.
 mod netns;
+mod reply_addr;
 /// Background network task for kernel communication and traffic generation.
 mod traffic;
 /// Type definitions for statistics, log entries, and GUI commands.

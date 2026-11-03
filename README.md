@@ -145,7 +145,7 @@ TCP Xmas (FIN|URG|PSH) and null scans; x86 NOP sleds (a decaying score that reac
 
 ## Management Protocol
 
-Commands are UDP datagrams to port 1337 carrying `counter (u64) ‖ body ‖ SipHash-2-4 MAC (u64)`. The counter's high 32 bits are the kernel's per-boot epoch and the low 32 bits a strictly increasing sequence, so commands cannot be forged or replayed within or across boots. The key is set at build time (`KERNEL_MGMT_KEY`, or `.mgmt-key.local` created by `make dev-key`).
+Commands are UDP datagrams to port 1337 carrying `counter (u64) ‖ reply MAC (6 bytes) ‖ reply IPv4 (4 bytes) ‖ body ‖ SipHash-2-4 MAC (u64)`. The counter's high 32 bits are the kernel's per-boot epoch and the low 32 bits a strictly increasing sequence, so commands cannot be forged or replayed within or across boots. The reply address is where the kernel sends its reports from then on; it is signed rather than taken from the frame's headers, so a captured command re-sent from another host cannot redirect them. The dashboard signs its own address on the interface that routes to the kernel. The key is set at build time (`KERNEL_MGMT_KEY`, or `.mgmt-key.local` created by `make dev-key`).
 
 | Command | Undo |
 |---|---|
@@ -158,7 +158,7 @@ Every authenticated command is answered with an ack carrying its sequence number
 
 ### Reports
 
-Telemetry (every interval), alerts and acks go to UDP port 8888, broadcast until an operator has authenticated and unicast to that operator afterwards. Each is signed with a key derived from the management key, so it cannot be forged or replayed back to the kernel as a command:
+Telemetry (every interval), alerts and acks go to UDP port 8888, broadcast until an operator has authenticated and unicast afterwards to the reply address signed into the last accepted command. Each is signed with a key derived from the management key, so it cannot be forged or replayed back to the kernel as a command:
 
 `epoch (u32) ‖ sequence (u64) ‖ body ‖ SipHash-2-4 MAC (u64)`
 

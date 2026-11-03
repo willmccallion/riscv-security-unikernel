@@ -7,7 +7,7 @@ use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::{SynCookieSecret, checksum};
 use sec_core::security::alert::{AlertReason, alert_packet};
-use sec_core::security::mgmt_auth::seal;
+use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
 
 pub const KEY: [u8; 16] = *b"engine-test-key!";
@@ -120,8 +120,12 @@ pub fn icmp_echo(src_ip: [u8; 4], checksum_field: u16) -> Vec<u8> {
 /// A UDP frame to the mgmt port carrying `body` sealed under `seq`.
 pub fn mgmt(seq: u32, body: &[u8]) -> Vec<u8> {
     let counter = (u64::from(EPOCH) << 32) | u64::from(seq);
-    let mut sealed = vec![0u8; 16 + body.len()];
-    let n = seal(&KEY, counter, body, &mut sealed).unwrap();
+    let operator = OperatorAddr {
+        mac: PEER_MAC,
+        ip: PEER_IP,
+    };
+    let mut sealed = vec![0u8; sealed_len(body.len())];
+    let n = seal(&KEY, counter, &operator, body, &mut sealed).unwrap();
     udp(
         PEER_IP,
         40_000,

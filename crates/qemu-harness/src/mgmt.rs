@@ -4,7 +4,7 @@ use crate::{Kernel, frame};
 use anyhow::{Context, Result, bail};
 use sec_core::config::MANAGEMENT_PORT;
 use sec_core::security::mgmt_auth::parse_hex_key;
-use sec_core::security::mgmt_auth::{COUNTER_LEN, MAC_LEN, seal};
+use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
 use std::path::Path;
 use std::time::Duration;
@@ -66,8 +66,12 @@ impl MgmtClient {
     pub fn send(&mut self, kernel: &Kernel, body: &[u8]) -> Result<u32> {
         self.seq += 1;
         let counter = (u64::from(self.epoch) << 32) | u64::from(self.seq);
-        let mut sealed = vec![0u8; COUNTER_LEN + body.len() + MAC_LEN];
-        let Some(n) = seal(&self.key, counter, body, &mut sealed) else {
+        let host = OperatorAddr {
+            mac: frame::HOST_MAC,
+            ip: frame::HOST_IP,
+        };
+        let mut sealed = vec![0u8; sealed_len(body.len())];
+        let Some(n) = seal(&self.key, counter, &host, body, &mut sealed) else {
             bail!("sealed buffer too small");
         };
         kernel.send(&frame::udp_to_kernel(

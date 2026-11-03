@@ -3,12 +3,15 @@
 //! Every UDP packet to the management port carries:
 //!
 //! ```text
-//!   [counter: u64 BE][body: N bytes][mac: u64 BE]
+//!   [counter: u64 BE][reply MAC: 6][reply IP: 4][body: N bytes][mac: u64 BE]
 //! ```
 //!
 //! The kernel rejects any packet whose MAC does not match
-//! `SipHash-2-4(key, counter || body)` or whose counter is not valid
-//! for the current boot epoch. The 64-bit counter is split into:
+//! `SipHash-2-4(key, counter || reply MAC || reply IP || body)` or whose
+//! counter is not valid for the current boot epoch. The reply address is
+//! where the kernel sends its reports; because it is signed, re-sending a
+//! captured command from another address cannot redirect them. The 64-bit
+//! counter is split into:
 //!
 //! ```text
 //!   high 32 bits = boot epoch (set at kernel init from per-boot entropy)
@@ -28,29 +31,46 @@
 //!   not verify after the reboot, because the kernel's new epoch
 //!   differs from the one embedded in the captured counter.
 //!
-//! 64-bit MAC + 64-bit counter keeps the per-packet overhead at 16
-//! bytes — small enough to leave room for the actual command inside a
-//! standard MTU.
+//! The counter, reply address and MAC add 26 bytes to each command, which
+//! leaves room for the largest one inside a standard MTU.
 
 use crate::security::hash::{ct_eq, siphash24};
 use crate::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
 
 /// Width of the per-packet counter prefix, in bytes.
 pub const COUNTER_LEN: usize = 8;
+/// Width of the reply address after the counter: a MAC, then an IPv4 address.
+pub const REPLY_ADDR_LEN: usize = 6 + 4;
 /// Width of the per-packet MAC suffix, in bytes.
 pub const MAC_LEN: usize = 8;
-/// Smallest possible authenticated packet: counter + 1-byte body + MAC.
-pub const MIN_PACKET_LEN: usize = COUNTER_LEN + 1 + MAC_LEN;
+/// Smallest possible authenticated packet, with a one-byte body.
+pub const MIN_PACKET_LEN: usize = sealed_len(1);
 /// Length of the longest valid mgmt packet; anything longer is refused
 /// before hashing, which bounds the work each packet can cost.
-pub const MAX_PACKET_LEN: usize = COUNTER_LEN + MAX_PAYLOAD_LEN + MAC_LEN;
+pub const MAX_PACKET_LEN: usize = sealed_len(MAX_PAYLOAD_LEN);
+
+/// Length of the sealed packet for a body of `body_len` bytes.
+pub const fn sealed_len(body_len: usize) -> usize {
+    COUNTER_LEN + REPLY_ADDR_LEN + body_len + MAC_LEN
+}
+
+/// Where the operator wants the kernel's alerts, acks and telemetry sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperatorAddr {
+    /// Operator's Ethernet address.
+    pub mac: [u8; 6],
+    /// Operator's IPv4 address.
+    pub ip: [u8; 4],
+}
 
 /// An authenticated mgmt command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Verified<'a> {
     /// In-epoch sequence number the sender stamped on the command.
     pub seq: u32,
-    /// The command body, with counter and MAC stripped.
+    /// The address the sender signed for the kernel's reports.
+    pub reply_to: OperatorAddr,
+    /// The command body, with counter, reply address and MAC stripped.
     pub body: &'a [u8],
 }
 
@@ -141,9 +161,15 @@ impl MgmtAuth {
         }
 
         self.last_seq = seq;
+        let reply = &packet[COUNTER_LEN..COUNTER_LEN + REPLY_ADDR_LEN];
+        let reply_to = OperatorAddr {
+            mac: [reply[0], reply[1], reply[2], reply[3], reply[4], reply[5]],
+            ip: [reply[6], reply[7], reply[8], reply[9]],
+        };
         Some(Verified {
             seq,
-            body: &packet[COUNTER_LEN..mac_start],
+            reply_to,
+            body: &packet[COUNTER_LEN + REPLY_ADDR_LEN..mac_start],
         })
     }
 }
@@ -171,22 +197,31 @@ const fn hex_digit(c: u8) -> Option<u8> {
     }
 }
 
-/// Helper for senders: stamps `body` with `counter` and an authentic
-/// MAC, returning the wire-format byte length written into `out`.
+/// Helper for senders: stamps `body` with `counter`, the address the
+/// kernel should report to, and an authentic MAC, returning the
+/// wire-format byte length written into `out`.
 ///
-/// Returns `None` if `out` is too small to hold the authenticated
-/// packet. The kernel does not need this — it only verifies — but
-/// `sec_core` exposes it so the GUI and any future Linux daemon use
-/// the exact same construction.
-pub fn seal(key: &[u8; 16], counter: u64, body: &[u8], out: &mut [u8]) -> Option<usize> {
-    let total = COUNTER_LEN + body.len() + MAC_LEN;
-    if out.len() < total {
-        return None;
-    }
-    out[..COUNTER_LEN].copy_from_slice(&counter.to_be_bytes());
-    out[COUNTER_LEN..COUNTER_LEN + body.len()].copy_from_slice(body);
-    let mac = siphash24(key, &out[..COUNTER_LEN + body.len()]).to_be_bytes();
-    out[COUNTER_LEN + body.len()..total].copy_from_slice(&mac);
+/// Returns `None` if `out` is shorter than [`sealed_len`] of the body. The
+/// kernel does not need this — it only verifies — but `sec_core` exposes
+/// it so the GUI and any future Linux daemon use the exact same
+/// construction.
+pub fn seal(
+    key: &[u8; 16],
+    counter: u64,
+    reply_to: &OperatorAddr,
+    body: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let total = sealed_len(body.len());
+    let out = out.get_mut(..total)?;
+    let (signed, mac) = out.split_at_mut(total - MAC_LEN);
+    let (counter_bytes, rest) = signed.split_at_mut(COUNTER_LEN);
+    let (reply, body_bytes) = rest.split_at_mut(REPLY_ADDR_LEN);
+    counter_bytes.copy_from_slice(&counter.to_be_bytes());
+    reply[..6].copy_from_slice(&reply_to.mac);
+    reply[6..].copy_from_slice(&reply_to.ip);
+    body_bytes.copy_from_slice(body);
+    mac.copy_from_slice(&siphash24(key, signed).to_be_bytes());
     Some(total)
 }
 
@@ -195,6 +230,10 @@ mod tests {
     use super::*;
 
     const TEST_EPOCH: u32 = 0xCAFE_BABE;
+    const OPERATOR: OperatorAddr = OperatorAddr {
+        mac: [0x02, 0, 0, 0, 0, 0x01],
+        ip: [192, 168, 100, 1],
+    };
 
     fn counter(epoch: u32, seq: u32) -> u64 {
         ((epoch as u64) << 32) | (seq as u64)
@@ -234,19 +273,57 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x04, 10, 0, 0, 5];
         let mut packet = [0u8; 32];
-        let n = seal(&key, counter(TEST_EPOCH, 1), &body, &mut packet).unwrap();
+        let n = seal(&key, counter(TEST_EPOCH, 1), &OPERATOR, &body, &mut packet).unwrap();
         let got = auth.verify(&packet[..n]).expect("valid packet");
         assert_eq!(got.body, &body);
         assert_eq!(got.seq, 1);
     }
 
     #[test]
+    fn verify_returns_the_signed_reply_address() {
+        let (key, mut auth) = fixture();
+        let mut packet = [0u8; 32];
+        let n = seal(
+            &key,
+            counter(TEST_EPOCH, 1),
+            &OPERATOR,
+            &[0x01],
+            &mut packet,
+        )
+        .unwrap();
+
+        let got = auth.verify(&packet[..n]).expect("valid packet");
+
+        assert_eq!(got.reply_to, OPERATOR);
+    }
+
+    #[test]
+    fn verify_rejects_a_packet_whose_reply_address_was_changed() {
+        let (key, mut auth) = fixture();
+        let mut packet = [0u8; 32];
+        let n = seal(
+            &key,
+            counter(TEST_EPOCH, 1),
+            &OPERATOR,
+            &[0x01],
+            &mut packet,
+        )
+        .unwrap();
+        packet[COUNTER_LEN + REPLY_ADDR_LEN - 1] ^= 0x01;
+
+        let got = auth.verify(&packet[..n]);
+
+        assert!(got.is_none());
+    }
+
+    #[test]
     fn verify_rejects_unsigned_packet() {
         let (_, mut auth) = fixture();
         let body = [0x04, 10, 0, 0, 5];
-        let mut packet = [0u8; COUNTER_LEN + 5 + MAC_LEN];
+        let mut packet = [0u8; sealed_len(5)];
         packet[..COUNTER_LEN].copy_from_slice(&counter(TEST_EPOCH, 1).to_be_bytes());
-        packet[COUNTER_LEN..COUNTER_LEN + body.len()].copy_from_slice(&body);
+        let body_start = COUNTER_LEN + REPLY_ADDR_LEN;
+        packet[body_start..body_start + body.len()].copy_from_slice(&body);
         // MAC region left as all-zero
         assert!(auth.verify(&packet).is_none());
     }
@@ -256,7 +333,7 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x01, 0x00, 0x50];
         let mut packet = [0u8; 32];
-        let n = seal(&key, counter(TEST_EPOCH, 7), &body, &mut packet).unwrap();
+        let n = seal(&key, counter(TEST_EPOCH, 7), &OPERATOR, &body, &mut packet).unwrap();
         assert!(auth.verify(&packet[..n]).is_some());
         assert!(
             auth.verify(&packet[..n]).is_none(),
@@ -270,7 +347,14 @@ mod tests {
         let attacker_key = [0xAA; 16];
         let body = [0x04, 10, 0, 0, 5];
         let mut packet = [0u8; 32];
-        let n = seal(&attacker_key, counter(TEST_EPOCH, 1), &body, &mut packet).unwrap();
+        let n = seal(
+            &attacker_key,
+            counter(TEST_EPOCH, 1),
+            &OPERATOR,
+            &body,
+            &mut packet,
+        )
+        .unwrap();
         assert!(auth.verify(&packet[..n]).is_none());
     }
 
@@ -286,11 +370,18 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x01, 0x00, 0x50];
         let mut later = [0u8; 32];
-        let n_later = seal(&key, counter(TEST_EPOCH, 100), &body, &mut later).unwrap();
+        let n_later = seal(&key, counter(TEST_EPOCH, 100), &OPERATOR, &body, &mut later).unwrap();
         assert!(auth.verify(&later[..n_later]).is_some());
 
         let mut earlier = [0u8; 32];
-        let n_earlier = seal(&key, counter(TEST_EPOCH, 50), &body, &mut earlier).unwrap();
+        let n_earlier = seal(
+            &key,
+            counter(TEST_EPOCH, 50),
+            &OPERATOR,
+            &body,
+            &mut earlier,
+        )
+        .unwrap();
         assert!(auth.verify(&earlier[..n_earlier]).is_none());
     }
 
@@ -304,7 +395,7 @@ mod tests {
         let body = [0x01, 0x00, 0x50];
         let mut packet = [0u8; 32];
         let stale_epoch = TEST_EPOCH.wrapping_sub(1);
-        let n = seal(&key, counter(stale_epoch, 1), &body, &mut packet).unwrap();
+        let n = seal(&key, counter(stale_epoch, 1), &OPERATOR, &body, &mut packet).unwrap();
         assert!(auth.verify(&packet[..n]).is_none());
     }
 
@@ -315,13 +406,13 @@ mod tests {
         let (key, mut auth) = fixture();
         let body = [0x01];
         let mut packet = [0u8; 32];
-        let n = seal(&key, counter(TEST_EPOCH, 50), &body, &mut packet).unwrap();
+        let n = seal(&key, counter(TEST_EPOCH, 50), &OPERATOR, &body, &mut packet).unwrap();
         assert!(auth.verify(&packet[..n]).is_some());
 
         let new_epoch = TEST_EPOCH.wrapping_add(1);
         auth.set_epoch(new_epoch);
         let mut next = [0u8; 32];
-        let n2 = seal(&key, counter(new_epoch, 1), &body, &mut next).unwrap();
+        let n2 = seal(&key, counter(new_epoch, 1), &OPERATOR, &body, &mut next).unwrap();
         assert!(auth.verify(&next[..n2]).is_some());
     }
 }

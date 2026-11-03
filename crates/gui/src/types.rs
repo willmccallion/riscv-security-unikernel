@@ -5,11 +5,16 @@
 //! log entries, and command types.
 
 use eframe::egui;
+use sec_core::config::{IP_ADDR, MANAGEMENT_PORT};
 use sec_core::security::mgmt::MgmtOutcome;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::AtomicU64;
 
 /// UDP address for sending management commands to the security kernel.
-pub const MGMT_ADDR: &str = "192.168.100.2:1337";
+pub const MGMT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(
+    Ipv4Addr::new(IP_ADDR[0], IP_ADDR[1], IP_ADDR[2], IP_ADDR[3]),
+    MANAGEMENT_PORT,
+));
 
 /// Local address for receiving telemetry and alerts from the kernel.
 pub const LISTEN_ADDR: &str = "0.0.0.0:8888";
@@ -120,6 +125,18 @@ pub enum GuiCommand {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CommandId(pub u64);
 
+/// Why a mgmt command was not sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotSentReason {
+    /// The kernel would reject the command outright.
+    InvalidCommand,
+    /// No telemetry has announced the kernel's boot epoch yet.
+    KernelNotSeen,
+    /// No local interface address routes to the kernel, so there is
+    /// nowhere to ask it to send its reply.
+    NoReplyAddress,
+}
+
 /// What the GUI knows about a mgmt command it issued.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandStatus {
@@ -129,8 +146,8 @@ pub enum CommandStatus {
     Applied,
     /// The kernel refused it, for the given reason.
     Rejected(MgmtOutcome),
-    /// Not sent: no telemetry has announced the kernel's boot epoch yet.
-    NotSent,
+    /// Not sent, for the given reason.
+    NotSent(NotSentReason),
     /// Sent, but no ack arrived in time.
     NoAck,
 }

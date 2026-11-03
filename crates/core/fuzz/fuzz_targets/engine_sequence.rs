@@ -18,13 +18,14 @@ use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::mgmt::ack_packet;
 use sec_core::security::mgmt::ManagementMessageType;
-use sec_core::security::mgmt_auth::seal;
+use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
 
 const KEY: [u8; 16] = [0x5A; 16];
 const EPOCH: u32 = 7;
 const MAX_FRAME: usize = 1526;
 const OPERATOR_IP: [u8; 4] = [192, 168, 100, 1];
+const OPERATOR_MAC: [u8; 6] = [2, 0, 0, 0, 0, 1];
 
 #[derive(Debug, Arbitrary)]
 enum Step {
@@ -76,15 +77,19 @@ impl PacketSink for CheckedSink {
 
 fn sealed_mgmt_frame(seq: u32, body: &[u8]) -> Option<Vec<u8>> {
     let counter = (u64::from(EPOCH) << 32) | u64::from(seq);
-    let mut sealed = vec![0u8; 16 + body.len()];
-    let n = seal(&KEY, counter, body, &mut sealed)?;
+    let operator = OperatorAddr {
+        mac: OPERATOR_MAC,
+        ip: OPERATOR_IP,
+    };
+    let mut sealed = vec![0u8; sealed_len(body.len())];
+    let n = seal(&KEY, counter, &operator, body, &mut sealed)?;
     Some(udp_frame(OPERATOR_IP, 40_000, MANAGEMENT_PORT, &sealed[..n]))
 }
 
 fn udp_frame(src_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
     let mut f = vec![0u8; 42];
     f[0..6].copy_from_slice(&sec_core::config::MAC_ADDR);
-    f[6..12].copy_from_slice(&[2, 0, 0, 0, 0, 1]);
+    f[6..12].copy_from_slice(&OPERATOR_MAC);
     f[12..14].copy_from_slice(&[0x08, 0x00]);
     f[14] = 0x45;
     f[16..18].copy_from_slice(&((28 + payload.len()) as u16).to_be_bytes());

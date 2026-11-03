@@ -5,12 +5,12 @@
 //! Alerts carry a fixed-size metadata record and never echo inbound
 //! payload bytes, so the mgmt network is not a relay for attacker data.
 
-use super::OperatorAddr;
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::constants::{BROADCAST_MAC, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
 use crate::security::alert::{AlertMeta, AlertReason, alert_packet};
 use crate::security::mgmt::{MgmtOutcome, ack_packet};
+use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::report_auth::{self, telemetry_packet};
 
 /// IPv4 broadcast fallback used before the operator address is learned.

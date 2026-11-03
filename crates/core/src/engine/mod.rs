@@ -23,21 +23,13 @@ use crate::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::hash::{derive_key, siphash24};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
+use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
 use crate::security::{
     anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, scan, sketch, vm,
 };
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
-
-/// Where alerts and telemetry are sent once an operator has authenticated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OperatorAddr {
-    /// Operator's Ethernet address.
-    pub mac: [u8; 6],
-    /// Operator's IPv4 address.
-    pub ip: [u8; 4],
-}
 
 /// Per-boot secrets the engine needs before it processes traffic.
 #[derive(Debug)]
@@ -289,13 +281,6 @@ impl<
         let mut meta = AlertMeta::empty();
         meta.packet_len = packet.len().min(u16::MAX as usize) as u16;
 
-        let mut src_mac = [0u8; 6];
-        if packet.len() >= ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE {
-            src_mac.copy_from_slice(
-                &packet
-                    [ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
-            );
-        }
         let ip = match parse_ipv4(packet) {
             Ok(ip) => ip,
             Err(rejected) => return self.drop_rejected_ipv4(&rejected, &meta, now, sink),
@@ -310,7 +295,7 @@ impl<
             }
 
             if let Some(envelope) = mgmt_envelope(packet, ip, meta.dst_port) {
-                return self.handle_mgmt(envelope, src_mac, &meta, now, sink);
+                return self.handle_mgmt(envelope, &meta, now, sink);
             }
 
             let source_hash = siphash24(&self.source_key, &meta.src_ip);
@@ -415,11 +400,12 @@ impl<
     /// program or heuristic can cut the operator off. Every packet is
     /// MAC-checked, which the length cap in `MgmtAuth::verify` keeps cheap,
     /// so junk cannot crowd out a genuine command; only failures draw on
-    /// the mgmt token bucket, which limits their alerts.
+    /// the mgmt token bucket, which limits their alerts. Reports go to the
+    /// address signed into the command, never the frame's own headers, so a
+    /// captured command re-sent from elsewhere cannot redirect them.
     fn handle_mgmt<S: PacketSink>(
         &mut self,
         envelope: MgmtEnvelope<'_>,
-        src_mac: [u8; 6],
         meta: &AlertMeta,
         now: u64,
         sink: &mut S,
@@ -434,10 +420,7 @@ impl<
             }
             return Verdict::Management;
         };
-        self.operator = Some(OperatorAddr {
-            mac: src_mac,
-            ip: meta.src_ip,
-        });
+        self.operator = Some(command.reply_to);
         let outcome = self.dispatch_mgmt(command.body, now);
         self.send_ack(command.seq, command.body, outcome, sink);
         Verdict::Management
