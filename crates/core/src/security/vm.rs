@@ -35,6 +35,15 @@ pub enum Opcode {
     Jf = 0x0C,
     /// Return with action (0=drop, 1=pass).
     Ret = 0x0D,
+    /// Load four times the low nibble of the byte at `imm`: an IPv4
+    /// header's length when `imm` is its version/IHL byte.
+    Ldmsh = 0x0E,
+    /// Load byte at `imm + reg_b` into register.
+    Ldbx = 0x0F,
+    /// Load half-word (u16) at `imm + reg_b` into register.
+    Ldhx = 0x10,
+    /// Load word (u32) at `imm + reg_b` into register.
+    Ldwx = 0x11,
     /// No operation.
     Nop = 0x00,
 }
@@ -60,6 +69,10 @@ impl Opcode {
             0x0B => Some(Self::Jt),
             0x0C => Some(Self::Jf),
             0x0D => Some(Self::Ret),
+            0x0E => Some(Self::Ldmsh),
+            0x0F => Some(Self::Ldbx),
+            0x10 => Some(Self::Ldhx),
+            0x11 => Some(Self::Ldwx),
             _ => None,
         }
     }
@@ -251,6 +264,10 @@ impl VM {
                 Some(Opcode::Ldb) => self.regs[a] = load_be::<1>(packet, imm),
                 Some(Opcode::Ldh) => self.regs[a] = load_be::<2>(packet, imm),
                 Some(Opcode::Ldw) => self.regs[a] = load_be::<4>(packet, imm),
+                Some(Opcode::Ldmsh) => self.regs[a] = 4 * (load_be::<1>(packet, imm) & 0x0F),
+                Some(Opcode::Ldbx) => self.regs[a] = load_indexed::<1>(packet, imm, self.regs[b]),
+                Some(Opcode::Ldhx) => self.regs[a] = load_indexed::<2>(packet, imm, self.regs[b]),
+                Some(Opcode::Ldwx) => self.regs[a] = load_indexed::<4>(packet, imm, self.regs[b]),
                 Some(Opcode::Ldi) => self.regs[a] = u64::from(imm),
                 Some(Opcode::Mov) => self.regs[a] = self.regs[b],
                 Some(Opcode::Eq) => self.flag = self.regs[a] == self.regs[b],
@@ -275,6 +292,18 @@ impl VM {
         } else {
             Err(VmRuntimeError::Timeout)
         }
+    }
+}
+
+/// Reads `N` big-endian bytes at `offset + index`, or 0 if any are out of
+/// bounds.
+fn load_indexed<const N: usize>(packet: &[u8], offset: u32, index: u64) -> u64 {
+    match u32::try_from(index)
+        .ok()
+        .and_then(|index| offset.checked_add(index))
+    {
+        Some(offset) => load_be::<N>(packet, offset),
+        None => 0,
     }
 }
 

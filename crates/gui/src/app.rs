@@ -974,8 +974,7 @@ fn format_metric(val: u64) -> String {
 /// Supports a limited instruction set for packet filtering:
 /// - `DROP ALL` - Drops all packets
 /// - `BLOCK <TCP|UDP> DST <port>` - Drops packets of that protocol to a
-///   destination port. Assumes a 20-byte IPv4 header; the VM has no
-///   indirect loads to skip IP options.
+///   destination port, wherever IPv4 options place the transport header.
 ///
 /// # Arguments
 ///
@@ -986,9 +985,11 @@ fn format_metric(val: u64) -> String {
 /// Some bytecode vector if compilation succeeds, None otherwise.
 fn compile_bpf(code: &str) -> Option<Vec<u8>> {
     const PROTOCOL_OFFSET: u32 = 23;
-    const DST_PORT_OFFSET: u32 = 36;
-    const PASS_INDEX: u32 = 8;
-    const DROP_INDEX: u32 = 9;
+    const VERSION_IHL_OFFSET: u32 = 14;
+    /// The destination port's offset past the IPv4 header.
+    const DST_PORT_AFTER_IP_HEADER: u32 = 14 + 2;
+    const PASS_INDEX: u32 = 9;
+    const DROP_INDEX: u32 = 10;
 
     if code.trim() == "DROP ALL" {
         return Some(encode(Opcode::Ret, 0, 0, 0).to_vec());
@@ -1013,7 +1014,8 @@ fn compile_bpf(code: &str) -> Option<Vec<u8>> {
         encode(Opcode::Ldi, 1, 0, protocol as u32),
         encode(Opcode::Eq, 0, 1, 0),
         encode(Opcode::Jf, 0, 0, PASS_INDEX),
-        encode(Opcode::Ldh, 2, 0, DST_PORT_OFFSET),
+        encode(Opcode::Ldmsh, 4, 0, VERSION_IHL_OFFSET),
+        encode(Opcode::Ldhx, 2, 4, DST_PORT_AFTER_IP_HEADER),
         encode(Opcode::Ldi, 3, 0, u32::from(port)),
         encode(Opcode::Eq, 2, 3, 0),
         encode(Opcode::Jt, 0, 0, DROP_INDEX),
@@ -1051,11 +1053,18 @@ mod tests {
     }
 
     fn frame(protocol: IpProtocol, dst_port: u16) -> Vec<u8> {
-        let mut f = vec![0u8; 60];
+        frame_with_ip_header_words(protocol, dst_port, 5)
+    }
+
+    /// A frame whose IPv4 header is `words` four-byte words long, so any
+    /// beyond five are options.
+    fn frame_with_ip_header_words(protocol: IpProtocol, dst_port: u16, words: u8) -> Vec<u8> {
+        let port_at = 14 + usize::from(words) * 4 + 2;
+        let mut f = vec![0u8; port_at + 20];
         f[12] = 0x08;
-        f[14] = 0x45;
+        f[14] = 0x40 | words;
         f[23] = protocol as u8;
-        f[36..38].copy_from_slice(&dst_port.to_be_bytes());
+        f[port_at..port_at + 2].copy_from_slice(&dst_port.to_be_bytes());
         f
     }
 
@@ -1072,6 +1081,26 @@ mod tests {
         let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Tcp, 80));
 
         assert_eq!(action, VmAction::Drop);
+    }
+
+    #[test]
+    fn block_drops_a_matching_port_behind_ip_options() {
+        for words in [6, 15] {
+            let packet = frame_with_ip_header_words(IpProtocol::Tcp, 80, words);
+
+            let action = run("BLOCK TCP DST 80", &packet);
+
+            assert_eq!(action, VmAction::Drop, "IPv4 header of {words} words");
+        }
+    }
+
+    #[test]
+    fn block_passes_another_port_behind_ip_options() {
+        let packet = frame_with_ip_header_words(IpProtocol::Tcp, 443, 6);
+
+        let action = run("BLOCK TCP DST 80", &packet);
+
+        assert_eq!(action, VmAction::Pass);
     }
 
     #[test]

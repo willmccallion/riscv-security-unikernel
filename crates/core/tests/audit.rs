@@ -28,7 +28,7 @@ use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::heuristic::HeuristicEngine;
 use sec_core::security::mgmt_auth::{MgmtAuth, seal};
 use sec_core::security::vm::{
-    Instruction, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
+    Instruction, Opcode, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
 };
 
 /// Captures every frame the stack hands to its sink so tests can
@@ -635,6 +635,63 @@ fn vm_reports_missing_return_when_execution_runs_off_the_end() {
     let action = VM::new().execute(&prog, &[0u8; 64]);
 
     assert_eq!(action, Err(VmRuntimeError::MissingReturn));
+}
+
+/// Runs `prog` and reports whether register 0 came out equal to `expected`:
+/// the program ends by comparing r0 with an immediate.
+fn r0_equals(prog: &[Instruction], packet: &[u8], expected: u32) -> bool {
+    let mut checked = prog.to_vec();
+    checked.extend([
+        Instruction::new(0x04, 1, 0, expected),
+        Instruction::new(0x06, 0, 1, 0),
+        Instruction::new(0x0B, 0, 0, checked.len() as u32 + 4),
+        Instruction::new(0x0D, 0, 0, 0),
+        Instruction::new(0x0D, 0, 0, 1),
+    ]);
+    VM::new().execute(&checked, packet) == Ok(VmAction::Pass)
+}
+
+/// `Ldmsh` reads an IPv4 header length the way classic BPF does: four
+/// times the low nibble of the byte at its offset.
+#[test]
+fn vm_ldmsh_loads_four_times_the_low_nibble() {
+    let mut packet = [0u8; 20];
+    packet[14] = 0x46;
+
+    let prog = [Instruction::new(Opcode::Ldmsh as u8, 0, 0, 14)];
+
+    assert!(r0_equals(&prog, &packet, 24));
+}
+
+#[test]
+fn vm_indexed_loads_add_the_index_register_to_the_offset() {
+    let packet: Vec<u8> = (0..32).collect();
+    for (op, expected) in [
+        (Opcode::Ldbx, 0x0B),
+        (Opcode::Ldhx, 0x0B0C),
+        (Opcode::Ldwx, 0x0B0C_0D0E),
+    ] {
+        let prog = [
+            Instruction::new(0x04, 2, 0, 8),
+            Instruction::new(op as u8, 0, 2, 3),
+        ];
+
+        assert!(r0_equals(&prog, &packet, expected), "{op:?}");
+    }
+}
+
+/// An index that pushes the offset past the packet loads 0, like any other
+/// out-of-bounds load.
+#[test]
+fn vm_indexed_load_past_the_packet_loads_zero() {
+    let packet = [0xFFu8; 16];
+    let prog = [
+        Instruction::new(0x04, 0, 0, 0xAA),
+        Instruction::new(0x04, 2, 0, u32::MAX),
+        Instruction::new(Opcode::Ldwx as u8, 0, 2, u32::MAX),
+    ];
+
+    assert!(r0_equals(&prog, &packet, 0));
 }
 
 /// Ret 0 → Drop, Ret 1 → Pass, round-trip both.
