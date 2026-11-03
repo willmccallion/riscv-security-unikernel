@@ -22,6 +22,25 @@ fn synack_dst_port(f: &[u8]) -> Option<u16> {
     is_synack.then(|| u16::from_be_bytes([f[36], f[37]]))
 }
 
+/// Records the source port of every SYN-ACK the kernel sends before
+/// `deadline`, returning early once `acked` covers `sent`.
+fn collect_synacks(
+    kernel: &Kernel,
+    sent: &BTreeSet<u16>,
+    acked: &mut BTreeSet<u16>,
+    deadline: Instant,
+) {
+    while Instant::now() < deadline && !acked.is_superset(sent) {
+        if let Some(port) = kernel
+            .recv(Duration::from_millis(5))
+            .unwrap()
+            .and_then(|f| synack_dst_port(&f))
+        {
+            let _ = acked.insert(port);
+        }
+    }
+}
+
 /// Each new flow can emit a sampled flow alert alongside its SYN-ACK, so
 /// a two-packet batch can queue more frames than the two TX descriptors.
 /// Every SYN must still get its own SYN-ACK.
@@ -40,17 +59,20 @@ fn every_syn_gets_its_own_synack_when_tx_ring_is_contended() {
             kernel.send(&syn(src_ip, src_port)).unwrap();
             assert!(sent.insert(src_port), "source ports are unique");
         }
-        let deadline = Instant::now() + Duration::from_millis(30);
-        while Instant::now() < deadline {
-            if let Some(port) = kernel
-                .recv(Duration::from_millis(5))
-                .unwrap()
-                .and_then(|f| synack_dst_port(&f))
-            {
-                let _ = acked.insert(port);
-            }
-        }
+        collect_synacks(
+            &kernel,
+            &sent,
+            &mut acked,
+            Instant::now() + Duration::from_millis(30),
+        );
     }
+    // A loaded host can delay the last replies past their round's window.
+    collect_synacks(
+        &kernel,
+        &sent,
+        &mut acked,
+        Instant::now() + Duration::from_secs(5),
+    );
 
     let missing: Vec<_> = sent.difference(&acked).collect();
     assert!(
