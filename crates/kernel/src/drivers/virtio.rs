@@ -6,7 +6,7 @@
 //! Ethernet frames.
 
 use crate::{kprint, kprintln};
-use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::sync::atomic::{Ordering, fence};
 
 /// Starting address for VirtIO device probe.
@@ -142,9 +142,6 @@ static mut RX_IDX: u16 = 0;
 /// Base address of the active VirtIO device.
 static mut ACTIVE_BASE: usize = 0;
 
-/// Last received descriptor ID for buffer recycling.
-static mut LAST_RX_ID: u16 = 0;
-
 /// VirtIO network device driver.
 ///
 /// Provides methods for initializing the device, receiving packets,
@@ -187,17 +184,19 @@ impl VirtioNet {
         Self::reg_write(STATUS, 0x01 | 0x02 | 0x08);
 
         // SAFETY: RX_QUEUE and RX_BUFFERS are statics only accessed from this
-        // single-threaded kernel, so the descriptors' buffer addresses stay valid.
+        // single-threaded kernel, so the descriptors' buffer addresses stay
+        // valid; the device reads these fields, so they are written volatile.
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
-            let slots = (*rx).desc.iter_mut().zip((*rx).avail.ring.iter_mut());
-            for (id, (desc, ring_slot)) in slots.enumerate() {
-                desc.addr = addr_of_mut!(RX_BUFFERS[id]) as u64;
-                desc.len = BUF_SIZE as u32;
-                desc.flags = 2;
-                *ring_slot = id as u16;
+            let buffers = addr_of_mut!(RX_BUFFERS).cast::<[u8; BUF_SIZE]>();
+            for id in 0..QUEUE_SIZE {
+                let desc = addr_of_mut!((*rx).desc[id]);
+                write_volatile(addr_of_mut!((*desc).addr), buffers.add(id) as u64);
+                write_volatile(addr_of_mut!((*desc).len), BUF_SIZE as u32);
+                write_volatile(addr_of_mut!((*desc).flags), 2);
+                write_volatile(addr_of_mut!((*rx).avail.ring[id]), id as u16);
             }
-            (*rx).avail.idx = QUEUE_SIZE as u16;
+            write_volatile(addr_of_mut!((*rx).avail.idx), QUEUE_SIZE as u16);
         }
 
         Self::reg_write(0x028, GUEST_PAGE);
@@ -230,66 +229,68 @@ impl VirtioNet {
         unsafe { write_volatile((ACTIVE_BASE + offset) as *mut u32, val) }
     }
 
-    /// Attempts to receive a packet from the network device.
+    /// Lends the next received frame to `handle`, then gives its buffer
+    /// back to the device.
     ///
-    /// Checks the used ring for new packets and returns a mutable
-    /// slice to the packet data if available. The caller must call
-    /// `recycle_rx_buffer()` after processing the packet.
-    ///
-    /// # Returns
-    ///
-    /// Some mutable slice to packet data if a packet is available,
-    /// None otherwise.
-    pub fn try_receive() -> Option<&'static mut [u8]> {
-        // SAFETY: RX_QUEUE is a mutable static only accessed from this single-threaded polling
-        // loop. Volatile reads ensure we see device-written values. The ring index is masked
-        // to QUEUE_SIZE.
-        unsafe {
-            let rx = addr_of_mut!(RX_QUEUE);
-            let used_idx = read_volatile(addr_of_mut!((*rx).used.idx));
-            if used_idx != RX_IDX {
-                fence(Ordering::SeqCst);
-                let ring_idx = RX_IDX as usize % QUEUE_SIZE;
-                let id = (*rx).used.ring[ring_idx].id as usize;
-                let len = (*rx).used.ring[ring_idx].len as usize;
-
-                RX_IDX = RX_IDX.wrapping_add(1);
-                // An id we never posted has no buffer to hand back.
-                if id >= QUEUE_SIZE {
-                    return None;
-                }
-                LAST_RX_ID = id as u16;
-
-                // A runt (header only) or a length past the end of our
-                // buffer carries no usable frame; return the buffer to the
-                // device so the two-descriptor ring cannot run dry.
-                if len <= NET_HDR_SIZE || len > BUF_SIZE {
-                    Self::recycle_rx_buffer();
-                    return None;
-                }
-
-                let buf_ptr = addr_of_mut!(RX_BUFFERS[id]).cast::<u8>();
-                let data_ptr = buf_ptr.add(NET_HDR_SIZE);
-                let data_len = len - NET_HDR_SIZE;
-                return Some(core::slice::from_raw_parts_mut(data_ptr, data_len));
-            }
+    /// Returns `None` if no frame is waiting or the device returned one with
+    /// no usable frame, which is dropped. The frame cannot outlive `handle`,
+    /// so its buffer is never in use while the device owns it again.
+    pub fn receive<R>(handle: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+        let (id, len) = Self::next_used_rx()?;
+        // An id we never posted has no buffer to hand back.
+        if id >= QUEUE_SIZE {
+            return None;
         }
-        None
+        // A runt (header only) or a length past the end of our buffer
+        // carries no usable frame.
+        let result = (NET_HDR_SIZE < len && len <= BUF_SIZE).then(|| {
+            // SAFETY: the device has returned buffer `id`, and it is not
+            // reposted until `recycle_rx_buffer` below, so nothing else
+            // touches these `len - NET_HDR_SIZE` bytes while `handle` runs.
+            let frame = unsafe {
+                let buf = addr_of_mut!(RX_BUFFERS[id]).cast::<u8>();
+                core::slice::from_raw_parts_mut(buf.add(NET_HDR_SIZE), len - NET_HDR_SIZE)
+            };
+            handle(frame)
+        });
+        Self::recycle_rx_buffer(id);
+        result
     }
 
-    /// Recycles a receive buffer back to the available ring.
-    ///
-    /// This must be called after processing a packet received from
-    /// `try_receive()` to return the buffer to the device for reuse.
-    pub fn recycle_rx_buffer() {
-        // SAFETY: RX_QUEUE is a mutable static only accessed from this single-threaded kernel.
-        // The ring index is masked to QUEUE_SIZE.
+    /// The descriptor id and length of the next buffer the device returned,
+    /// consuming that used-ring entry.
+    fn next_used_rx() -> Option<(usize, usize)> {
+        // SAFETY: RX_QUEUE and RX_IDX are statics only accessed from this
+        // single-threaded polling loop; the device writes the used ring, so
+        // it is read volatile, and the ring index is masked to QUEUE_SIZE.
+        unsafe {
+            let rx = addr_of!(RX_QUEUE);
+            if read_volatile(addr_of!((*rx).used.idx)) == RX_IDX {
+                return None;
+            }
+            fence(Ordering::SeqCst);
+            let elem = addr_of!((*rx).used.ring[RX_IDX as usize % QUEUE_SIZE]);
+            let id = read_volatile(addr_of!((*elem).id)) as usize;
+            let len = read_volatile(addr_of!((*elem).len)) as usize;
+            RX_IDX = RX_IDX.wrapping_add(1);
+            Some((id, len))
+        }
+    }
+
+    /// Posts receive buffer `id` back to the device.
+    fn recycle_rx_buffer(id: usize) {
+        // SAFETY: RX_QUEUE is a mutable static only accessed from this
+        // single-threaded kernel; the device reads the available ring, so it
+        // is written volatile, and the ring index is masked to QUEUE_SIZE.
         unsafe {
             let rx = addr_of_mut!(RX_QUEUE);
-            let idx = (*rx).avail.idx;
-            (*rx).avail.ring[idx as usize % QUEUE_SIZE] = LAST_RX_ID;
+            let idx = read_volatile(addr_of!((*rx).avail.idx));
+            write_volatile(
+                addr_of_mut!((*rx).avail.ring[idx as usize % QUEUE_SIZE]),
+                id as u16,
+            );
             fence(Ordering::SeqCst);
-            (*rx).avail.idx = idx.wrapping_add(1);
+            write_volatile(addr_of_mut!((*rx).avail.idx), idx.wrapping_add(1));
         }
     }
 
@@ -314,11 +315,12 @@ impl VirtioNet {
             return;
         }
         // SAFETY: TX_QUEUE is a mutable static only accessed from this single-threaded kernel.
-        // Volatile writes and fences ensure the device sees the descriptor before the available
+        // Volatile writes and a fence ensure the device sees the descriptor before the available
         // index is updated.
         unsafe {
             let tx = addr_of_mut!(TX_QUEUE);
-            let idx = (*tx).avail.idx as usize % QUEUE_SIZE;
+            let avail_idx = read_volatile(addr_of!((*tx).avail.idx));
+            let idx = avail_idx as usize % QUEUE_SIZE;
 
             let buf_ptr = addr_of_mut!(TX_BUFFERS[idx]).cast::<u8>();
 
@@ -330,13 +332,17 @@ impl VirtioNet {
                 packet.len(),
             );
 
-            (*tx).desc[idx].addr = buf_ptr as u64;
-            (*tx).desc[idx].len = (NET_HDR_SIZE + packet.len()) as u32;
-            (*tx).desc[idx].flags = 0;
-            (*tx).avail.ring[idx] = idx as u16;
+            let desc = addr_of_mut!((*tx).desc[idx]);
+            write_volatile(addr_of_mut!((*desc).addr), buf_ptr as u64);
+            write_volatile(
+                addr_of_mut!((*desc).len),
+                (NET_HDR_SIZE + packet.len()) as u32,
+            );
+            write_volatile(addr_of_mut!((*desc).flags), 0);
+            write_volatile(addr_of_mut!((*tx).avail.ring[idx]), idx as u16);
 
             fence(Ordering::SeqCst);
-            (*tx).avail.idx = (*tx).avail.idx.wrapping_add(1);
+            write_volatile(addr_of_mut!((*tx).avail.idx), avail_idx.wrapping_add(1));
         }
     }
 
@@ -365,8 +371,8 @@ impl VirtioNet {
         // read volatile.
         unsafe {
             let tx = addr_of_mut!(TX_QUEUE);
-            let used = read_volatile(addr_of_mut!((*tx).used.idx));
-            (*tx).avail.idx.wrapping_sub(used) as usize
+            let used = read_volatile(addr_of!((*tx).used.idx));
+            read_volatile(addr_of!((*tx).avail.idx)).wrapping_sub(used) as usize
         }
     }
 

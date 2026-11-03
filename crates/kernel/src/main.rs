@@ -190,12 +190,11 @@ pub extern "C" fn kmain() -> ! {
 
         let mut work_done = false;
         for _ in 0..BATCH_SIZE {
-            let Some(packet) = NetDevice::try_receive() else {
+            let processed = NetDevice::receive(|packet| engine.process(packet, now, &mut sink));
+            if processed.is_none() {
                 break;
-            };
+            }
             work_done = true;
-            let _ = engine.process(packet, now, &mut sink);
-            NetDevice::recycle_rx_buffer();
         }
 
         if work_done {
