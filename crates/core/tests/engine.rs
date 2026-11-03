@@ -264,3 +264,71 @@ fn a_sudden_surge_of_distinct_sources_is_reported_once() {
         .count();
     assert_eq!(surges, 1);
 }
+
+/// Bytes 20-21 of the frame: the IPv4 flags and fragment offset.
+fn with_flags_and_fragment_offset(mut frame: Vec<u8>, field: u16) -> Vec<u8> {
+    frame[20..22].copy_from_slice(&field.to_be_bytes());
+    frame
+}
+
+#[test]
+fn ipv4_header_shorter_than_twenty_bytes_is_dropped_as_malformed() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut frame = udp(PEER_IP, 5000, 80, b"hello");
+    frame[14] = 0x44;
+    frame[16..18].copy_from_slice(&DEFAULT_BLOCKED_PORT.to_be_bytes());
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::MalformedIp));
+}
+
+#[test]
+fn ipv4_version_other_than_four_is_dropped_as_malformed() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut frame = udp(PEER_IP, 5000, 80, b"hello");
+    frame[14] = 0x65;
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::MalformedIp));
+}
+
+#[test]
+fn non_first_fragment_is_dropped() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut frame = with_flags_and_fragment_offset(udp(PEER_IP, 5000, 80, b"hello"), 100);
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::IpFragment));
+}
+
+#[test]
+fn first_fragment_is_dropped() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let more_fragments = 0x2000;
+    let mut frame =
+        with_flags_and_fragment_offset(udp(PEER_IP, 5000, 80, b"hello"), more_fragments);
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::IpFragment));
+}
+
+#[test]
+fn dont_fragment_flag_alone_does_not_make_a_fragment() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let dont_fragment = 0x4000;
+    let mut frame =
+        with_flags_and_fragment_offset(udp(PEER_IP, 5000, 80, b"GET / HTTP/1.1"), dont_fragment);
+
+    let v = e.process(&mut frame, 1, &mut sink);
+
+    assert_eq!(v, Verdict::Passed);
+}

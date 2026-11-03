@@ -50,6 +50,7 @@ Every received frame goes through `sec_core::engine::Engine::process`, which is 
 ```mermaid
 flowchart TD
     RX["VirtIO RX"]
+    IP{"IPv4 fragment or<br/>malformed header?"}
     MG{"UDP to :1337?"}
     ML["Length cap → MAC + replay check<br/>→ apply command → signed ack"]
     PB["① Penalty box → source, subnet and port-scan detectors<br/>ban hosts above ~100 pps, /24s above 1,000, /16s above 5,000,<br/>and hosts trying ~64 ports in five seconds"]
@@ -64,7 +65,9 @@ flowchart TD
     PASS["Counted as passed"]
     DROP["Dropped + rate-limited signed alert"]
 
-    RX --> MG
+    RX --> IP
+    IP -->|yes| DROP
+    IP -->|no| MG
     MG -->|yes| ML
     MG -->|no| PB
     PB -->|banned, flood or scan| DROP
@@ -276,7 +279,7 @@ Press `Ctrl+B X` to exit QEMU.
 This is a demonstration of the techniques, not a production security appliance:
 
 - **Nothing is protected inline.** The kernel and the daemon inspect traffic addressed to their own address (192.168.100.2, compiled in) and report verdicts; they do not forward or filter traffic for other hosts.
-- **DPI is shallow.** Signatures are matched case-sensitively within single packets, with no TCP stream or IP fragment reassembly, so splitting or re-encoding a payload evades them, and encrypted traffic is opaque.
+- **DPI is shallow.** Signatures are matched case-sensitively within single packets, with no TCP stream reassembly, so splitting a payload across segments or re-encoding it evades them, and encrypted traffic is opaque. IPv4 fragments, which the kernel cannot reassemble, are dropped rather than inspected.
 - **Tables are sized for 64 KB.** 74 flows, 16 bans, and in the kernel a heavy-hitter sketch that starts banning legitimate sources somewhere between 200k and 500k packets per second of total traffic.
 - **Scan detection is partial.** UDP scans and scans slower than about 64 ports per five seconds go unnoticed, and with 100k sources per window half of 100-port scans are missed.
 - **IPv4 only**, no VLANs, no runtime configuration; thresholds are in CPU cycles.

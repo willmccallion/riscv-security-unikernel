@@ -295,7 +295,10 @@ impl<
                     [ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE],
             );
         }
-        let ip = parse_ipv4(packet);
+        let ip = match parse_ipv4(packet) {
+            Ok(ip) => ip,
+            Err(rejected) => return self.drop_rejected_ipv4(&rejected, &meta, now, sink),
+        };
         if let Some(ip) = &ip {
             meta.src_ip = ip.src_ip;
             meta.dst_ip = ip.dst_ip;
@@ -493,6 +496,22 @@ impl<
         if is_new && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0 {
             self.alert(meta, AlertReason::Flow, now, sink);
         }
+    }
+
+    fn drop_rejected_ipv4<S: PacketSink>(
+        &mut self,
+        rejected: &RejectedIpv4,
+        meta: &AlertMeta,
+        now: u64,
+        sink: &mut S,
+    ) -> Verdict {
+        let alert = AlertMeta {
+            src_ip: rejected.src_ip,
+            dst_ip: rejected.dst_ip,
+            protocol: rejected.protocol,
+            ..*meta
+        };
+        self.drop_with_alert(&alert, rejected.reason, now, sink)
     }
 
     fn drop_with_alert<S: PacketSink>(
@@ -709,20 +728,58 @@ struct Ipv4Fields {
     l4_offset: usize,
 }
 
-/// Reads the IPv4 header of an Ethernet frame, or `None` if the frame is
-/// not IPv4 or too short to hold a minimal header.
-fn parse_ipv4(packet: &[u8]) -> Option<Ipv4Fields> {
-    let header = packet.get(ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE)?;
+/// An IPv4 packet the engine drops without inspecting it, and why.
+#[derive(Debug, Clone, Copy)]
+struct RejectedIpv4 {
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    protocol: u8,
+    reason: AlertReason,
+}
+
+/// Reads the IPv4 header of an Ethernet frame: `Ok(None)` if the frame is
+/// not IPv4 or too short to hold a minimal header, `Err` if it is a
+/// fragment or its version or header length is invalid.
+fn parse_ipv4(packet: &[u8]) -> Result<Option<Ipv4Fields>, RejectedIpv4> {
+    let Some(header) = packet.get(ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE)
+    else {
+        return Ok(None);
+    };
     if packet[ethernet::TYPE_OFFSET..ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE] != [0x08, 0x00] {
-        return None;
+        return Ok(None);
+    }
+    let src_ip = [header[12], header[13], header[14], header[15]];
+    let dst_ip = [header[16], header[17], header[18], header[19]];
+    let protocol = header[9];
+    let flags_fragment = u16::from_be_bytes([header[6], header[7]]);
+    if let Some(reason) = ipv4_rejection(header[0], flags_fragment) {
+        return Err(RejectedIpv4 {
+            src_ip,
+            dst_ip,
+            protocol,
+            reason,
+        });
     }
     let ihl = usize::from(header[0] & ipv4::IHL_MASK) * 4;
-    Some(Ipv4Fields {
-        src_ip: [header[12], header[13], header[14], header[15]],
-        dst_ip: [header[16], header[17], header[18], header[19]],
-        protocol: header[9],
+    Ok(Some(Ipv4Fields {
+        src_ip,
+        dst_ip,
+        protocol,
         l4_offset: ipv4::HEADER_OFFSET + ihl,
-    })
+    }))
+}
+
+/// Why an IPv4 header with this version/IHL byte and flags/fragment field
+/// cannot be inspected, if it cannot.
+const fn ipv4_rejection(version_ihl: u8, flags_fragment: u16) -> Option<AlertReason> {
+    const MIN_IHL_WORDS: u8 = 5;
+    if version_ihl >> 4 != 4 || version_ihl & ipv4::IHL_MASK < MIN_IHL_WORDS {
+        Some(AlertReason::MalformedIp)
+    } else if flags_fragment & ipv4::FRAGMENT_MASK != 0 {
+        Some(AlertReason::IpFragment)
+    } else {
+        None
+    }
 }
 
 /// Source and destination ports, for TCP and UDP only: other protocols

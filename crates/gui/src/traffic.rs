@@ -536,6 +536,14 @@ fn parse_alert(data: &[u8]) -> LogEntry {
             format!("[BPF INVALID] Installed program returned unknown action from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
         ),
+        Some(AlertReason::MalformedIp) => (
+            format!("[MALFORMED] Invalid IPv4 header from {ip}"),
+            egui::Color32::from_rgb(255, 0, 255),
+        ),
+        Some(AlertReason::IpFragment) => (
+            format!("[FRAGMENT] IPv4 fragment dropped from {ip}"),
+            egui::Color32::from_rgb(255, 0, 255),
+        ),
         None => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };
 

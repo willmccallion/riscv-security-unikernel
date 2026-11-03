@@ -117,6 +117,10 @@ pub mod ipv4 {
     pub const HEADER_OFFSET: usize = 14;
     /// Offset to IP version and IHL field (byte 14).
     pub const VERSION_IHL_OFFSET: usize = 14;
+    /// Bits of the flags and fragment offset field set on any fragment: More
+    /// Fragments and the 13-bit fragment offset. Don't Fragment alone does
+    /// not make a fragment.
+    pub const FRAGMENT_MASK: u16 = 0x3FFF;
     /// Offset to protocol field (byte 23).
     pub const PROTOCOL_OFFSET: usize = 23;
     /// Offset to source IP address (bytes 26-29).

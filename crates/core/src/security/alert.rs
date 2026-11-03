@@ -48,6 +48,13 @@ pub enum AlertReason {
     /// A source opened connections to many distinct ports within one
     /// window and was banned. The value is the distinct ports counted.
     PortScan = 15,
+    /// An IPv4 header whose version is not 4 or whose length is under 20
+    /// bytes. The packet is dropped unread.
+    MalformedIp = 16,
+    /// An IPv4 fragment. The kernel cannot reassemble, and inspecting the
+    /// pieces alone would let a header or signature split across them slip
+    /// past the firewall and DPI, so every fragment is dropped.
+    IpFragment = 17,
 }
 
 impl AlertReason {
@@ -83,6 +90,8 @@ impl AlertReason {
             13 => Some(Self::SourceSurge),
             14 => Some(Self::SubnetFlood),
             15 => Some(Self::PortScan),
+            16 => Some(Self::MalformedIp),
+            17 => Some(Self::IpFragment),
             _ => None,
         }
     }
