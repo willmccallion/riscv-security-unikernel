@@ -116,9 +116,10 @@ impl EntropySource for McycleSource {
 /// whether they got real entropy or fell back to `mcycle`.
 #[derive(Default, Debug)]
 pub struct GatherReport {
-    /// `true` if Zkr was compiled in, attempted, and produced any bytes.
+    /// `true` if Zkr was compiled in and filled every requested byte.
     pub zkr: bool,
-    /// `true` if a virtio-rng device was present and produced any bytes.
+    /// `true` if a virtio-rng device was present and filled every
+    /// requested byte.
     pub virtio_rng: bool,
     /// Always `true` — mcycle is unconditionally mixed in last.
     pub mcycle: bool,
@@ -145,22 +146,18 @@ pub fn gather(out: &mut [u8], virtio_rng_present: bool) -> GatherReport {
 
     #[cfg(feature = "zkr")]
     {
-        let n = ZkrSource.fill(&mut tmp[..want]);
-        if n > 0 {
-            xor_into(&mut out[..n], &tmp[..n]);
-            report.zkr = true;
-        }
+        let n = fill_fully(&mut ZkrSource, &mut tmp[..want]);
+        xor_into(&mut out[..n], &tmp[..n]);
+        report.zkr = n == want;
     }
 
     if virtio_rng_present {
         // Reset tmp so a partial fill from a previous source doesn't
         // leak into virtio's contribution.
         tmp.fill(0);
-        let n = VirtioRngSource.fill(&mut tmp[..want]);
-        if n > 0 {
-            xor_into(&mut out[..n], &tmp[..n]);
-            report.virtio_rng = true;
-        }
+        let n = fill_fully(&mut VirtioRngSource, &mut tmp[..want]);
+        xor_into(&mut out[..n], &tmp[..n]);
+        report.virtio_rng = n == want;
     }
 
     tmp.fill(0);
@@ -169,6 +166,20 @@ pub fn gather(out: &mut [u8], virtio_rng_present: bool) -> GatherReport {
     report.mcycle = true;
 
     report
+}
+
+/// Asks `source` for more until `buf` is full or a request adds nothing,
+/// and returns how many bytes it filled.
+fn fill_fully(source: &mut impl EntropySource, buf: &mut [u8]) -> usize {
+    let mut filled = 0;
+    while filled < buf.len() {
+        let n = source.fill(&mut buf[filled..]);
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    filled
 }
 
 fn xor_into(dst: &mut [u8], src: &[u8]) {

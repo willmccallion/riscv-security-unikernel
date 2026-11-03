@@ -70,3 +70,31 @@ fn kernel_runs_on_one_hart_when_the_machine_has_four() {
         .count();
     assert_eq!(banners, 1, "more than one hart ran kmain");
 }
+
+#[test]
+#[ignore = "needs a built kernel and qemu; run via `make qemu-test`"]
+fn virtio_rng_that_fills_the_request_is_a_strong_source() {
+    let kernel = boot();
+
+    let serial = kernel.serial_snapshot();
+
+    assert!(serial.contains("virtio-rng=true"), "serial:\n{serial}");
+}
+
+/// A virtio-rng limited to 8 bytes a minute answers one request partly and
+/// then not at all, so most of the boot secrets would come from `mcycle`.
+#[test]
+#[ignore = "needs a built kernel and qemu; run via `make qemu-test`"]
+fn virtio_rng_that_cannot_fill_the_request_is_not_a_strong_source() {
+    let starved_rng = [
+        "-global",
+        "virtio-rng-device.max-bytes=8",
+        "-global",
+        "virtio-rng-device.period=60000",
+    ];
+    let kernel = Kernel::boot_with(&default_kernel_elf(), &starved_rng).expect("kernel boots");
+
+    let serial = kernel.serial_snapshot();
+
+    assert!(serial.contains("virtio-rng=false"), "serial:\n{serial}");
+}
