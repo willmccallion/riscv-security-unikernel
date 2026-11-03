@@ -125,7 +125,7 @@ pub struct Engine<
     source_surge: anomaly::SurgeDetector,
     pbox: dos::PenaltyBox,
     limiter: dos::TokenBucket,
-    mgmt_limiter: dos::TokenBucket,
+    mgmt_failure_limiter: dos::TokenBucket,
     alert_limiter: dos::TokenBucket,
     vm: VM,
     bpf: BpfSlot,
@@ -164,7 +164,10 @@ impl<
                 TOKEN_BUCKET_CAPACITY as u64,
                 RATE_LIMIT_TOKEN_COST_CYCLES,
             ),
-            mgmt_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES),
+            mgmt_failure_limiter: dos::TokenBucket::new(
+                MGMT_BUCKET_CAPACITY,
+                MGMT_TOKEN_COST_CYCLES,
+            ),
             alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES),
             vm: VM::new(),
             bpf: BpfSlot {
@@ -405,8 +408,10 @@ impl<
     /// Authenticates and applies a datagram addressed to the mgmt port.
     ///
     /// Runs ahead of every data-plane check so no ban, rate limit, BPF
-    /// program or heuristic can cut the operator off; the mgmt plane's own
-    /// token bucket bounds the verification work a flood can cause.
+    /// program or heuristic can cut the operator off. Every packet is
+    /// MAC-checked, which the length cap in `MgmtAuth::verify` keeps cheap,
+    /// so junk cannot crowd out a genuine command; only failures draw on
+    /// the mgmt token bucket, which limits their alerts.
     fn handle_mgmt<S: PacketSink>(
         &mut self,
         envelope: MgmtEnvelope<'_>,
@@ -416,22 +421,21 @@ impl<
         sink: &mut S,
     ) -> Verdict {
         self.stats.mgmt += 1;
-        if !self.mgmt_limiter.allow(now) {
-            return Verdict::Management;
-        }
         let MgmtEnvelope::Sealed(envelope) = envelope else {
             return Verdict::Management;
         };
-        if let Some(command) = self.mgmt_auth.verify(envelope) {
-            self.operator = Some(OperatorAddr {
-                mac: src_mac,
-                ip: meta.src_ip,
-            });
-            let outcome = self.dispatch_mgmt(command.body, now);
-            self.send_ack(command.seq, command.body, outcome, sink);
-        } else {
-            self.alert(meta, AlertReason::MgmtAuthFail, now, sink);
-        }
+        let Some(command) = self.mgmt_auth.verify(envelope) else {
+            if self.mgmt_failure_limiter.allow(now) {
+                self.alert(meta, AlertReason::MgmtAuthFail, now, sink);
+            }
+            return Verdict::Management;
+        };
+        self.operator = Some(OperatorAddr {
+            mac: src_mac,
+            ip: meta.src_ip,
+        });
+        let outcome = self.dispatch_mgmt(command.body, now);
+        self.send_ack(command.seq, command.body, outcome, sink);
         Verdict::Management
     }
 

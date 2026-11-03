@@ -33,6 +33,7 @@
 //! standard MTU.
 
 use crate::security::hash::{ct_eq, siphash24};
+use crate::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
 
 /// Width of the per-packet counter prefix, in bytes.
 pub const COUNTER_LEN: usize = 8;
@@ -40,6 +41,9 @@ pub const COUNTER_LEN: usize = 8;
 pub const MAC_LEN: usize = 8;
 /// Smallest possible authenticated packet: counter + 1-byte body + MAC.
 pub const MIN_PACKET_LEN: usize = COUNTER_LEN + 1 + MAC_LEN;
+/// Length of the longest valid mgmt packet; anything longer is refused
+/// before hashing, which bounds the work each packet can cost.
+pub const MAX_PACKET_LEN: usize = COUNTER_LEN + MAX_PAYLOAD_LEN + MAC_LEN;
 
 /// An authenticated mgmt command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +101,8 @@ impl MgmtAuth {
 
     /// Verifies an inbound mgmt packet and returns its sequence and body.
     ///
-    /// Returns `None` if the packet is too short, the counter's epoch
+    /// Returns `None` if the packet is shorter than [`MIN_PACKET_LEN`] or
+    /// longer than [`MAX_PACKET_LEN`], the counter's epoch
     /// does not match the verifier's epoch (cross-reboot replay), the
     /// sequence is not strictly greater than the last accepted one
     /// (in-epoch replay), or the MAC does not match. On success the
@@ -107,7 +112,7 @@ impl MgmtAuth {
     /// The MAC is compared in constant time so an attacker cannot
     /// learn correct prefix bytes by measuring reply latency.
     pub fn verify<'a>(&mut self, packet: &'a [u8]) -> Option<Verified<'a>> {
-        if packet.len() < MIN_PACKET_LEN {
+        if !(MIN_PACKET_LEN..=MAX_PACKET_LEN).contains(&packet.len()) {
             return None;
         }
 

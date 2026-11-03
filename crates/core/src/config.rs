@@ -83,13 +83,12 @@ pub const HEAVY_HITTER_THRESHOLD: u16 = 100;
 /// UDP port number for management interface commands.
 pub const MANAGEMENT_PORT: u16 = 1337;
 
-/// Mgmt packets that may arrive in one burst before the mgmt plane's own
-/// rate limit applies.
+/// Failed mgmt packets that may raise an auth-failure alert in one burst.
 pub const MGMT_BUCKET_CAPACITY: u64 = 16;
 
-/// Time-source units per mgmt token: about 100 packets per second at
-/// 1 GHz. Bounds the MAC-verification work an unauthenticated flood to
-/// the mgmt port can cause.
+/// Time-source units per mgmt token: about 100 auth-failure alerts per
+/// second at 1 GHz, so an unauthenticated flood to the mgmt port cannot
+/// crowd other alerts out of the alert budget.
 pub const MGMT_TOKEN_COST_CYCLES: u64 = 10_000_000;
 
 /// Alerts that may go out in one burst before the alert rate limit applies.

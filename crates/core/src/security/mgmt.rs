@@ -109,6 +109,9 @@ pub mod ack_packet {
 pub mod mgmt_packet {
     /// Minimum body length: 1 byte for the message type.
     pub const MIN_PAYLOAD_LEN: usize = 1;
+    /// Longest body any command has: a full `UploadBpfProgram`.
+    pub const MAX_PAYLOAD_LEN: usize =
+        upload_bpf::INSTR_OFFSET + upload_bpf::MAX_INSTR_COUNT * upload_bpf::INSTR_SIZE;
     /// Offset to message type field within the body.
     pub const MSG_TYPE_OFFSET: usize = 0;
 

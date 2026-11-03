@@ -809,6 +809,38 @@ fn mgmt_auth_rejects_replayed_packet() {
     );
 }
 
+/// Every mgmt packet is MAC-checked, so one longer than the longest
+/// command (a full BPF upload) is refused before any hashing.
+#[test]
+fn mgmt_auth_rejects_a_packet_longer_than_the_longest_command() {
+    use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
+    let key = [0x55u8; 16];
+    let epoch: u32 = 0x1234_5678;
+    let mut auth = MgmtAuth::new(key);
+    auth.set_epoch(epoch);
+    let mut packet = [0u8; 8 + MAX_PAYLOAD_LEN + 1 + 8];
+    let longest = seal(
+        &key,
+        (u64::from(epoch) << 32) | 1,
+        &[0x03; MAX_PAYLOAD_LEN],
+        &mut packet,
+    )
+    .expect("buffer fits");
+    let accepted = auth.verify(&packet[..longest]).is_some();
+    let too_long = seal(
+        &key,
+        (u64::from(epoch) << 32) | 2,
+        &[0x03; MAX_PAYLOAD_LEN + 1],
+        &mut packet,
+    )
+    .expect("buffer fits");
+
+    let rejected = auth.verify(&packet[..too_long]).is_none();
+
+    assert!(accepted, "a full-length command must still verify");
+    assert!(rejected, "a packet longer than any command was verified");
+}
+
 /// `checksum` indexes `data.len() - 1` as `usize`; passing an empty
 /// slice underflows to `usize::MAX` and the loop runs off the buffer.
 #[test]

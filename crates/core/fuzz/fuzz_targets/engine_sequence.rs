@@ -6,9 +6,9 @@
 //! reaches the dispatcher and can install BPF programs, rules and bans,
 //! then probe how later traffic is treated under that state.
 //!
-//! After every sequence, once the mgmt rate limit has had time to refill,
-//! a fresh command from the operator must be acknowledged: no state the
-//! fuzzer can build may lock the operator out.
+//! After every sequence, a fresh command from the operator must be
+//! acknowledged at once: no state the fuzzer can build may lock the
+//! operator out.
 
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
@@ -16,7 +16,6 @@ use sec_core::config::MANAGEMENT_PORT;
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
-use sec_core::config::{MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST_CYCLES};
 use sec_core::security::mgmt::ack_packet;
 use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::seal;
@@ -152,10 +151,9 @@ fuzz_target!(|steps: Vec<Step>| {
     let Some(probe_seq) = seq.checked_add(1) else {
         return;
     };
-    let refill = MGMT_BUCKET_CAPACITY * MGMT_TOKEN_COST_CYCLES;
     let body = [ManagementMessageType::BanIp as u8, 10, 0, 0, 1];
     let mut probe = sealed_mgmt_frame(probe_seq, &body).expect("probe fits");
     sink.acked_seqs.clear();
-    let _ = engine.process(&mut probe, now + refill, &mut sink);
+    let _ = engine.process(&mut probe, now, &mut sink);
     assert_eq!(sink.acked_seqs, [probe_seq], "operator command was not acknowledged");
 });

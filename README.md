@@ -51,7 +51,7 @@ Every received frame goes through `sec_core::engine::Engine::process`, which is 
 flowchart TD
     RX["VirtIO RX"]
     MG{"UDP to :1337?"}
-    ML["Mgmt rate limit → MAC + replay check<br/>→ apply command → signed ack"]
+    ML["Length cap → MAC + replay check<br/>→ apply command → signed ack"]
     PB["① Penalty box → source, subnet and port-scan detectors<br/>ban hosts above ~100 pps, /24s above 1,000, /16s above 5,000,<br/>and hosts trying ~64 ports in five seconds"]
     TB["② Global token bucket"]
     FT["③ Flow table"]
@@ -83,7 +83,7 @@ flowchart TD
     DPI --> PASS
 ```
 
-Management traffic is handled before any data-plane check, behind its own rate limiter, so no ban, filter program or flood can lock the operator out.
+Management traffic is handled before any data-plane check, and every packet's MAC is verified (packets longer than the largest command are discarded unhashed), so no ban, filter program or flood can lock the operator out; only failed packets are rate-limited, to bound their alerts.
 
 Every half second the main loop ends a detection interval: the sketches are halved, the distinct-source count is checked and cleared, and every tenth interval starts a new port-scan window. Detector alerts (subnet floods, source surges, port scans) are at most a few per interval and bypass the per-packet alert limit.
 

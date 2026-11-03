@@ -197,6 +197,21 @@ fn operator_regains_access_once_a_mgmt_flood_stops() {
 }
 
 #[test]
+fn operator_commands_take_effect_during_a_mgmt_flood() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    for i in 0..500u16 {
+        let _ = e.process(
+            &mut udp([10, 2, 0, 1], 1000 + i, MANAGEMENT_PORT, &[0xEE; 24]),
+            1,
+            &mut sink,
+        );
+    }
+
+    assert!(operator_can_still_manage(&mut e, 1, 1));
+}
+
+#[test]
 fn every_authenticated_command_is_acknowledged_with_its_outcome() {
     use sec_core::security::mgmt::MgmtOutcome;
     let mut e = engine();
