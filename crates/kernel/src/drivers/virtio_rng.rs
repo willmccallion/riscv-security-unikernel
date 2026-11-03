@@ -9,7 +9,7 @@
 //! request buffer keep the queue under one page.
 
 use crate::{kprint, kprintln};
-use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::sync::atomic::{Ordering, fence};
 
 const VIRTIO_START: usize = 0x1000_1000;
@@ -165,19 +165,21 @@ impl VirtioRng {
             return 0;
         }
         // SAFETY: RNG_QUEUE is a mutable static accessed only from this
-        // single-threaded init path. Volatile writes + a memory fence
-        // ensure the device sees the descriptor and avail-index update
-        // in order. The descriptor address points into the queue's own
-        // `buf`, valid for the lifetime of the static.
+        // single-threaded init path. The device reads the descriptor and
+        // available ring and writes the used ring, so all of them are
+        // accessed volatile, with fences keeping the device's view in order.
+        // The descriptor points at RNG_BUF, valid for the life of the static.
         unsafe {
             let q = addr_of_mut!(RNG_QUEUE);
-            (*q).desc[0].addr = addr_of_mut!(RNG_BUF) as u64;
-            (*q).desc[0].len = want as u32;
-            (*q).desc[0].flags = DESC_F_WRITE;
-            (*q).desc[0].next = 0;
-            (*q).avail.ring[0] = 0;
+            let desc = addr_of_mut!((*q).desc[0]);
+            write_volatile(addr_of_mut!((*desc).addr), addr_of_mut!(RNG_BUF) as u64);
+            write_volatile(addr_of_mut!((*desc).len), want as u32);
+            write_volatile(addr_of_mut!((*desc).flags), DESC_F_WRITE);
+            write_volatile(addr_of_mut!((*desc).next), 0);
+            write_volatile(addr_of_mut!((*q).avail.ring[0]), 0);
             fence(Ordering::SeqCst);
-            (*q).avail.idx = (*q).avail.idx.wrapping_add(1);
+            let avail_idx = read_volatile(addr_of!((*q).avail.idx));
+            write_volatile(addr_of_mut!((*q).avail.idx), avail_idx.wrapping_add(1));
             fence(Ordering::SeqCst);
 
             write_volatile((RNG_BASE + QUEUE_NOTIFY) as *mut u32, 0);
@@ -186,15 +188,15 @@ impl VirtioRng {
             // in microseconds; if the device never replies (broken or
             // absent) we'd rather boot with degraded entropy than hang.
             let mut spins: u32 = 0;
-            while read_volatile(addr_of_mut!((*q).used.idx)) == RNG_LAST_USED {
+            while read_volatile(addr_of!((*q).used.idx)) == RNG_LAST_USED {
                 spins = spins.wrapping_add(1);
                 if spins > 10_000_000 {
                     return 0;
                 }
             }
             fence(Ordering::SeqCst);
-            let len = (*q).used.ring[0].len as usize;
-            RNG_LAST_USED = (*q).used.idx;
+            let len = read_volatile(addr_of!((*q).used.ring[0].len)) as usize;
+            RNG_LAST_USED = read_volatile(addr_of!((*q).used.idx));
             let n = len.min(want);
             let src = addr_of_mut!(RNG_BUF).cast::<u8>();
             core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), n);
