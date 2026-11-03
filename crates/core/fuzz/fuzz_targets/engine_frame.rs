@@ -39,6 +39,8 @@ fn expected_counter(verdict: Verdict) -> Option<usize> {
         Verdict::Dropped(AlertReason::Heuristic) => Some(5),
         Verdict::Management => Some(6),
         Verdict::Consumed => None,
+        // Alerted, but no telemetry counter tracks malformed IPv4 or fragments.
+        Verdict::Dropped(AlertReason::MalformedIp | AlertReason::IpFragment) => None,
         Verdict::Dropped(other) => panic!("unexpected drop reason {other:?}"),
     }
 }
