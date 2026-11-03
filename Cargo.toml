@@ -15,6 +15,10 @@ members = [
 # nightly to compile the kernel. Run via `make fuzz-*` instead.
 exclude = ["crates/core/fuzz", "crates/daemon/fuzz"]
 
+# The kernel only builds for riscv64gc-unknown-none-elf, from crates/kernel.
+[workspace.metadata.p]
+exclude = ["security-unikernel"]
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
