@@ -394,7 +394,7 @@ impl<
             return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
         }
 
-        if payload.len() < 4 {
+        if payload.is_empty() {
             return Verdict::Consumed;
         }
 

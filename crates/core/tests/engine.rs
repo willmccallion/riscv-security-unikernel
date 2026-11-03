@@ -332,3 +332,29 @@ fn dont_fragment_flag_alone_does_not_make_a_fragment() {
 
     assert_eq!(v, Verdict::Passed);
 }
+
+const PSH_ACK: u8 = 0x18;
+
+#[test]
+fn tcp_payload_shorter_than_four_bytes_is_scanned_for_runtime_patterns() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let mut add_pattern = vec![ManagementMessageType::AddDpiPattern as u8, 3];
+    add_pattern.extend_from_slice(b"abc");
+    let _ = e.process(&mut mgmt(1, &add_pattern), 1, &mut sink);
+
+    let v = e.process(&mut tcp(PEER_IP, 5000, 80, PSH_ACK, b"abc"), 2, &mut sink);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Malware));
+}
+
+#[test]
+fn tcp_segment_without_payload_is_consumed() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let ack = 0x10;
+
+    let v = e.process(&mut tcp(PEER_IP, 5000, 80, ack, b""), 1, &mut sink);
+
+    assert_eq!(v, Verdict::Consumed);
+}
