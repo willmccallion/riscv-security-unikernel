@@ -59,13 +59,13 @@ pub struct NetStats {
     /// Current packets per second dropped by DDoS mitigation.
     pub ddos: AtomicU64,
     /// Current packets per second blocked by firewall rules.
-    pub fw: AtomicU64,
+    pub firewall: AtomicU64,
     /// Current packets per second dropped due to malware signatures.
-    pub mal: AtomicU64,
+    pub malware: AtomicU64,
     /// Current packets per second dropped by BPF filters.
     pub bpf: AtomicU64,
     /// Current packets per second dropped by heuristic analysis.
-    pub heur: AtomicU64,
+    pub heuristic: AtomicU64,
     /// Current number of active network flows being tracked.
     pub flows: AtomicU64,
     /// Management-plane packets observed in the last interval

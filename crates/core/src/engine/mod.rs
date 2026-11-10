@@ -103,10 +103,10 @@ pub struct Engine<
     const PREFIX_WIDTH: usize = { PREFIX_SKETCH_WIDTH },
     const PREFIX_DEPTH: usize = { PREFIX_SKETCH_DEPTH },
 > {
-    ac: dpi::AhoCorasick,
-    dyn_rules: dpi::DynamicRules,
-    fw: firewall::FirewallState,
-    cms: sketch::CountMinSketch<SKETCH_WIDTH, SKETCH_DEPTH>,
+    signatures: dpi::AhoCorasick,
+    runtime_signatures: dpi::DynamicRules,
+    firewall: firewall::FirewallState,
+    source_rates: sketch::CountMinSketch<SKETCH_WIDTH, SKETCH_DEPTH>,
     /// Keys the one hash of each source address that every per-source
     /// sketch shares.
     source_key: [u8; 16],
@@ -115,7 +115,7 @@ pub struct Engine<
     prefixes: sketch::CountMinSketch<PREFIX_WIDTH, PREFIX_DEPTH>,
     port_scans: scan::PortScanDetector,
     source_surge: anomaly::SurgeDetector,
-    pbox: dos::PenaltyBox,
+    penalty_box: dos::PenaltyBox,
     limiter: dos::TokenBucket,
     mgmt_failure_limiter: dos::TokenBucket,
     alert_limiter: dos::TokenBucket,
@@ -142,16 +142,16 @@ impl<
     /// [`Self::init`] must run before the first packet.
     pub const fn new(mgmt_key: [u8; 16]) -> Self {
         Self {
-            ac: dpi::AhoCorasick::new(),
-            dyn_rules: dpi::DynamicRules::new(),
-            fw: firewall::FirewallState::new(),
-            cms: sketch::CountMinSketch::new([0; 16]),
+            signatures: dpi::AhoCorasick::new(),
+            runtime_signatures: dpi::DynamicRules::new(),
+            firewall: firewall::FirewallState::new(),
+            source_rates: sketch::CountMinSketch::new([0; 16]),
             source_key: [0; 16],
             sources: sketch::HyperLogLog::new([0; 16]),
             prefixes: sketch::CountMinSketch::new([0; 16]),
             port_scans: scan::PortScanDetector::new([0; 16]),
             source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
-            pbox: dos::PenaltyBox::new(),
+            penalty_box: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(
                 TOKEN_BUCKET_CAPACITY as u64,
                 RATE_LIMIT_TOKEN_COST_CYCLES,
@@ -189,15 +189,15 @@ impl<
     /// firewall rule.
     pub fn init(&mut self, secrets: BootSecrets) {
         // 4 short patterns into a 128-node trie cannot run out of nodes.
-        let _ = self.ac.insert(b"DROP TABLE");
-        let _ = self.ac.insert(b"<script>");
-        let _ = self.ac.insert(b"eval(");
-        let _ = self.ac.insert(b"UNION SELECT");
-        self.ac.build();
-        let _ = self.fw.block_port(DEFAULT_BLOCKED_PORT);
+        let _ = self.signatures.insert(b"DROP TABLE");
+        let _ = self.signatures.insert(b"<script>");
+        let _ = self.signatures.insert(b"eval(");
+        let _ = self.signatures.insert(b"UNION SELECT");
+        self.signatures.build();
+        let _ = self.firewall.block_port(DEFAULT_BLOCKED_PORT);
 
         self.syn_secret = secrets.syn_cookie;
-        self.cms.rekey(secrets.cms_key);
+        self.source_rates.rekey(secrets.cms_key);
         self.source_key = secrets.cms_key;
         self.prefixes
             .rekey(derive_key(&secrets.cms_key, b"subnet sketch"));
@@ -235,7 +235,7 @@ impl<
     /// interval-based detectors report. Call every
     /// [`CMS_DECAY_INTERVAL_CYCLES`](crate::config::CMS_DECAY_INTERVAL_CYCLES).
     pub fn end_detection_interval<S: PacketSink>(&mut self, sink: &mut S) {
-        self.cms.decay();
+        self.source_rates.decay();
         self.prefixes.decay();
         self.port_scans.end_interval();
         let distinct_sources = self.sources.estimate();
@@ -300,14 +300,14 @@ impl<
 
             let source_hash = siphash24(&self.source_key, &meta.src_ip);
             let _ = self.sources.insert_hash(source_hash);
-            if self.pbox.is_banned(&meta.src_ip, now) {
+            if self.penalty_box.is_banned(&meta.src_ip, now) {
                 drop = true;
-            } else if self.cms.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
-                self.pbox
+            } else if self.source_rates.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
+                self.penalty_box
                     .ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
                 drop = true;
             } else if let Some(subnet) = self.count_subnets(meta.src_ip) {
-                self.pbox
+                self.penalty_box
                     .ban_prefix(subnet.prefix, IP_BAN_DURATION_CYCLES as u64, now);
                 let alert = AlertMeta {
                     src_ip: subnet.prefix.network(),
@@ -318,7 +318,7 @@ impl<
                 self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
                 drop = true;
             } else if let Some(scan) = self.count_connection_attempt(packet, ip, meta.dst_port) {
-                self.pbox
+                self.penalty_box
                     .ban(&scan.source, IP_BAN_DURATION_CYCLES as u64, now);
                 let alert = AlertMeta {
                     value: scan.distinct_ports,
@@ -365,7 +365,7 @@ impl<
             }
         }
 
-        if dst_port != 0 && self.fw.is_blocked(dst_port) {
+        if dst_port != 0 && self.firewall.is_blocked(dst_port) {
             self.stats.firewall += 1;
             return self.drop_with_alert(&meta, AlertReason::Firewall, now, sink);
         }
@@ -384,7 +384,7 @@ impl<
             return Verdict::Consumed;
         }
 
-        if self.ac.scan(payload) || self.dyn_rules.check(payload) {
+        if self.signatures.scan(payload) || self.runtime_signatures.check(payload) {
             self.stats.malware += 1;
             self.alert(&meta, AlertReason::Malware, now, sink);
             Verdict::Dropped(AlertReason::Malware)
@@ -593,7 +593,7 @@ impl<
         if port == MANAGEMENT_PORT {
             return MgmtOutcome::Refused;
         }
-        match self.fw.block_port(port) {
+        match self.firewall.block_port(port) {
             Ok(()) => MgmtOutcome::Applied,
             Err(firewall::FirewallError::Full) => MgmtOutcome::TableFull,
         }
@@ -603,7 +603,7 @@ impl<
         let Some(port) = port_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.fw.unblock_port(port);
+        self.firewall.unblock_port(port);
         MgmtOutcome::Applied
     }
 
@@ -611,7 +611,7 @@ impl<
         let Some(pattern) = pattern_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        match self.dyn_rules.add(pattern) {
+        match self.runtime_signatures.add(pattern) {
             Ok(()) => MgmtOutcome::Applied,
             Err(dpi::DynRulesError::Full) => MgmtOutcome::TableFull,
             Err(dpi::DynRulesError::TooLong | dpi::DynRulesError::Empty) => MgmtOutcome::Invalid,
@@ -622,7 +622,7 @@ impl<
         let Some(pattern) = pattern_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.dyn_rules.remove(pattern);
+        self.runtime_signatures.remove(pattern);
         MgmtOutcome::Applied
     }
 
@@ -631,7 +631,7 @@ impl<
             return MgmtOutcome::Invalid;
         };
         match self
-            .pbox
+            .penalty_box
             .ban_by_operator(&ip, IP_BAN_DURATION_CYCLES as u64, now)
         {
             Ok(()) => MgmtOutcome::Applied,
@@ -643,7 +643,7 @@ impl<
         let Some(ip) = ip_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.pbox.unban(&ip);
+        self.penalty_box.unban(&ip);
         MgmtOutcome::Applied
     }
 

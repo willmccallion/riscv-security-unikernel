@@ -215,10 +215,10 @@ impl Dashboard {
     fn ui_dashboard(&mut self, ui: &mut egui::Ui) {
         let pass_pps = self.stats.passed.load(Ordering::Relaxed);
         let ddos_pps = self.stats.ddos.load(Ordering::Relaxed);
-        let fw_pps = self.stats.fw.load(Ordering::Relaxed);
-        let mal_pps = self.stats.mal.load(Ordering::Relaxed);
+        let fw_pps = self.stats.firewall.load(Ordering::Relaxed);
+        let mal_pps = self.stats.malware.load(Ordering::Relaxed);
         let bpf_pps = self.stats.bpf.load(Ordering::Relaxed);
-        let heur_pps = self.stats.heur.load(Ordering::Relaxed);
+        let heur_pps = self.stats.heuristic.load(Ordering::Relaxed);
 
         let drop_pps = ddos_pps + fw_pps + mal_pps + bpf_pps + heur_pps;
         let total_pps = pass_pps + drop_pps;
@@ -812,10 +812,10 @@ impl eframe::App for Dashboard {
         let now = self.start_time.elapsed().as_secs_f64();
         let pass_rate = self.stats.passed.load(Ordering::Relaxed) as f64;
         let ddos_rate = self.stats.ddos.load(Ordering::Relaxed) as f64;
-        let fw_rate = self.stats.fw.load(Ordering::Relaxed) as f64;
-        let mal_rate = self.stats.mal.load(Ordering::Relaxed) as f64;
+        let fw_rate = self.stats.firewall.load(Ordering::Relaxed) as f64;
+        let mal_rate = self.stats.malware.load(Ordering::Relaxed) as f64;
         let bpf_rate = self.stats.bpf.load(Ordering::Relaxed) as f64;
-        let heur_rate = self.stats.heur.load(Ordering::Relaxed) as f64;
+        let heur_rate = self.stats.heuristic.load(Ordering::Relaxed) as f64;
 
         let drop_rate = ddos_rate + fw_rate + mal_rate + bpf_rate + heur_rate;
 

@@ -73,10 +73,10 @@ async fn main() -> Result<(), eframe::Error> {
     let stats = Arc::new(NetStats {
         passed: AtomicU64::new(0),
         ddos: AtomicU64::new(0),
-        fw: AtomicU64::new(0),
-        mal: AtomicU64::new(0),
+        firewall: AtomicU64::new(0),
+        malware: AtomicU64::new(0),
         bpf: AtomicU64::new(0),
-        heur: AtomicU64::new(0),
+        heuristic: AtomicU64::new(0),
         flows: AtomicU64::new(0),
         mgmt: AtomicU64::new(0),
 
