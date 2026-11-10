@@ -77,14 +77,6 @@ impl FirewallState {
     }
 
     /// Checks if a port is blocked.
-    ///
-    /// # Arguments
-    ///
-    /// * `port` - Port number to check
-    ///
-    /// # Returns
-    ///
-    /// True if the port is in the blocked list, false otherwise
     pub fn is_blocked(&self, port: u16) -> bool {
         for i in 0..self.count {
             if self.blocked_ports[i] == port {

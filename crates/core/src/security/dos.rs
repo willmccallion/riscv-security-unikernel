@@ -210,13 +210,8 @@ impl PenaltyBox {
         }
     }
 
-    /// Whether an active ban covers `ip_bytes`.
-    ///
-    /// # Arguments
-    ///
-    /// * `ip_bytes` - IP address as 4 bytes in network byte order.
-    /// * `now` - Current time-source value; bans with `expiry > now` are
-    ///   considered active.
+    /// Whether an active ban covers `ip_bytes`: one whose expiry is later
+    /// than `now`.
     pub fn is_banned(&self, ip_bytes: &[u8; 4], now: u64) -> bool {
         self.entries
             .iter()
@@ -243,11 +238,6 @@ pub struct TokenBucket {
 
 impl TokenBucket {
     /// Creates a new token bucket with the specified capacity and refill cost.
-    ///
-    /// # Arguments
-    ///
-    /// * `capacity` - Maximum number of tokens.
-    /// * `cost`     - Time-source units per token (higher = slower refill).
     pub const fn new(capacity: u64, cost: u64) -> Self {
         Self {
             tokens: capacity,
@@ -261,14 +251,6 @@ impl TokenBucket {
     ///
     /// Refills tokens based on time-source units elapsed since the last
     /// call, then consumes one token if available.
-    ///
-    /// # Arguments
-    ///
-    /// * `now` - Current time-source value.
-    ///
-    /// # Returns
-    ///
-    /// `true` if a token was available and consumed, `false` otherwise.
     pub fn allow(&mut self, now: u64) -> bool {
         let delta = now.wrapping_sub(self.last_time);
         if self.cost > 0 && delta >= self.cost {

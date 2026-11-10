@@ -177,10 +177,6 @@ impl AegisApp {
     }
 
     /// Sends a command to the background network task.
-    ///
-    /// # Arguments
-    ///
-    /// * `cmd` - Command to send
     fn send(&self, cmd: GuiCommand) {
         let _ = self.cmd_tx.send(cmd);
     }
@@ -223,10 +219,6 @@ impl AegisApp {
     ///
     /// Displays network statistics cards, traffic generation controls,
     /// real-time traffic rate graphs, and the security event log.
-    ///
-    /// # Arguments
-    ///
-    /// * `ui` - egui UI context
     fn ui_dashboard(&mut self, ui: &mut egui::Ui) {
         let pass_pps = self.stats.passed.load(Ordering::Relaxed);
         let ddos_pps = self.stats.ddos.load(Ordering::Relaxed);
@@ -547,14 +539,6 @@ impl AegisApp {
     ///
     /// Displays a title, current rate value, and total count in a
     /// styled card with colored text for visual distinction.
-    ///
-    /// # Arguments
-    ///
-    /// * `ui` - egui UI context
-    /// * `title` - Card title text
-    /// * `rate` - Current rate value (packets per second or count)
-    /// * `total` - Cumulative total count
-    /// * `color` - Text color for the rate value
     fn stat_card(ui: &mut egui::Ui, title: &str, rate: u64, total: u64, color: egui::Color32) {
         egui::Frame::none()
             .fill(egui::Color32::from_gray(25))
@@ -603,10 +587,6 @@ impl AegisApp {
     /// Provides interfaces for:
     /// - Blocking specific destination ports
     /// - Adding DPI signature patterns for deep packet inspection
-    ///
-    /// # Arguments
-    ///
-    /// * `ui` - egui UI context
     fn ui_sdn(&mut self, ui: &mut egui::Ui) {
         ui.heading("Firewall & SDN Rules");
         ui.add_space(10.0);
@@ -716,10 +696,6 @@ impl AegisApp {
     ///
     /// Allows users to write and compile custom packet filtering programs
     /// that are executed in the kernel's virtual machine for each packet.
-    ///
-    /// # Arguments
-    ///
-    /// * `ui` - egui UI context
     fn ui_bpf(&mut self, ui: &mut egui::Ui) {
         ui.heading("BPF Packet Filter");
         ui.label("Inject custom assembly into the packet processing pipeline.");
@@ -837,11 +813,6 @@ impl eframe::App for AegisApp {
     ///
     /// Processes incoming log entries, updates statistics, maintains
     /// historical data for graphs, and renders the appropriate tab UI.
-    ///
-    /// # Arguments
-    ///
-    /// * `ctx` - egui context for rendering
-    /// * `_frame` - Application frame (unused)
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
 
@@ -959,14 +930,6 @@ fn status_badge(ui: &mut egui::Ui, status: CommandStatus) {
 ///
 /// Converts large numbers to a more readable format with appropriate
 /// suffixes for thousands and millions.
-///
-/// # Arguments
-///
-/// * `val` - Value to format
-///
-/// # Returns
-///
-/// Formatted string with metric suffix if applicable.
 fn format_metric(val: u64) -> String {
     if val >= 1_000_000 {
         format!("{:.1}M", val as f64 / 1_000_000.0)
@@ -983,14 +946,6 @@ fn format_metric(val: u64) -> String {
 /// - `DROP ALL` - Drops all packets
 /// - `BLOCK <TCP|UDP> DST <port>` - Drops packets of that protocol to a
 ///   destination port, wherever IPv4 options place the transport header.
-///
-/// # Arguments
-///
-/// * `code` - Source code string to compile
-///
-/// # Returns
-///
-/// Some bytecode vector if compilation succeeds, None otherwise.
 fn compile_bpf(code: &str) -> Option<Vec<u8>> {
     const PROTOCOL_OFFSET: u32 = 23;
     const VERSION_IHL_OFFSET: u32 = 14;
