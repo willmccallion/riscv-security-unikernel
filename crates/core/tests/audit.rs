@@ -22,7 +22,7 @@ use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
 use sec_core::net::tcp::{TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, extract_ports};
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::{PenaltyBox, PenaltyBoxFull};
-use sec_core::security::dpi::{AhoCorasick, DynRulesError, DynamicRules};
+use sec_core::security::dpi::{AhoCorasick, DynamicRules, Pattern, PatternError, RulesFull};
 use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::heuristic::HeuristicEngine;
@@ -414,20 +414,23 @@ fn process_packet_rejects_ipv4_with_wrong_version() {
 /// that the mgmt ack reports; this test pins the new
 /// signalling so a future "make it return () again" refactor fails
 /// loudly.
+fn pattern(bytes: &[u8]) -> Pattern {
+    Pattern::new(bytes).expect("a valid pattern")
+}
+
 #[test]
 fn dynamic_rules_overflow_is_signalled() {
     let mut rules = DynamicRules::new();
     for i in 0..8 {
         let pat = [b'a' + i as u8; 4];
-        assert!(rules.add(&pat).is_ok(), "first 8 patterns must fit");
+        assert!(
+            rules.add(pattern(&pat)).is_ok(),
+            "first 8 patterns must fit"
+        );
     }
-    let result = rules.add(b"ninth");
-    assert_eq!(result, Err(DynRulesError::Full));
-    let too_long = [0u8; 33];
-    assert_eq!(
-        DynamicRules::new().add(&too_long),
-        Err(DynRulesError::TooLong)
-    );
+    let result = rules.add(pattern(b"ninth"));
+    assert_eq!(result, Err(RulesFull));
+    assert_eq!(Pattern::new(&[0u8; 33]), Err(PatternError::TooLong));
 }
 
 /// `DynamicRules::add` had no dedup, so an authenticated attacker
@@ -439,36 +442,29 @@ fn dynamic_rules_overflow_is_signalled() {
 fn dynamic_rules_dedups_duplicate_patterns() {
     let mut rules = DynamicRules::new();
     for _ in 0..8 {
-        assert_eq!(rules.add(b"EICAR"), Ok(()));
+        assert_eq!(rules.add(pattern(b"EICAR")), Ok(()));
     }
     // One slot consumed by EICAR — 7 more distinct patterns still fit.
     for i in 0..7u8 {
         let pat = [b'a' + i; 4];
         assert_eq!(
-            rules.add(&pat),
+            rules.add(pattern(&pat)),
             Ok(()),
             "distinct pattern {i} must still fit after duplicates"
         );
     }
-    assert_eq!(rules.add(b"overflow"), Err(DynRulesError::Full));
+    assert_eq!(rules.add(pattern(b"overflow")), Err(RulesFull));
     assert!(rules.check(b"xxEICARxx"));
 }
 
-/// An empty pattern must be rejected at add-time. The check path calls
+/// An empty pattern cannot exist. The check path calls
 /// `payload.windows(pat.len())`, and `slice::windows(0)` is defined to
-/// panic; storing a zero-length pattern turns the next data-plane
-/// packet into a kernel panic. Accepting `len=0` through the mgmt
-/// dispatcher (which sources `len` from an attacker-controlled byte)
-/// was a single-packet post-auth kill switch until this check landed.
+/// panic, so a stored zero-length pattern would turn the next data-plane
+/// packet into a kernel panic; the mgmt dispatcher takes `len` from an
+/// attacker-controlled byte.
 #[test]
-fn dynamic_rules_rejects_empty_pattern() {
-    let mut rules = DynamicRules::new();
-    assert_eq!(rules.add(&[]), Err(DynRulesError::Empty));
-    // Empty pattern must not have been stored; a non-empty add after
-    // it still succeeds and does not panic on `check`.
-    assert!(rules.add(b"abc").is_ok());
-    assert!(rules.check(b"xxabcxx"));
-    assert!(!rules.check(b"xxxxxx"));
+fn an_empty_pattern_is_refused() {
+    assert_eq!(Pattern::new(&[]), Err(PatternError::Empty));
 }
 
 /// `PenaltyBox::ban` used to allocate a fresh slot even when the IP
@@ -987,11 +983,11 @@ fn firewall_unblock_frees_a_slot_in_a_full_table() {
 #[test]
 fn dynamic_rules_remove_deletes_only_that_pattern() {
     let mut rules = DynamicRules::new();
-    rules.add(b"alpha").unwrap();
-    rules.add(b"beta").unwrap();
-    rules.add(b"gamma").unwrap();
+    rules.add(pattern(b"alpha")).unwrap();
+    rules.add(pattern(b"beta")).unwrap();
+    rules.add(pattern(b"gamma")).unwrap();
 
-    rules.remove(b"beta");
+    rules.remove(&pattern(b"beta"));
 
     assert!(rules.check(b"xx alpha xx") && !rules.check(b"xx beta xx") && rules.check(b"gamma"));
 }

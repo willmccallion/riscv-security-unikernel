@@ -13,6 +13,7 @@ use crate::types::{
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
 use sec_core::net::constants::IpProtocol;
+use sec_core::security::dpi::BUILTIN_SIGNATURES;
 use sec_core::security::mgmt::MgmtOutcome;
 use sec_core::security::vm::Opcode;
 use std::collections::VecDeque;
@@ -157,9 +158,10 @@ impl Dashboard {
             sdn_sig: String::new(),
             bpf_code: "BLOCK TCP DST 80".to_string(),
             blocked_ports: vec![Rule::built_in(sec_core::config::DEFAULT_BLOCKED_PORT)],
-            dpi_signatures: ["DROP TABLE", "<script>", "eval(", "UNION SELECT"]
-                .map(|sig| Rule::built_in(sig.to_string()))
-                .into(),
+            dpi_signatures: BUILTIN_SIGNATURES
+                .iter()
+                .map(|sig| Rule::built_in(String::from_utf8_lossy(sig).into_owned()))
+                .collect(),
             bpf_programs: Vec::new(),
             log_mode: LogMode::Alerts,
             log_paused: false,

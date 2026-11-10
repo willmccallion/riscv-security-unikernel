@@ -453,3 +453,28 @@ fn a_captured_command_resent_from_another_host_does_not_redirect_reports() {
         "reports went to {destinations:?}"
     );
 }
+
+#[test]
+fn an_empty_too_long_or_truncated_pattern_is_invalid_to_add_or_remove() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let too_long = [&[33u8][..], &[b'x'; 33]].concat();
+    let truncated = [6u8, b'n', b'e'];
+    let operands: [&[u8]; 3] = [&[0], &too_long, &truncated];
+    let kinds = [
+        ManagementMessageType::AddDpiPattern,
+        ManagementMessageType::RemoveDpiPattern,
+    ];
+
+    for (seq, (kind, operand)) in (1u32..).zip(kinds.iter().flat_map(|&k| operands.map(|o| (k, o))))
+    {
+        let _ = e.process(
+            &mut mgmt(seq, &command(kind, operand)),
+            u64::from(seq),
+            &mut sink,
+        );
+    }
+
+    let outcomes: Vec<u8> = common::acks(&sink).iter().map(|&(_, _, o)| o).collect();
+    assert_eq!(outcomes, [MgmtOutcome::Invalid as u8; 6]);
+}
