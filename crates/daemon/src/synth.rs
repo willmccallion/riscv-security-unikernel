@@ -85,7 +85,7 @@ pub fn ipv4(src: [u8; 4], protocol: u8, l4: &[u8]) -> Vec<u8> {
     f.extend_from_slice(&total.to_be_bytes());
     f.extend_from_slice(&[0, 0, 0x40, 0, 64, protocol, 0, 0]);
     f.extend_from_slice(&src);
-    f.extend_from_slice(&IP_ADDR);
+    f.extend_from_slice(&IP_ADDR.octets());
     let csum = checksum(&f[14..34]);
     f[24..26].copy_from_slice(&csum.to_be_bytes());
     f.extend_from_slice(l4);

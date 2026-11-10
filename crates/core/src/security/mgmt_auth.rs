@@ -34,6 +34,8 @@
 //! The counter, reply address and MAC add 26 bytes to each command, which
 //! leaves room for the largest one inside a standard MTU.
 
+use core::net::Ipv4Addr;
+
 use crate::security::hash::{ct_eq, siphash24};
 use crate::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
 
@@ -60,7 +62,7 @@ pub struct OperatorAddr {
     /// Operator's Ethernet address.
     pub mac: [u8; 6],
     /// Operator's IPv4 address.
-    pub ip: [u8; 4],
+    pub ip: Ipv4Addr,
 }
 
 /// An authenticated mgmt command.
@@ -164,7 +166,7 @@ impl MgmtAuth {
         let reply = &packet[COUNTER_LEN..COUNTER_LEN + REPLY_ADDR_LEN];
         let reply_to = OperatorAddr {
             mac: [reply[0], reply[1], reply[2], reply[3], reply[4], reply[5]],
-            ip: [reply[6], reply[7], reply[8], reply[9]],
+            ip: Ipv4Addr::new(reply[6], reply[7], reply[8], reply[9]),
         };
         Some(Verified {
             seq,
@@ -219,7 +221,7 @@ pub fn seal(
     let (reply, body_bytes) = rest.split_at_mut(REPLY_ADDR_LEN);
     counter_bytes.copy_from_slice(&counter.to_be_bytes());
     reply[..6].copy_from_slice(&reply_to.mac);
-    reply[6..].copy_from_slice(&reply_to.ip);
+    reply[6..].copy_from_slice(&reply_to.ip.octets());
     body_bytes.copy_from_slice(body);
     mac.copy_from_slice(&siphash24(key, signed).to_be_bytes());
     Some(total)
@@ -232,7 +234,7 @@ mod tests {
     const TEST_EPOCH: u32 = 0xCAFE_BABE;
     const OPERATOR: OperatorAddr = OperatorAddr {
         mac: [0x02, 0, 0, 0, 0, 0x01],
-        ip: [192, 168, 100, 1],
+        ip: Ipv4Addr::new(192, 168, 100, 1),
     };
 
     fn counter(epoch: u32, seq: u32) -> u64 {

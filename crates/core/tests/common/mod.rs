@@ -9,6 +9,7 @@ use sec_core::net::stack::{SynCookieSecret, checksum};
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
+use std::net::Ipv4Addr;
 
 pub const KEY: [u8; 16] = *b"engine-test-key!";
 pub const EPOCH: u32 = 0x1234_5678;
@@ -73,7 +74,7 @@ pub fn ipv4(src_ip: [u8; 4], protocol: u8, l4: &[u8]) -> Vec<u8> {
     f.extend_from_slice(&total.to_be_bytes());
     f.extend_from_slice(&[0, 0, 0x40, 0, 64, protocol, 0, 0]);
     f.extend_from_slice(&src_ip);
-    f.extend_from_slice(&IP_ADDR);
+    f.extend_from_slice(&IP_ADDR.octets());
     let csum = checksum(&f[14..34]);
     f[24..26].copy_from_slice(&csum.to_be_bytes());
     f.extend_from_slice(l4);
@@ -122,7 +123,7 @@ pub fn mgmt(seq: u32, body: &[u8]) -> Vec<u8> {
     let counter = (u64::from(EPOCH) << 32) | u64::from(seq);
     let operator = OperatorAddr {
         mac: PEER_MAC,
-        ip: PEER_IP,
+        ip: Ipv4Addr::from(PEER_IP),
     };
     let mut sealed = vec![0u8; sealed_len(body.len())];
     let n = seal(&KEY, counter, &operator, body, &mut sealed).unwrap();

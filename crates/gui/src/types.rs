@@ -11,10 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::AtomicU64;
 
 /// UDP address for sending management commands to the security kernel.
-pub const MGMT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(
-    Ipv4Addr::new(IP_ADDR[0], IP_ADDR[1], IP_ADDR[2], IP_ADDR[3]),
-    MANAGEMENT_PORT,
-));
+pub const MGMT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(IP_ADDR, MANAGEMENT_PORT));
 
 /// Local address for receiving telemetry and alerts from the kernel.
 pub const LISTEN_ADDR: SocketAddr =

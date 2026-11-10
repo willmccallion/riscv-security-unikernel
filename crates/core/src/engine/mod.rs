@@ -6,6 +6,8 @@
 //! as an argument. That keeps the whole pipeline runnable, testable and
 //! fuzzable on the host.
 
+use core::net::Ipv4Addr;
+
 mod report;
 
 use crate::config::{
@@ -297,13 +299,13 @@ impl<
                 return self.handle_mgmt(envelope, &meta, now, sink);
             }
 
-            let source_hash = siphash24(&self.source_key, &meta.src_ip);
+            let source_hash = siphash24(&self.source_key, &meta.src_ip.octets());
             let _ = self.sources.insert_hash(source_hash);
-            if self.penalty_box.is_banned(&meta.src_ip, now) {
+            if self.penalty_box.is_banned(meta.src_ip, now) {
                 drop = true;
             } else if self.source_rates.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
                 self.penalty_box
-                    .ban(&meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
+                    .ban(meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
                 drop = true;
             } else if let Some(subnet) = self.count_subnets(meta.src_ip) {
                 self.penalty_box
@@ -318,7 +320,7 @@ impl<
                 drop = true;
             } else if let Some(scan) = self.count_connection_attempt(packet, ip, meta.dst_port) {
                 self.penalty_box
-                    .ban(&scan.source, IP_BAN_DURATION_CYCLES as u64, now);
+                    .ban(scan.source, IP_BAN_DURATION_CYCLES as u64, now);
                 let alert = AlertMeta {
                     value: scan.distinct_ports,
                     ..meta
@@ -429,7 +431,7 @@ impl<
     /// first that is over its threshold. Subnets containing the appliance
     /// itself are never counted: banning one would cut off its own gateway,
     /// neighbours and operators, whose hosts can still be banned singly.
-    fn count_subnets(&mut self, src_ip: [u8; 4]) -> Option<HeavySubnet> {
+    fn count_subnets(&mut self, src_ip: Ipv4Addr) -> Option<HeavySubnet> {
         let levels = [(24, SUBNET_24_THRESHOLD), (16, SUBNET_16_THRESHOLD)];
         let mut heavy = None;
         for (len, threshold) in levels {
@@ -437,7 +439,7 @@ impl<
             if prefix.contains(IP_ADDR) {
                 continue;
             }
-            let network = prefix.network();
+            let network = prefix.network().octets();
             let rate = self
                 .prefixes
                 .insert(&[len, network[0], network[1], network[2]]);
@@ -628,7 +630,7 @@ impl<
         };
         match self
             .penalty_box
-            .ban_by_operator(&ip, IP_BAN_DURATION_CYCLES as u64, now)
+            .ban_by_operator(ip, IP_BAN_DURATION_CYCLES as u64, now)
         {
             Ok(()) => MgmtOutcome::Applied,
             Err(dos::PenaltyBoxFull) => MgmtOutcome::TableFull,
@@ -639,7 +641,7 @@ impl<
         let Some(ip) = ip_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.penalty_box.unban(&ip);
+        self.penalty_box.unban(ip);
         MgmtOutcome::Applied
     }
 
@@ -690,11 +692,13 @@ fn pattern_operand(body: &[u8]) -> Option<dpi::Pattern> {
 }
 
 /// The IPv4 operand of a (Un)BanIp body.
-fn ip_operand(body: &[u8]) -> Option<[u8; 4]> {
+fn ip_operand(body: &[u8]) -> Option<Ipv4Addr> {
     use mgmt_packet::ban_ip::IP_OFFSET;
-    body.get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?
+    let octets: [u8; 4] = body
+        .get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?
         .try_into()
-        .ok()
+        .ok()?;
+    Some(Ipv4Addr::from(octets))
 }
 
 /// A subnet whose packet rate passed its threshold.
@@ -707,8 +711,8 @@ struct HeavySubnet {
 /// The IPv4 header fields the pipeline acts on.
 #[derive(Debug, Clone, Copy)]
 struct Ipv4Fields {
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
     protocol: u8,
     /// Offset of the transport header within the frame.
     l4_offset: usize,
@@ -717,8 +721,8 @@ struct Ipv4Fields {
 /// An IPv4 packet the engine drops without inspecting it, and why.
 #[derive(Debug, Clone, Copy)]
 struct RejectedIpv4 {
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
     protocol: u8,
     reason: AlertReason,
 }
@@ -734,8 +738,8 @@ fn parse_ipv4(packet: &[u8]) -> Result<Option<Ipv4Fields>, RejectedIpv4> {
     if packet[ethernet::TYPE_OFFSET..ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE] != [0x08, 0x00] {
         return Ok(None);
     }
-    let src_ip = [header[12], header[13], header[14], header[15]];
-    let dst_ip = [header[16], header[17], header[18], header[19]];
+    let src_ip = Ipv4Addr::new(header[12], header[13], header[14], header[15]);
+    let dst_ip = Ipv4Addr::new(header[16], header[17], header[18], header[19]);
     let protocol = header[9];
     if let Some(reason) = ipv4_rejection(header, packet.len()) {
         return Err(RejectedIpv4 {
@@ -835,5 +839,5 @@ fn is_for_us(packet: &[u8]) -> bool {
         }
         _ => None,
     };
-    target_ip == Some(&IP_ADDR[..])
+    target_ip == Some(&IP_ADDR.octets()[..])
 }

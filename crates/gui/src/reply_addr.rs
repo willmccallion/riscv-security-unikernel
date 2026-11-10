@@ -14,10 +14,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 pub fn reply_address(kernel: SocketAddr) -> io::Result<OperatorAddr> {
     let ip = local_ipv4_towards(kernel)?;
     let mac = mac_of_interface_with(ip)?;
-    Ok(OperatorAddr {
-        mac,
-        ip: ip.octets(),
-    })
+    Ok(OperatorAddr { mac, ip })
 }
 
 /// The source address the routing table picks for packets to `dest`.
@@ -126,7 +123,7 @@ mod tests {
             got,
             OperatorAddr {
                 mac: [0; 6],
-                ip: [127, 0, 0, 1],
+                ip: Ipv4Addr::LOCALHOST,
             }
         );
     }

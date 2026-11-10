@@ -712,6 +712,7 @@ mod tests {
     use sec_core::security::alert::{AlertReason, alert_packet};
     use sec_core::security::mgmt::{ManagementMessageType, mgmt_packet};
     use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, seal, sealed_len};
+    use std::net::Ipv4Addr;
 
     const TEST_KEY: [u8; 16] = *b"TEST-KEY-TEST!KE";
     const TEST_EPOCH: u32 = 0xABCD_1234;
@@ -725,7 +726,7 @@ mod tests {
         let counter = ((TEST_EPOCH as u64) << 32) | 1;
         let operator = OperatorAddr {
             mac: [0x02, 0, 0, 0, 0, 0x01],
-            ip: [192, 168, 100, 1],
+            ip: Ipv4Addr::new(192, 168, 100, 1),
         };
         let n =
             seal(&TEST_KEY, counter, &operator, body, &mut packet).expect("seal into sized buffer");

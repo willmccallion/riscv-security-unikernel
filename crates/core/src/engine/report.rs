@@ -5,6 +5,8 @@
 //! Alerts carry a fixed-size metadata record and never echo inbound
 //! payload bytes, so the mgmt network is not a relay for attacker data.
 
+use core::net::Ipv4Addr;
+
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::constants::{BROADCAST_MAC, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
@@ -14,7 +16,7 @@ use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::report_auth::{self, telemetry_packet};
 
 /// IPv4 broadcast fallback used before the operator address is learned.
-const BROADCAST_IP: [u8; 4] = [192, 168, 100, 255];
+const BROADCAST_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 100, 255);
 
 const UDP_OFFSET: usize = ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE;
 const UDP_PAYLOAD_OFFSET: usize = UDP_OFFSET + udp::HEADER_SIZE;
@@ -47,9 +49,9 @@ pub fn alert_body(meta: &AlertMeta, reason: AlertReason) -> [u8; alert_packet::A
     body[0] = alert_packet::ALERT_MESSAGE_TYPE;
     body[alert_packet::REASON_OFFSET] = reason.as_u8();
     body[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4]
-        .copy_from_slice(&meta.src_ip);
+        .copy_from_slice(&meta.src_ip.octets());
     body[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + 4]
-        .copy_from_slice(&meta.dst_ip);
+        .copy_from_slice(&meta.dst_ip.octets());
     body[alert_packet::SRC_PORT_OFFSET..alert_packet::SRC_PORT_OFFSET + 2]
         .copy_from_slice(&meta.src_port.to_be_bytes());
     body[alert_packet::DST_PORT_OFFSET..alert_packet::DST_PORT_OFFSET + 2]
@@ -131,8 +133,8 @@ fn write_udp_headers(
     ip[8] = ipv4::DEFAULT_TTL;
     ip[9] = IpProtocol::Udp as u8;
     ip[10..12].copy_from_slice(&[0, 0]);
-    ip[12..16].copy_from_slice(&IP_ADDR);
-    ip[16..20].copy_from_slice(&dst_ip);
+    ip[12..16].copy_from_slice(&IP_ADDR.octets());
+    ip[16..20].copy_from_slice(&dst_ip.octets());
     let csum = checksum(&frame[ipv4::HEADER_OFFSET..UDP_OFFSET]);
     frame[IP_CHECKSUM_OFFSET..IP_CHECKSUM_OFFSET + 2].copy_from_slice(&csum.to_be_bytes());
 

@@ -25,6 +25,7 @@ use sec_core::security::dos::{PenaltyBox, TokenBucket};
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::sketch::CountMinSketch;
+use std::net::Ipv4Addr;
 
 proptest! {
     /// An IP banned at time `t` for `dur` cycles must read as banned at
@@ -33,16 +34,16 @@ proptest! {
     /// box this property holds for all inputs.
     #[test]
     fn pbox_ban_is_active_within_window(
-        ip in any::<[u8; 4]>(),
+        ip in any::<Ipv4Addr>(),
         now in 0u64..1_000_000,
         dur in 1u64..1_000_000,
         offset_pct in 0u64..100,
     ) {
         let mut pbox = PenaltyBox::new();
-        pbox.ban(&ip, dur, now);
+        pbox.ban(ip, dur, now);
         // Sample any time t' strictly inside the ban window.
         let probe = now + (dur - 1) * offset_pct / 100;
-        prop_assert!(pbox.is_banned(&ip, probe), "ban should cover {probe}");
+        prop_assert!(pbox.is_banned(ip, probe), "ban should cover {probe}");
     }
 
     /// The same ban must read as inactive at `now + dur` and beyond.
@@ -50,15 +51,15 @@ proptest! {
     /// expiry instant itself is the first un-banned tick.
     #[test]
     fn pbox_ban_expires_after_window(
-        ip in any::<[u8; 4]>(),
+        ip in any::<Ipv4Addr>(),
         now in 0u64..1_000_000,
         dur in 1u64..1_000_000,
         extra in 0u64..1_000_000,
     ) {
         let mut pbox = PenaltyBox::new();
-        pbox.ban(&ip, dur, now);
+        pbox.ban(ip, dur, now);
         let probe = now + dur + extra;
-        prop_assert!(!pbox.is_banned(&ip, probe), "ban should have expired by {probe}");
+        prop_assert!(!pbox.is_banned(ip, probe), "ban should have expired by {probe}");
     }
 
     /// Querying an IP that was never banned must always return false,
@@ -68,19 +69,19 @@ proptest! {
     /// the high bit of the first byte).
     #[test]
     fn pbox_unbanned_ip_never_reads_banned(
-        query_ip in any::<[u8; 4]>(),
-        bans in proptest::collection::vec(any::<[u8; 4]>(), 0..32),
+        query_ip in any::<Ipv4Addr>(),
+        bans in proptest::collection::vec(any::<Ipv4Addr>(), 0..32),
         now in 0u64..1_000_000,
     ) {
         let mut pbox = PenaltyBox::new();
         for mut b in bans {
             // Force every banned IP to differ from the query IP.
             if b == query_ip {
-                b[0] ^= 0x80;
+                b = Ipv4Addr::from_bits(b.to_bits() ^ 0x8000_0000);
             }
-            pbox.ban(&b, 1_000, now);
+            pbox.ban(b, 1_000, now);
         }
-        prop_assert!(!pbox.is_banned(&query_ip, now), "unrelated IP must not read as banned");
+        prop_assert!(!pbox.is_banned(query_ip, now), "unrelated IP must not read as banned");
     }
 }
 
@@ -120,8 +121,8 @@ proptest! {
     /// keying off only `src_ip`.
     #[test]
     fn flow_repeat_tuple_is_not_a_new_flow(
-        src_ip in any::<[u8; 4]>(),
-        dst_ip in any::<[u8; 4]>(),
+        src_ip in any::<Ipv4Addr>(),
+        dst_ip in any::<Ipv4Addr>(),
         src_port in any::<u16>(),
         dst_port in any::<u16>(),
         proto in any::<u8>(),
@@ -142,8 +143,8 @@ proptest! {
     /// key, and asserts every insert reports `true` (new flow).
     #[test]
     fn flow_distinct_tuples_each_create_a_new_flow(
-        src_ip in any::<[u8; 4]>(),
-        dst_ip in any::<[u8; 4]>(),
+        src_ip in any::<Ipv4Addr>(),
+        dst_ip in any::<Ipv4Addr>(),
         dst_port in any::<u16>(),
         proto in any::<u8>(),
         n in 1u16..=74,

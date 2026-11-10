@@ -116,7 +116,7 @@ fn the_appliances_own_subnets_are_never_banned() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let mut now = 0;
-    let own = sec_core::config::IP_ADDR;
+    let own = sec_core::config::IP_ADDR.octets();
 
     run(
         &mut e,
@@ -141,7 +141,7 @@ fn other_slash_24s_inside_the_appliances_slash_16_can_still_be_banned() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let mut now = 0;
-    let own = sec_core::config::IP_ADDR;
+    let own = sec_core::config::IP_ADDR.octets();
 
     run(
         &mut e,

@@ -3,6 +3,8 @@
 //! This module defines system-wide configuration values including
 //! network identity, security thresholds, and memory layout parameters.
 
+use core::net::Ipv4Addr;
+
 /// Kernel version string displayed at boot.
 pub const KERNEL_VERSION: &str = "v1.0.0";
 
@@ -10,7 +12,7 @@ pub const KERNEL_VERSION: &str = "v1.0.0";
 pub const MAC_ADDR: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
 /// IPv4 address assigned to the network interface.
-pub const IP_ADDR: [u8; 4] = [192, 168, 100, 2];
+pub const IP_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 100, 2);
 
 /// Time-source units per data-plane token in the global rate limiter:
 /// 100k packets per second on a 1 GHz cycle counter.

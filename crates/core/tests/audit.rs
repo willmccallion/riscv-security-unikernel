@@ -30,10 +30,11 @@ use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, REPLY_ADDR_LEN, seal
 use sec_core::security::vm::{
     Instruction, Opcode, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
 };
+use std::net::Ipv4Addr;
 
 const OPERATOR: OperatorAddr = OperatorAddr {
     mac: [0x02, 0, 0, 0, 0, 0x01],
-    ip: [192, 168, 100, 1],
+    ip: Ipv4Addr::new(192, 168, 100, 1),
 };
 
 /// Captures every frame the stack hands to its sink so tests can
@@ -86,7 +87,7 @@ fn build_tcp_frame(
         .copy_from_slice(&u16::try_from(ip_total).unwrap().to_be_bytes());
     f[ipv4::PROTOCOL_OFFSET] = 6;
     f[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + 4].copy_from_slice(&src_ip);
-    f[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP);
+    f[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP.octets());
 
     let tcp_off = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
     f[tcp_off] = (src_port >> 8) as u8;
@@ -334,7 +335,7 @@ fn process_packet_handles_syn_with_extended_ip_options() {
         .copy_from_slice(&u16::try_from(ip_total).unwrap().to_be_bytes());
     frame[ipv4::PROTOCOL_OFFSET] = 6;
     frame[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + 4].copy_from_slice(&[10, 0, 0, 5]);
-    frame[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP);
+    frame[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + 4].copy_from_slice(&KERNEL_IP.octets());
 
     let tcp_off = ethernet::MIN_FRAME_SIZE + IHL_BYTES;
     let src_port: u16 = 4444;
@@ -477,24 +478,24 @@ fn penalty_box_dedups_duplicate_bans() {
     let mut pbox = PenaltyBox::new();
     let now = 1_000u64;
     let dur = 10_000u64;
-    let target = [10, 0, 0, 1];
+    let target = Ipv4Addr::new(10, 0, 0, 1);
 
     for _ in 0..16 {
-        pbox.ban(&target, dur, now);
+        pbox.ban(target, dur, now);
     }
-    assert!(pbox.is_banned(&target, now));
+    assert!(pbox.is_banned(target, now));
 
     // With dedup, 15 slots are still free — 15 further distinct bans
     // must all land without evicting `target`.
     for i in 2..17u8 {
-        pbox.ban(&[10, 0, 0, i], dur, now);
+        pbox.ban(Ipv4Addr::new(10, 0, 0, i), dur, now);
     }
     assert!(
-        pbox.is_banned(&target, now),
+        pbox.is_banned(target, now),
         "duplicate-ban dedup must not have evicted the first IP"
     );
     for i in 2..17u8 {
-        assert!(pbox.is_banned(&[10, 0, 0, i], now));
+        assert!(pbox.is_banned(Ipv4Addr::new(10, 0, 0, i), now));
     }
 }
 
@@ -715,21 +716,21 @@ fn penalty_box_does_not_clobber_a_single_slot_when_full() {
     let dur = 100_000u64;
 
     for i in 0..16u8 {
-        let ip = [10, 0, 0, i];
-        pbox.ban(&ip, dur, now);
-        assert!(pbox.is_banned(&ip, now));
+        let ip = Ipv4Addr::new(10, 0, 0, i);
+        pbox.ban(ip, dur, now);
+        assert!(pbox.is_banned(ip, now));
     }
 
-    let first = [10, 0, 0, 0];
-    assert!(pbox.is_banned(&first, now));
+    let first = Ipv4Addr::new(10, 0, 0, 0);
+    assert!(pbox.is_banned(first, now));
 
     for i in 16..20u8 {
-        let ip = [10, 0, 0, i];
-        pbox.ban(&ip, dur, now);
+        let ip = Ipv4Addr::new(10, 0, 0, i);
+        pbox.ban(ip, dur, now);
     }
 
     let surviving = (16..20u8)
-        .filter(|i| pbox.is_banned(&[10, 0, 0, *i], now))
+        .filter(|i| pbox.is_banned(Ipv4Addr::new(10, 0, 0, *i), now))
         .count();
 
     assert!(
@@ -757,7 +758,7 @@ fn arp_hw_type_offset_matches_wire_layout() {
 #[test]
 fn arp_request_with_non_ethernet_hw_type_is_ignored() {
     let mut sink = CaptureSink::default();
-    let mut frame = build_arp_request([0xFF, 0xFF], KERNEL_IP);
+    let mut frame = build_arp_request([0xFF, 0xFF], KERNEL_IP.octets());
     let secret = test_syn_secret();
     let _ = process_packet(&mut frame, &mut sink, &secret);
     assert!(
@@ -802,7 +803,7 @@ fn flow_table_protects_existing_flow_from_unique_tuple_flood() {
     let now = 1_000u64;
 
     let real = FlowKey {
-        src_ip: [10, 0, 0, 1],
+        src_ip: Ipv4Addr::new(10, 0, 0, 1),
         dst_ip: KERNEL_IP,
         src_port: 1234,
         dst_port: 80,
@@ -813,7 +814,7 @@ fn flow_table_protects_existing_flow_from_unique_tuple_flood() {
 
     for i in 0..100u16 {
         let flood = FlowKey {
-            src_ip: [10, 0, 0, 99],
+            src_ip: Ipv4Addr::new(10, 0, 0, 99),
             dst_ip: KERNEL_IP,
             src_port: 10_000 + i,
             dst_port: 12_345,
@@ -994,11 +995,11 @@ fn dynamic_rules_remove_deletes_only_that_pattern() {
 #[test]
 fn penalty_box_unban_lifts_an_active_ban() {
     let mut pbox = PenaltyBox::new();
-    pbox.ban(&[10, 0, 0, 1], 1_000, 0);
+    pbox.ban(Ipv4Addr::new(10, 0, 0, 1), 1_000, 0);
 
-    pbox.unban(&[10, 0, 0, 1]);
+    pbox.unban(Ipv4Addr::new(10, 0, 0, 1));
 
-    assert!(!pbox.is_banned(&[10, 0, 0, 1], 1));
+    assert!(!pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), 1));
 }
 
 #[test]
@@ -1040,9 +1041,9 @@ fn vm_out_of_bounds_loads_all_clear_the_register() {
 fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
     let mut pbox = PenaltyBox::new();
 
-    pbox.ban(&[10, 0, 0, 1], u64::MAX, u64::MAX - 5);
+    pbox.ban(Ipv4Addr::new(10, 0, 0, 1), u64::MAX, u64::MAX - 5);
 
-    assert!(pbox.is_banned(&[10, 0, 0, 1], u64::MAX - 1));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), u64::MAX - 1));
 }
 
 /// Detector bans rotate through the full table, but must never push out
@@ -1050,39 +1051,41 @@ fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
 #[test]
 fn penalty_box_detector_bans_never_evict_an_operator_ban() {
     let mut pbox = PenaltyBox::new();
-    pbox.ban_by_operator(&[10, 9, 9, 9], 1_000, 0).unwrap();
+    pbox.ban_by_operator(Ipv4Addr::new(10, 9, 9, 9), 1_000, 0)
+        .unwrap();
 
     for i in 0..32u8 {
-        pbox.ban(&[20, 0, 0, i], 1_000, 0);
+        pbox.ban(Ipv4Addr::new(20, 0, 0, i), 1_000, 0);
     }
 
-    assert!(pbox.is_banned(&[10, 9, 9, 9], 1));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), 1));
 }
 
 #[test]
 fn penalty_box_operator_ban_evicts_a_detector_ban_when_full() {
     let mut pbox = PenaltyBox::new();
     for i in 0..16u8 {
-        pbox.ban(&[20, 0, 0, i], 1_000, 0);
+        pbox.ban(Ipv4Addr::new(20, 0, 0, i), 1_000, 0);
     }
 
-    let result = pbox.ban_by_operator(&[10, 9, 9, 9], 1_000, 0);
+    let result = pbox.ban_by_operator(Ipv4Addr::new(10, 9, 9, 9), 1_000, 0);
 
     assert_eq!(result, Ok(()));
-    assert!(pbox.is_banned(&[10, 9, 9, 9], 1));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), 1));
 }
 
 #[test]
 fn penalty_box_refuses_an_operator_ban_when_every_slot_holds_one() {
     let mut pbox = PenaltyBox::new();
     for i in 0..16u8 {
-        pbox.ban_by_operator(&[10, 0, 0, i], 1_000, 0).unwrap();
+        pbox.ban_by_operator(Ipv4Addr::new(10, 0, 0, i), 1_000, 0)
+            .unwrap();
     }
 
-    let result = pbox.ban_by_operator(&[10, 0, 1, 1], 1_000, 0);
+    let result = pbox.ban_by_operator(Ipv4Addr::new(10, 0, 1, 1), 1_000, 0);
 
     assert_eq!(result, Err(PenaltyBoxFull));
-    assert!((0..16u8).all(|i| pbox.is_banned(&[10, 0, 0, i], 1)));
+    assert!((0..16u8).all(|i| pbox.is_banned(Ipv4Addr::new(10, 0, 0, i), 1)));
 }
 
 /// A detector re-banning an address the operator banned must not shorten
@@ -1090,28 +1093,29 @@ fn penalty_box_refuses_an_operator_ban_when_every_slot_holds_one() {
 #[test]
 fn penalty_box_detector_reban_keeps_the_operator_ban() {
     let mut pbox = PenaltyBox::new();
-    pbox.ban_by_operator(&[10, 9, 9, 9], 10_000, 0).unwrap();
-    pbox.ban(&[10, 9, 9, 9], 100, 0);
+    pbox.ban_by_operator(Ipv4Addr::new(10, 9, 9, 9), 10_000, 0)
+        .unwrap();
+    pbox.ban(Ipv4Addr::new(10, 9, 9, 9), 100, 0);
 
     for i in 0..32u8 {
-        pbox.ban(&[20, 0, 0, i], 1_000, 200);
+        pbox.ban(Ipv4Addr::new(20, 0, 0, i), 1_000, 200);
     }
 
-    assert!(pbox.is_banned(&[10, 9, 9, 9], 5_000));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), 5_000));
 }
 
 #[test]
 fn penalty_box_reuses_a_ban_ending_now_before_evicting_an_active_one() {
     let mut pbox = PenaltyBox::new();
     for i in 0..15u8 {
-        pbox.ban(&[10, 0, 0, i], 1_000, 0);
+        pbox.ban(Ipv4Addr::new(10, 0, 0, i), 1_000, 0);
     }
-    pbox.ban(&[10, 0, 0, 15], 100, 0);
+    pbox.ban(Ipv4Addr::new(10, 0, 0, 15), 100, 0);
 
-    pbox.ban(&[10, 0, 1, 1], 100, 100);
+    pbox.ban(Ipv4Addr::new(10, 0, 1, 1), 100, 100);
 
     assert!(
-        pbox.is_banned(&[10, 0, 0, 0], 100),
+        pbox.is_banned(Ipv4Addr::new(10, 0, 0, 0), 100),
         "an active ban was evicted"
     );
 }
