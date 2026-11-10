@@ -22,6 +22,9 @@
 
 #![no_std]
 
+#[macro_use]
+mod macros;
+
 pub mod config;
 pub mod engine;
 pub mod net;

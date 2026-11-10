@@ -846,23 +846,15 @@ mod tests {
     }
 
     #[test]
-    fn alert_parser_recovers_every_reason_variant() {
-        let cases = [
-            (AlertReason::Ddos, "[DDoS]"),
-            (AlertReason::Firewall, "[FIREWALL]"),
-            (AlertReason::Malware, "[MALWARE]"),
-            (AlertReason::Bpf, "[BPF]"),
-            (AlertReason::Heuristic, "[HEURISTIC]"),
-            (AlertReason::Flow, "[FLOW]"),
-            (AlertReason::Pass, "[PASS]"),
-            (AlertReason::MgmtAuthFail, "[MGMT AUTH]"),
-        ];
-        for (reason, tag) in cases {
+    fn alert_parser_gives_every_reason_its_own_tag() {
+        let mut tags = std::collections::HashSet::new();
+        for reason in AlertReason::ALL {
             let data = make_alert(reason.as_u8());
             let entry = parse_alert(&data);
+            let tag = entry.msg.split(']').next().unwrap_or_default().to_string();
             assert!(
-                entry.msg.starts_with(tag),
-                "reason {reason:?} → msg {:?} should start with {tag}",
+                entry.msg.starts_with('[') && tags.insert(tag),
+                "reason {reason:?} → msg {:?} has no tag of its own",
                 entry.msg,
             );
             assert_eq!(entry.src_ip, "192.168.1.50");

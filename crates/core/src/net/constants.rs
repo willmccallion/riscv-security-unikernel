@@ -4,29 +4,16 @@
 //! Ethernet types, packet offsets, and protocol-specific values used
 //! throughout the network stack.
 
-/// Internet Protocol (IP) protocol numbers.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IpProtocol {
-    /// Internet Control Message Protocol.
-    Icmp = 1,
-    /// Transmission Control Protocol.
-    Tcp = 6,
-    /// User Datagram Protocol.
-    Udp = 17,
-}
-
-impl IpProtocol {
-    /// Converts a u8 protocol number to the enum variant.
-    ///
-    /// Returns None if the protocol number is not recognized.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::Icmp),
-            6 => Some(Self::Tcp),
-            17 => Some(Self::Udp),
-            _ => None,
-        }
+wire_enum! {
+    /// Internet Protocol (IP) protocol numbers.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum IpProtocol {
+        /// Internet Control Message Protocol.
+        Icmp = 1,
+        /// Transmission Control Protocol.
+        Tcp = 6,
+        /// User Datagram Protocol.
+        Udp = 17,
     }
 }
 

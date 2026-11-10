@@ -5,76 +5,47 @@
 //! loading packet data, performing comparisons, and making filtering
 //! decisions.
 
-/// Opcodes for the virtual machine instruction set.
-#[derive(Copy, Clone, Debug)]
-#[repr(u8)]
-pub enum Opcode {
-    /// Load byte from packet into register.
-    Ldb = 0x01,
-    /// Load half-word (u16) from packet into register.
-    Ldh = 0x02,
-    /// Load word (u32) from packet into register.
-    Ldw = 0x03,
-    /// Load immediate value into register.
-    Ldi = 0x04,
-    /// Move value from one register to another.
-    Mov = 0x05,
-    /// Compare two registers for equality.
-    Eq = 0x06,
-    /// Compare two registers for greater-than.
-    Gt = 0x07,
-    /// Bitwise AND operation.
-    And = 0x08,
-    /// Bitwise OR operation.
-    Or = 0x09,
-    /// Unconditional jump to instruction index.
-    Jmp = 0x0A,
-    /// Conditional jump if last comparison was true.
-    Jt = 0x0B,
-    /// Conditional jump if last comparison was false.
-    Jf = 0x0C,
-    /// Return with action (0=drop, 1=pass).
-    Ret = 0x0D,
-    /// Load four times the low nibble of the byte at `imm`: an IPv4
-    /// header's length when `imm` is its version/IHL byte.
-    Ldmsh = 0x0E,
-    /// Load byte at `imm + reg_b` into register.
-    Ldbx = 0x0F,
-    /// Load half-word (u16) at `imm + reg_b` into register.
-    Ldhx = 0x10,
-    /// Load word (u32) at `imm + reg_b` into register.
-    Ldwx = 0x11,
-    /// No operation.
-    Nop = 0x00,
-}
-
-impl Opcode {
-    /// Returns the opcode for a raw byte, or `None` if the byte is
-    /// not a recognised instruction. Used by [`validate`] to reject
-    /// programs containing unknown opcodes at upload time so behaviour
-    /// is locked to the variants the VM explicitly handles.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0x00 => Some(Self::Nop),
-            0x01 => Some(Self::Ldb),
-            0x02 => Some(Self::Ldh),
-            0x03 => Some(Self::Ldw),
-            0x04 => Some(Self::Ldi),
-            0x05 => Some(Self::Mov),
-            0x06 => Some(Self::Eq),
-            0x07 => Some(Self::Gt),
-            0x08 => Some(Self::And),
-            0x09 => Some(Self::Or),
-            0x0A => Some(Self::Jmp),
-            0x0B => Some(Self::Jt),
-            0x0C => Some(Self::Jf),
-            0x0D => Some(Self::Ret),
-            0x0E => Some(Self::Ldmsh),
-            0x0F => Some(Self::Ldbx),
-            0x10 => Some(Self::Ldhx),
-            0x11 => Some(Self::Ldwx),
-            _ => None,
-        }
+wire_enum! {
+    /// Opcodes for the virtual machine instruction set.
+    #[derive(Copy, Clone, Debug)]
+    pub enum Opcode {
+        /// No operation.
+        Nop = 0x00,
+        /// Load byte from packet into register.
+        Ldb = 0x01,
+        /// Load half-word (u16) from packet into register.
+        Ldh = 0x02,
+        /// Load word (u32) from packet into register.
+        Ldw = 0x03,
+        /// Load immediate value into register.
+        Ldi = 0x04,
+        /// Move value from one register to another.
+        Mov = 0x05,
+        /// Compare two registers for equality.
+        Eq = 0x06,
+        /// Compare two registers for greater-than.
+        Gt = 0x07,
+        /// Bitwise AND operation.
+        And = 0x08,
+        /// Bitwise OR operation.
+        Or = 0x09,
+        /// Unconditional jump to instruction index.
+        Jmp = 0x0A,
+        /// Conditional jump if last comparison was true.
+        Jt = 0x0B,
+        /// Conditional jump if last comparison was false.
+        Jf = 0x0C,
+        /// Return with action (0=drop, 1=pass).
+        Ret = 0x0D,
+        /// Load four times the low nibble of the byte at `imm`: an IPv4
+        /// header's length when `imm` is its version/IHL byte.
+        Ldmsh = 0x0E,
+        /// Load byte at `imm + reg_b` into register.
+        Ldbx = 0x0F,
+        /// Load half-word (u16) at `imm + reg_b` into register.
+        Ldhx = 0x10,
+        /// Load word (u32) at `imm + reg_b` into register.
+        Ldwx = 0x11,
     }
 }
 

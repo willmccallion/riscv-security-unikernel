@@ -3,59 +3,60 @@
 //! Defines the alert reason codes used when security events are detected
 //! and reported to the control plane.
 
-/// Security alert reason codes.
-///
-/// Each code represents a different type of security event detected
-/// by the kernel's security mechanisms.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlertReason {
-    /// DDoS attack detected (high volume or heavy hitter).
-    Ddos = 1,
-    /// Firewall rule violation (blocked port access).
-    Firewall = 2,
-    /// Malware signature match detected.
-    Malware = 3,
-    /// BPF filter dropped the packet.
-    Bpf = 4,
-    /// Heuristic analysis detected anomaly.
-    Heuristic = 5,
-    /// New network flow created.
-    Flow = 6,
-    /// Packet passed all security checks.
-    Pass = 7,
-    /// Mgmt-plane packet failed authentication (bad MAC or replayed counter).
-    MgmtAuthFail = 8,
-    /// The installed BPF program burned its per-packet cycle budget
-    /// without reaching a Ret instruction. The packet is dropped; the
-    /// alert gives the operator a signal that the currently-loaded
-    /// program is likely adversarial or buggy.
-    BpfTimeout = 11,
-    /// The installed BPF program executed a `Ret` whose immediate was
-    /// neither 0 (drop) nor 1 (pass), or ended without one (which
-    /// upload validation rules out). The packet is dropped rather
-    /// than silently passed, so future action-code extensions cannot
-    /// be pre-poisoned by programs uploaded before the extension.
-    BpfInvalidAction = 12,
-    /// Far more distinct sources than usual arrived in one detection
-    /// interval, typical of a flood from spoofed addresses. The value is
-    /// the estimated number of sources; nothing is banned.
-    SourceSurge = 13,
-    /// A /24 or /16 sent more than its threshold, though no single host in
-    /// it did; the subnet was banned. The alert's source is the network,
-    /// with its prefix length, and the value its estimated packet rate.
-    SubnetFlood = 14,
-    /// A source opened connections to many distinct ports within one
-    /// window and was banned. The value is the distinct ports counted.
-    PortScan = 15,
-    /// An IPv4 header whose version is not 4, whose length is under 20
-    /// bytes, or whose total length is shorter than the header or longer
-    /// than the frame. The packet is dropped unread.
-    MalformedIp = 16,
-    /// An IPv4 fragment. The kernel cannot reassemble, and inspecting the
-    /// pieces alone would let a header or signature split across them slip
-    /// past the firewall and DPI, so every fragment is dropped.
-    IpFragment = 17,
+wire_enum! {
+    /// Security alert reason codes.
+    ///
+    /// Each code represents a different type of security event detected
+    /// by the kernel's security mechanisms.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AlertReason {
+        /// DDoS attack detected (high volume or heavy hitter).
+        Ddos = 1,
+        /// Firewall rule violation (blocked port access).
+        Firewall = 2,
+        /// Malware signature match detected.
+        Malware = 3,
+        /// BPF filter dropped the packet.
+        Bpf = 4,
+        /// Heuristic analysis detected anomaly.
+        Heuristic = 5,
+        /// New network flow created.
+        Flow = 6,
+        /// Packet passed all security checks.
+        Pass = 7,
+        /// Mgmt-plane packet failed authentication (bad MAC or replayed counter).
+        MgmtAuthFail = 8,
+        /// The installed BPF program burned its per-packet cycle budget
+        /// without reaching a Ret instruction. The packet is dropped; the
+        /// alert gives the operator a signal that the currently-loaded
+        /// program is likely adversarial or buggy.
+        BpfTimeout = 11,
+        /// The installed BPF program executed a `Ret` whose immediate was
+        /// neither 0 (drop) nor 1 (pass), or ended without one (which
+        /// upload validation rules out). The packet is dropped rather
+        /// than silently passed, so future action-code extensions cannot
+        /// be pre-poisoned by programs uploaded before the extension.
+        BpfInvalidAction = 12,
+        /// Far more distinct sources than usual arrived in one detection
+        /// interval, typical of a flood from spoofed addresses. The value is
+        /// the estimated number of sources; nothing is banned.
+        SourceSurge = 13,
+        /// A /24 or /16 sent more than its threshold, though no single host in
+        /// it did; the subnet was banned. The alert's source is the network,
+        /// with its prefix length, and the value its estimated packet rate.
+        SubnetFlood = 14,
+        /// A source opened connections to many distinct ports within one
+        /// window and was banned. The value is the distinct ports counted.
+        PortScan = 15,
+        /// An IPv4 header whose version is not 4, whose length is under 20
+        /// bytes, or whose total length is shorter than the header or longer
+        /// than the frame. The packet is dropped unread.
+        MalformedIp = 16,
+        /// An IPv4 fragment. The kernel cannot reassemble, and inspecting the
+        /// pieces alone would let a header or signature split across them slip
+        /// past the firewall and DPI, so every fragment is dropped.
+        IpFragment = 17,
+    }
 }
 
 impl AlertReason {
@@ -66,31 +67,6 @@ impl AlertReason {
     /// to the alert packet's reason field.
     pub const fn as_u8(self) -> u8 {
         self as u8
-    }
-
-    /// Converts a raw u8 reason code back to the enum variant.
-    ///
-    /// Used by control-plane consumers (GUI, daemon) when parsing alert
-    /// packets off the wire. Returns `None` for unrecognised codes.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::Ddos),
-            2 => Some(Self::Firewall),
-            3 => Some(Self::Malware),
-            4 => Some(Self::Bpf),
-            5 => Some(Self::Heuristic),
-            6 => Some(Self::Flow),
-            7 => Some(Self::Pass),
-            8 => Some(Self::MgmtAuthFail),
-            11 => Some(Self::BpfTimeout),
-            12 => Some(Self::BpfInvalidAction),
-            13 => Some(Self::SourceSurge),
-            14 => Some(Self::SubnetFlood),
-            15 => Some(Self::PortScan),
-            16 => Some(Self::MalformedIp),
-            17 => Some(Self::IpFragment),
-            _ => None,
-        }
     }
 }
 

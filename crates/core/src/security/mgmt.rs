@@ -10,73 +10,42 @@
 //! Callers (kernel, daemon, GUI) wrap and unwrap that envelope; the
 //! code in here only describes the inner command layout.
 
-/// Management message type identifiers.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ManagementMessageType {
-    /// Block a destination port (firewall rule).
-    BlockPort = 0x01,
-    /// Add a DPI signature pattern.
-    AddDpiPattern = 0x02,
-    /// Upload an BPF program.
-    UploadBpfProgram = 0x03,
-    /// Manually ban an IP address.
-    BanIp = 0x04,
-    /// Remove a destination port from the firewall.
-    UnblockPort = 0x05,
-    /// Remove a runtime-added DPI pattern.
-    RemoveDpiPattern = 0x06,
-    /// Uninstall the BPF program, so every packet skips the filter.
-    UnloadBpfProgram = 0x07,
-    /// Lift a ban on an IP address.
-    UnbanIp = 0x08,
-}
-
-impl ManagementMessageType {
-    /// Converts a u8 message type to the enum variant.
-    ///
-    /// This method is used internally when parsing management commands
-    /// from UDP payloads. Returns None if the type is not recognized.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0x01 => Some(Self::BlockPort),
-            0x02 => Some(Self::AddDpiPattern),
-            0x03 => Some(Self::UploadBpfProgram),
-            0x04 => Some(Self::BanIp),
-            0x05 => Some(Self::UnblockPort),
-            0x06 => Some(Self::RemoveDpiPattern),
-            0x07 => Some(Self::UnloadBpfProgram),
-            0x08 => Some(Self::UnbanIp),
-            _ => None,
-        }
+wire_enum! {
+    /// Management message type identifiers.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ManagementMessageType {
+        /// Block a destination port (firewall rule).
+        BlockPort = 0x01,
+        /// Add a DPI signature pattern.
+        AddDpiPattern = 0x02,
+        /// Upload an BPF program.
+        UploadBpfProgram = 0x03,
+        /// Manually ban an IP address.
+        BanIp = 0x04,
+        /// Remove a destination port from the firewall.
+        UnblockPort = 0x05,
+        /// Remove a runtime-added DPI pattern.
+        RemoveDpiPattern = 0x06,
+        /// Uninstall the BPF program, so every packet skips the filter.
+        UnloadBpfProgram = 0x07,
+        /// Lift a ban on an IP address.
+        UnbanIp = 0x08,
     }
 }
 
-/// What happened to an authenticated mgmt command, reported back to the
-/// operator in an ack.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MgmtOutcome {
-    /// The command took effect (including no-op duplicates).
-    Applied = 0,
-    /// The relevant table is full; nothing changed.
-    TableFull = 1,
-    /// The body was malformed or named an unknown command.
-    Invalid = 2,
-    /// Well-formed but refused, e.g. blocking the mgmt port itself.
-    Refused = 3,
-}
-
-impl MgmtOutcome {
-    /// Converts a raw outcome byte back to the enum variant.
-    pub const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Applied),
-            1 => Some(Self::TableFull),
-            2 => Some(Self::Invalid),
-            3 => Some(Self::Refused),
-            _ => None,
-        }
+wire_enum! {
+    /// What happened to an authenticated mgmt command, reported back to the
+    /// operator in an ack.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MgmtOutcome {
+        /// The command took effect (including no-op duplicates).
+        Applied = 0,
+        /// The relevant table is full; nothing changed.
+        TableFull = 1,
+        /// The body was malformed or named an unknown command.
+        Invalid = 2,
+        /// Well-formed but refused, e.g. blocking the mgmt port itself.
+        Refused = 3,
     }
 }
 
