@@ -373,10 +373,10 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
     let [
         passed,
         ddos,
-        fw,
-        mal,
+        firewall,
+        malware,
         bpf,
-        heur,
+        heuristic,
         _memory_used,
         flows,
         mgmt,
@@ -387,10 +387,10 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
     stats.total_passed.fetch_add(passed, Ordering::Relaxed);
     for (gauge, value) in [
         (&stats.ddos, ddos),
-        (&stats.fw, fw),
-        (&stats.mal, mal),
+        (&stats.firewall, firewall),
+        (&stats.malware, malware),
         (&stats.bpf, bpf),
-        (&stats.heur, heur),
+        (&stats.heuristic, heuristic),
     ] {
         gauge.store(value, Ordering::Relaxed);
         stats.total_dropped.fetch_add(value, Ordering::Relaxed);
