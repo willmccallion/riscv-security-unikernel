@@ -37,6 +37,9 @@ impl SynCookieSecret {
     }
 }
 
+// A frame long enough to have a header holds its EtherType.
+const _: () = assert!(ethernet::MIN_FRAME_SIZE >= ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE);
+
 /// Processes an incoming network packet.
 ///
 /// Handles various protocol types:
@@ -58,11 +61,10 @@ pub fn process_packet<'a, S: PacketSink>(
     if packet.len() < ethernet::MIN_FRAME_SIZE {
         return None;
     }
-    if packet.len() < ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE {
-        return None;
-    }
-    let eth_type =
-        (packet[ethernet::TYPE_OFFSET] as u16) << 8 | packet[ethernet::TYPE_OFFSET + 1] as u16;
+    let eth_type = u16::from_be_bytes([
+        packet[ethernet::TYPE_OFFSET],
+        packet[ethernet::TYPE_OFFSET + 1],
+    ]);
     match EthernetType::from_u16(eth_type) {
         Some(EthernetType::Arp) => {
             handle_arp(packet, sink);
