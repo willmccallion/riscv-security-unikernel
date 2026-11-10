@@ -20,6 +20,7 @@ use sec_core::security::mgmt::ack_packet;
 use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
+use std::net::Ipv4Addr;
 
 const KEY: [u8; 16] = [0x5A; 16];
 const EPOCH: u32 = 7;
@@ -60,7 +61,7 @@ impl PacketSink for CheckedSink {
         // Replies to the fuzzed frames themselves are not reports.
         let is_report = frame.len() > 42
             && frame[23] == 17
-            && frame[26..30] == sec_core::config::IP_ADDR
+            && frame[26..30] == sec_core::config::IP_ADDR.octets()
             && frame[36..38] == sec_core::config::TELEMETRY_PORT.to_be_bytes();
         if !is_report {
             return;
@@ -79,7 +80,7 @@ fn sealed_mgmt_frame(seq: u32, body: &[u8]) -> Option<Vec<u8>> {
     let counter = (u64::from(EPOCH) << 32) | u64::from(seq);
     let operator = OperatorAddr {
         mac: OPERATOR_MAC,
-        ip: OPERATOR_IP,
+        ip: Ipv4Addr::from(OPERATOR_IP),
     };
     let mut sealed = vec![0u8; sealed_len(body.len())];
     let n = seal(&KEY, counter, &operator, body, &mut sealed)?;
@@ -96,7 +97,7 @@ fn udp_frame(src_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> V
     f[22] = 64;
     f[23] = 17;
     f[26..30].copy_from_slice(&src_ip);
-    f[30..34].copy_from_slice(&sec_core::config::IP_ADDR);
+    f[30..34].copy_from_slice(&sec_core::config::IP_ADDR.octets());
     f[34..36].copy_from_slice(&src_port.to_be_bytes());
     f[36..38].copy_from_slice(&dst_port.to_be_bytes());
     f[38..40].copy_from_slice(&((8 + payload.len()) as u16).to_be_bytes());

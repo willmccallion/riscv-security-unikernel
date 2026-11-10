@@ -6,6 +6,7 @@ use sec_core::config::MANAGEMENT_PORT;
 use sec_core::security::mgmt_auth::parse_hex_key;
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportVerifier, report_key};
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -68,7 +69,7 @@ impl MgmtClient {
         let counter = (u64::from(self.epoch) << 32) | u64::from(self.seq);
         let host = OperatorAddr {
             mac: frame::HOST_MAC,
-            ip: frame::HOST_IP,
+            ip: Ipv4Addr::from(frame::HOST_IP),
         };
         let mut sealed = vec![0u8; sealed_len(body.len())];
         let Some(n) = seal(&self.key, counter, &host, body, &mut sealed) else {

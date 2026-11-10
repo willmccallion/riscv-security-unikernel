@@ -4,6 +4,8 @@
 //! including packet counts, byte counts, and timing information. Used for
 //! connection tracking and flow-based security analysis.
 
+use core::net::Ipv4Addr;
+
 use core::num::NonZeroU64;
 
 /// Maximum number of flows that can be tracked simultaneously.
@@ -23,9 +25,9 @@ const MIN_EVICTION_AGE: u64 = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlowKey {
     /// Source IPv4 address.
-    pub src_ip: [u8; 4],
+    pub src_ip: Ipv4Addr,
     /// Destination IPv4 address.
-    pub dst_ip: [u8; 4],
+    pub dst_ip: Ipv4Addr,
     /// Source port, or 0 for protocols without ports.
     pub src_port: u16,
     /// Destination port, or 0 for protocols without ports.
@@ -167,8 +169,8 @@ mod tests {
 
     fn key(src_port: u16) -> FlowKey {
         FlowKey {
-            src_ip: [10, 0, 0, 1],
-            dst_ip: [10, 0, 0, 2],
+            src_ip: Ipv4Addr::new(10, 0, 0, 1),
+            dst_ip: Ipv4Addr::new(10, 0, 0, 2),
             src_port,
             dst_port: 80,
             protocol: 6,

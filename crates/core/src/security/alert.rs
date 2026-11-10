@@ -3,6 +3,8 @@
 //! Defines the alert reason codes used when security events are detected
 //! and reported to the control plane.
 
+use core::net::Ipv4Addr;
+
 wire_enum! {
     /// Security alert reason codes.
     ///
@@ -128,9 +130,9 @@ pub mod alert_packet {
 #[derive(Debug, Clone, Copy)]
 pub struct AlertMeta {
     /// Source IPv4 address.
-    pub src_ip: [u8; 4],
+    pub src_ip: Ipv4Addr,
     /// Destination IPv4 address.
-    pub dst_ip: [u8; 4],
+    pub dst_ip: Ipv4Addr,
     /// Source port (host byte order). Zero if unknown / non-TCP/UDP.
     pub src_port: u16,
     /// Destination port (host byte order). Zero if unknown / non-TCP/UDP.
@@ -150,8 +152,8 @@ impl AlertMeta {
     /// (e.g. an early-rejected mgmt envelope).
     pub const fn empty() -> Self {
         Self {
-            src_ip: [0; 4],
-            dst_ip: [0; 4],
+            src_ip: Ipv4Addr::UNSPECIFIED,
+            dst_ip: Ipv4Addr::UNSPECIFIED,
             src_port: 0,
             dst_port: 0,
             protocol: 0,

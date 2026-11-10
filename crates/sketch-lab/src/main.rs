@@ -19,6 +19,7 @@ use sec_core::security::sketch::HyperLogLog;
 use sketches::{Aging, Cms, FrequencySketch, ScanDetector, Update, VhllThreshold};
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use traffic::{Source, Zipf};
 
@@ -552,8 +553,9 @@ fn simulate_subnets(
 ) -> SubnetOutcome {
     let mut banned_hosts: HashSet<[u8; 4]> = HashSet::new();
     let mut banned_prefixes: Vec<(Ipv4Prefix, f64)> = Vec::new();
-    let covered =
-        |addr: [u8; 4], bans: &[(Ipv4Prefix, f64)]| bans.iter().any(|(p, _)| p.contains(addr));
+    let covered = |addr: [u8; 4], bans: &[(Ipv4Prefix, f64)]| {
+        bans.iter().any(|(p, _)| p.contains(Ipv4Addr::from(addr)))
+    };
     for (interval, arrivals) in schedule.iter().enumerate() {
         let start = interval as f64 * interval_s;
         for (k, &src) in arrivals.iter().enumerate() {
@@ -567,10 +569,10 @@ fn simulate_subnets(
             }
             let at = start + interval_s * k as f64 / arrivals.len() as f64;
             for (len, threshold) in [(24, SUBNET_24_THRESHOLD), (16, SUBNET_16_THRESHOLD)] {
-                let Some(prefix) = Ipv4Prefix::new(addr, len) else {
+                let Some(prefix) = Ipv4Prefix::new(Ipv4Addr::from(addr), len) else {
                     continue;
                 };
-                let network = prefix.network();
+                let network = prefix.network().octets();
                 if prefixes.insert(&[len, network[0], network[1], network[2]]) > threshold
                     && !banned_prefixes.iter().any(|(p, _)| *p == prefix)
                 {
@@ -586,7 +588,7 @@ fn simulate_subnets(
     let detected = |net: [u8; 4], len: u8| {
         banned_prefixes
             .iter()
-            .filter(|(p, _)| p.prefix_len() <= len && p.contains(net))
+            .filter(|(p, _)| p.prefix_len() <= len && p.contains(Ipv4Addr::from(net)))
             .map(|&(_, at)| at * 1000.0)
             .reduce(f64::min)
     };

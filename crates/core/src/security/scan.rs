@@ -6,6 +6,7 @@ use crate::config::{
     PORT_SCAN_POOL_REGISTERS, PORT_SCAN_REGISTERS_PER_SOURCE, PORT_SCAN_WINDOW_INTERVALS,
 };
 use crate::security::sketch::VirtualHyperLogLog;
+use core::net::Ipv4Addr;
 
 /// Finds sources that try many distinct destination ports per window.
 ///
@@ -27,20 +28,20 @@ pub struct PortScanDetector {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfirmedScan {
     /// The scanning source.
-    pub source: [u8; 4],
+    pub source: Ipv4Addr,
     /// Distinct ports it tried within one window, counted exactly.
     pub distinct_ports: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Suspect {
-    source: [u8; 4],
+    source: Ipv4Addr,
     ports: [u16; PORT_SCAN_CONFIRM_PORTS],
     seen: usize,
 }
 
 impl Suspect {
-    const fn new(source: [u8; 4], first_port: u16) -> Self {
+    const fn new(source: Ipv4Addr, first_port: u16) -> Self {
         let mut ports = [0; PORT_SCAN_CONFIRM_PORTS];
         ports[0] = first_port;
         Self {
@@ -79,7 +80,7 @@ impl PortScanDetector {
 
     /// Records a connection attempt from `source` to `port`; returns the
     /// scan it confirms, if any.
-    pub fn observe(&mut self, source: [u8; 4], port: u16) -> Option<ConfirmedScan> {
+    pub fn observe(&mut self, source: Ipv4Addr, port: u16) -> Option<ConfirmedScan> {
         if let Some(slot) = self
             .suspects
             .iter_mut()
@@ -95,8 +96,8 @@ impl PortScanDetector {
                 distinct_ports: PORT_SCAN_CONFIRM_PORTS as u32,
             });
         }
-        if self.estimates.insert(&source, &port.to_be_bytes())
-            && self.estimates.estimate(&source) > PORT_SCAN_NOMINATE_PORTS
+        if self.estimates.insert(&source.octets(), &port.to_be_bytes())
+            && self.estimates.estimate(&source.octets()) > PORT_SCAN_NOMINATE_PORTS
         {
             self.nominate(Suspect::new(source, port));
         }
@@ -131,7 +132,7 @@ mod tests {
 
     fn scan(
         detector: &mut PortScanDetector,
-        source: [u8; 4],
+        source: Ipv4Addr,
         ports: core::ops::Range<u16>,
     ) -> Option<ConfirmedScan> {
         ports
@@ -143,12 +144,12 @@ mod tests {
     fn a_source_trying_hundreds_of_ports_is_confirmed() {
         let mut detector = PortScanDetector::new([3; 16]);
 
-        let confirmed = scan(&mut detector, [10, 0, 0, 9], 1..1000);
+        let confirmed = scan(&mut detector, Ipv4Addr::new(10, 0, 0, 9), 1..1000);
 
         assert_eq!(
             confirmed,
             Some(ConfirmedScan {
-                source: [10, 0, 0, 9],
+                source: Ipv4Addr::new(10, 0, 0, 9),
                 distinct_ports: PORT_SCAN_CONFIRM_PORTS as u32
             })
         );
@@ -159,7 +160,7 @@ mod tests {
         let mut detector = PortScanDetector::new([3; 16]);
 
         let confirmed = (0u32..5_000).find_map(|s| {
-            let source = (s | 0x0A00_0000).to_be_bytes();
+            let source = Ipv4Addr::from_bits(s | 0x0A00_0000);
             [80, 443, 22, 80]
                 .into_iter()
                 .find_map(|port| detector.observe(source, port))
@@ -170,7 +171,7 @@ mod tests {
 
     #[test]
     fn repeating_one_port_never_fills_a_suspect() {
-        let mut suspect = Suspect::new([1, 2, 3, 4], 80);
+        let mut suspect = Suspect::new(Ipv4Addr::new(1, 2, 3, 4), 80);
 
         let filled = (0..1000).any(|_| suspect.record(443));
 
@@ -182,7 +183,7 @@ mod tests {
     fn a_new_window_forgets_progress() {
         let per_window = PORT_SCAN_CONFIRM_PORTS as u16;
         let mut detector = PortScanDetector::new([3; 16]);
-        let source = [10, 0, 0, 9];
+        let source = Ipv4Addr::new(10, 0, 0, 9);
         assert_eq!(scan(&mut detector, source, 0..per_window), None);
 
         for _ in 0..PORT_SCAN_WINDOW_INTERVALS {
@@ -200,21 +201,21 @@ mod tests {
         let mut detector = PortScanDetector::new([3; 16]);
         detector.suspects[0] = Some(Suspect {
             seen: PORT_SCAN_CONFIRM_PORTS - 1,
-            ..Suspect::new([9, 9, 9, 9], 1)
+            ..Suspect::new(Ipv4Addr::new(9, 9, 9, 9), 1)
         });
         for i in 1..PORT_SCAN_CANDIDATES {
-            detector.suspects[i] = Some(Suspect::new([9, 9, 9, i as u8 + 10], 1));
+            detector.suspects[i] = Some(Suspect::new(Ipv4Addr::new(9, 9, 9, i as u8 + 10), 1));
         }
 
         for i in 0..PORT_SCAN_CANDIDATES as u8 {
-            detector.nominate(Suspect::new([1, 1, 1, i], 1));
+            detector.nominate(Suspect::new(Ipv4Addr::new(1, 1, 1, i), 1));
         }
 
         assert!(
             detector
                 .suspects
                 .iter()
-                .any(|s| s.is_some_and(|s| s.source == [9, 9, 9, 9]))
+                .any(|s| s.is_some_and(|s| s.source == Ipv4Addr::new(9, 9, 9, 9)))
         );
     }
 }

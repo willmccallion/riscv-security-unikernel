@@ -3,6 +3,7 @@
 
 use sec_core::security::scan::PortScanDetector;
 use sec_core::security::sketch::{CountMinSketch, VirtualHyperLogLog};
+use std::net::Ipv4Addr;
 
 /// How a sketch counts an occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +117,7 @@ pub trait ScanDetector {
 
 impl ScanDetector for Box<PortScanDetector> {
     fn observe(&mut self, source: [u8; 4], port: u16) -> bool {
-        PortScanDetector::observe(self, source, port).is_some()
+        PortScanDetector::observe(self, Ipv4Addr::from(source), port).is_some()
     }
 
     fn memory_bytes(&self) -> usize {

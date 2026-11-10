@@ -12,6 +12,8 @@
 //! nanoseconds on the Linux daemon) alongside the duration/cost constants,
 //! which must share the same unit.
 
+use core::net::Ipv4Addr;
+
 /// An IPv4 network: an address with only its first `len` bits kept.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Ipv4Prefix {
@@ -21,27 +23,27 @@ pub struct Ipv4Prefix {
 
 impl Ipv4Prefix {
     /// The `len`-bit prefix containing `addr`, or `None` if `len > 32`.
-    pub const fn new(addr: [u8; 4], len: u8) -> Option<Self> {
+    pub const fn new(addr: Ipv4Addr, len: u8) -> Option<Self> {
         if len > 32 {
             return None;
         }
         Some(Self {
-            network: u32::from_be_bytes(addr) & mask(len),
+            network: addr.to_bits() & mask(len),
             len,
         })
     }
 
     /// The single-address prefix for `addr`.
-    pub const fn host(addr: [u8; 4]) -> Self {
+    pub const fn host(addr: Ipv4Addr) -> Self {
         Self {
-            network: u32::from_be_bytes(addr),
+            network: addr.to_bits(),
             len: 32,
         }
     }
 
     /// The network address, with the bits past the prefix cleared.
-    pub const fn network(&self) -> [u8; 4] {
-        self.network.to_be_bytes()
+    pub const fn network(&self) -> Ipv4Addr {
+        Ipv4Addr::from_bits(self.network)
     }
 
     /// The prefix length in bits.
@@ -50,8 +52,8 @@ impl Ipv4Prefix {
     }
 
     /// Whether `addr` lies inside this prefix.
-    pub const fn contains(&self, addr: [u8; 4]) -> bool {
-        u32::from_be_bytes(addr) & mask(self.len) == self.network
+    pub const fn contains(&self, addr: Ipv4Addr) -> bool {
+        addr.to_bits() & mask(self.len) == self.network
     }
 }
 
@@ -124,7 +126,7 @@ impl PenaltyBox {
     pub const fn new() -> Self {
         Self {
             entries: [BanEntry {
-                prefix: Ipv4Prefix::host([0; 4]),
+                prefix: Ipv4Prefix::host(Ipv4Addr::UNSPECIFIED),
                 expiry: 0,
                 source: BanSource::Detector,
             }; Self::SLOTS],
@@ -133,8 +135,8 @@ impl PenaltyBox {
     }
 
     /// Bans a single address until `now + duration` on a detector's behalf.
-    pub fn ban(&mut self, ip_bytes: &[u8; 4], duration: u64, now: u64) {
-        self.ban_prefix(Ipv4Prefix::host(*ip_bytes), duration, now);
+    pub fn ban(&mut self, ip: Ipv4Addr, duration: u64, now: u64) {
+        self.ban_prefix(Ipv4Prefix::host(ip), duration, now);
     }
 
     /// Bans every address in `prefix` until `now + duration` on a
@@ -151,11 +153,11 @@ impl PenaltyBox {
     /// [`PenaltyBoxFull`] if every slot already holds an active operator ban.
     pub fn ban_by_operator(
         &mut self,
-        ip_bytes: &[u8; 4],
+        ip: Ipv4Addr,
         duration: u64,
         now: u64,
     ) -> Result<(), PenaltyBoxFull> {
-        let prefix = Ipv4Prefix::host(*ip_bytes);
+        let prefix = Ipv4Prefix::host(ip);
         self.store(prefix, BanSource::Operator, duration, now)
             .then_some(())
             .ok_or(PenaltyBoxFull)
@@ -200,22 +202,22 @@ impl PenaltyBox {
         Some(idx)
     }
 
-    /// Lifts every ban covering `ip_bytes`, whether on the address itself
+    /// Lifts every ban covering `ip`, whether on the address itself
     /// or on a subnet containing it.
-    pub fn unban(&mut self, ip_bytes: &[u8; 4]) {
+    pub fn unban(&mut self, ip: Ipv4Addr) {
         for entry in &mut self.entries {
-            if entry.prefix.contains(*ip_bytes) {
+            if entry.prefix.contains(ip) {
                 entry.expiry = 0;
             }
         }
     }
 
-    /// Whether an active ban covers `ip_bytes`: one whose expiry is later
+    /// Whether an active ban covers `ip`: one whose expiry is later
     /// than `now`.
-    pub fn is_banned(&self, ip_bytes: &[u8; 4], now: u64) -> bool {
+    pub fn is_banned(&self, ip: Ipv4Addr, now: u64) -> bool {
         self.entries
             .iter()
-            .any(|e| e.is_active(now) && e.prefix.contains(*ip_bytes))
+            .any(|e| e.is_active(now) && e.prefix.contains(ip))
     }
 }
 
@@ -275,45 +277,53 @@ impl TokenBucket {
 
 #[cfg(test)]
 mod prefix_tests {
-    use super::{Ipv4Prefix, PenaltyBox};
+    use super::{Ipv4Addr, Ipv4Prefix, PenaltyBox};
 
     #[test]
     fn prefix_keeps_only_the_network_bits() {
-        let prefix = Ipv4Prefix::new([10, 1, 2, 99], 24).unwrap();
+        let prefix = Ipv4Prefix::new(Ipv4Addr::new(10, 1, 2, 99), 24).unwrap();
 
-        assert_eq!(prefix.network(), [10, 1, 2, 0]);
-        assert!(prefix.contains([10, 1, 2, 200]));
-        assert!(!prefix.contains([10, 1, 3, 1]));
+        assert_eq!(prefix.network(), Ipv4Addr::new(10, 1, 2, 0));
+        assert!(prefix.contains(Ipv4Addr::new(10, 1, 2, 200)));
+        assert!(!prefix.contains(Ipv4Addr::new(10, 1, 3, 1)));
     }
 
     #[test]
     fn zero_length_prefix_covers_everything_and_long_ones_are_rejected() {
         assert!(
-            Ipv4Prefix::new([1, 2, 3, 4], 0)
+            Ipv4Prefix::new(Ipv4Addr::new(1, 2, 3, 4), 0)
                 .unwrap()
-                .contains([200, 0, 0, 1])
+                .contains(Ipv4Addr::new(200, 0, 0, 1))
         );
-        assert_eq!(Ipv4Prefix::new([1, 2, 3, 4], 33), None);
+        assert_eq!(Ipv4Prefix::new(Ipv4Addr::new(1, 2, 3, 4), 33), None);
     }
 
     #[test]
     fn a_subnet_ban_covers_its_hosts_only() {
         let mut pbox = PenaltyBox::new();
 
-        pbox.ban_prefix(Ipv4Prefix::new([10, 1, 2, 0], 24).unwrap(), 1_000, 0);
+        pbox.ban_prefix(
+            Ipv4Prefix::new(Ipv4Addr::new(10, 1, 2, 0), 24).unwrap(),
+            1_000,
+            0,
+        );
 
-        assert!(pbox.is_banned(&[10, 1, 2, 77], 1));
-        assert!(!pbox.is_banned(&[10, 1, 3, 77], 1));
+        assert!(pbox.is_banned(Ipv4Addr::new(10, 1, 2, 77), 1));
+        assert!(!pbox.is_banned(Ipv4Addr::new(10, 1, 3, 77), 1));
     }
 
     #[test]
     fn unbanning_a_host_lifts_the_subnet_ban_covering_it() {
         let mut pbox = PenaltyBox::new();
-        pbox.ban_prefix(Ipv4Prefix::new([10, 1, 0, 0], 16).unwrap(), 1_000, 0);
+        pbox.ban_prefix(
+            Ipv4Prefix::new(Ipv4Addr::new(10, 1, 0, 0), 16).unwrap(),
+            1_000,
+            0,
+        );
 
-        pbox.unban(&[10, 1, 200, 3]);
+        pbox.unban(Ipv4Addr::new(10, 1, 200, 3));
 
-        assert!(!pbox.is_banned(&[10, 1, 9, 9], 1));
+        assert!(!pbox.is_banned(Ipv4Addr::new(10, 1, 9, 9), 1));
     }
 }
 

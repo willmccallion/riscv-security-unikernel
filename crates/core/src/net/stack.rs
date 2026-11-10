@@ -4,6 +4,8 @@
 //! incoming packets, generates responses where appropriate, and
 //! extracts payload data for security inspection.
 
+use core::net::Ipv4Addr;
+
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::PacketSink;
 use crate::net::constants::{
@@ -27,10 +29,10 @@ impl SynCookieSecret {
     /// Computes the 32-bit SYN-cookie sequence number for the given
     /// 5-tuple. Uses SipHash-2-4 keyed by `self.0`, so the cookie is
     /// unforgeable to anyone who does not hold the secret.
-    pub fn cookie(&self, src_ip: &[u8; 4], dst_ip: &[u8; 4], src_port: u16, dst_port: u16) -> u32 {
+    pub fn cookie(&self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr, src_port: u16, dst_port: u16) -> u32 {
         let mut buf = [0u8; 12];
-        buf[..4].copy_from_slice(src_ip);
-        buf[4..8].copy_from_slice(dst_ip);
+        buf[..4].copy_from_slice(&src_ip.octets());
+        buf[4..8].copy_from_slice(&dst_ip.octets());
         buf[8..10].copy_from_slice(&src_port.to_be_bytes());
         buf[10..12].copy_from_slice(&dst_port.to_be_bytes());
         siphash24(&self.0, &buf) as u32
@@ -92,7 +94,8 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     if hw_type != 1 || ArpOpcode::from_u16(opcode) != Some(ArpOpcode::Request) {
         return;
     }
-    if packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
+    if packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR.octets()
+    {
         return;
     }
 
@@ -127,7 +130,7 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     packet[arp::SENDER_MAC_OFFSET..arp::SENDER_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
         .copy_from_slice(&MAC_ADDR);
     packet[arp::SENDER_IP_OFFSET..arp::SENDER_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-        .copy_from_slice(&IP_ADDR);
+        .copy_from_slice(&IP_ADDR.octets());
 
     sink.send(&packet[0..arp::MIN_PACKET_SIZE]);
 }
@@ -158,7 +161,7 @@ fn handle_ipv4<'a, S: PacketSink>(
     let ihl = ihl_words * 4;
     let protocol = packet[ipv4::PROTOCOL_OFFSET];
 
-    if packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR {
+    if packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR.octets() {
         return None;
     }
     let ip_end = ipv4_end(packet, usize::from(ihl))?;
@@ -202,18 +205,8 @@ fn handle_ipv4<'a, S: PacketSink>(
         }
 
         if flags.is_connection_request() {
-            let src_ip = [
-                packet[ipv4::SRC_IP_OFFSET],
-                packet[ipv4::SRC_IP_OFFSET + 1],
-                packet[ipv4::SRC_IP_OFFSET + 2],
-                packet[ipv4::SRC_IP_OFFSET + 3],
-            ];
-            let dst_ip = [
-                packet[ipv4::DST_IP_OFFSET],
-                packet[ipv4::DST_IP_OFFSET + 1],
-                packet[ipv4::DST_IP_OFFSET + 2],
-                packet[ipv4::DST_IP_OFFSET + 3],
-            ];
+            let src_ip = address_at(packet, ipv4::SRC_IP_OFFSET);
+            let dst_ip = address_at(packet, ipv4::DST_IP_OFFSET);
             answer_connection_request(packet, offset, src_ip, dst_ip, sink, syn_secret);
             return None;
         }
@@ -243,8 +236,8 @@ fn udp_payload(packet: &[u8], offset: usize, ip_end: usize) -> Option<&[u8]> {
 fn answer_connection_request<S: PacketSink>(
     packet: &mut [u8],
     offset: usize,
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
+    src_ip: Ipv4Addr,
+    dst_ip: Ipv4Addr,
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) {
@@ -254,7 +247,7 @@ fn answer_connection_request<S: PacketSink>(
     let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
     let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
     let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
-    let cookie = syn_secret.cookie(&src_ip, &dst_ip, src_port, dst_port);
+    let cookie = syn_secret.cookie(src_ip, dst_ip, src_port, dst_port);
 
     // Sequence numbers wrap (RFC 793 §3.3): seq 0xFFFFFFFF acks as 0.
     send_tcp_reply_inplace(
@@ -265,6 +258,17 @@ fn answer_connection_request<S: PacketSink>(
         TcpFlags::SYN_ACK,
         sink,
     );
+}
+
+/// The IPv4 address in the four bytes at `offset`, which the caller has
+/// checked lie inside `packet`.
+const fn address_at(packet: &[u8], offset: usize) -> Ipv4Addr {
+    Ipv4Addr::new(
+        packet[offset],
+        packet[offset + 1],
+        packet[offset + 2],
+        packet[offset + 3],
+    )
 }
 
 /// Constructs and sends a TCP reply packet in-place.
@@ -337,7 +341,8 @@ fn swap_addresses(packet: &mut [u8]) {
 
     let mut peer_ip = [0u8; ipv4::IP_ADDR_SIZE];
     peer_ip.copy_from_slice(&packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE]);
-    packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR);
+    packet[ipv4::SRC_IP_OFFSET..ipv4::SRC_IP_OFFSET + ipv4::IP_ADDR_SIZE]
+        .copy_from_slice(&IP_ADDR.octets());
     packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&peer_ip);
 }
 

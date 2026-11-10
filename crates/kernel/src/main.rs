@@ -125,13 +125,10 @@ pub extern "C" fn kmain() -> ! {
     crate::kprintln!("\n[ RISC-V Security Unikernel {} ]", KERNEL_VERSION);
     crate::kprintln!("[*] Architecture: RISC-V64 (Bare Metal)");
     crate::kprintln!("[*] Memory Limit: 64KB");
-    crate::kprintln!(
-        "[*] IP Address  : {}.{}.{}.{}",
-        IP_ADDR[0],
-        IP_ADDR[1],
-        IP_ADDR[2],
-        IP_ADDR[3]
-    );
+    // Octet by octet: Ipv4Addr's Display handles padding and costs over a
+    // kilobyte of the 64 KB image.
+    let [a, b, c, d] = IP_ADDR.octets();
+    crate::kprintln!("[*] IP Address  : {a}.{b}.{c}.{d}");
     crate::kprintln!(
         "[*] MAC Address : {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         MAC_ADDR[0],

@@ -3,7 +3,7 @@
 use sec_core::config::{IP_ADDR, MAC_ADDR};
 
 /// The kernel's IPv4 address.
-pub const KERNEL_IP: [u8; 4] = IP_ADDR;
+pub const KERNEL_IP: [u8; 4] = IP_ADDR.octets();
 /// The kernel's MAC address.
 pub const KERNEL_MAC: [u8; 6] = MAC_ADDR;
 /// Address the harness presents as its own.
