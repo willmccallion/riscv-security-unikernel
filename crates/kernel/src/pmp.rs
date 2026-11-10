@@ -36,6 +36,7 @@
 //! the cause and halts.
 
 use core::arch::asm;
+use sec_core::config::TOTAL_MEMORY_SIZE;
 
 const R: u8 = 1 << 0;
 const W: u8 = 1 << 1;
@@ -59,8 +60,8 @@ const MMIO_START: usize = 0x1000_0000;
 const MMIO_END: usize = 0x1001_0000;
 /// RAM base (matches `memory.x`).
 const RAM_START: usize = 0x8000_0000;
-/// Exclusive end of RAM (64 KB total).
-const RAM_END: usize = RAM_START + 64 * 1024;
+/// Exclusive end of RAM.
+const RAM_END: usize = RAM_START + TOTAL_MEMORY_SIZE;
 
 /// Installs the PMP layout described in the module docstring. `_start`
 /// has already installed the trap vector, so a misconfiguration that

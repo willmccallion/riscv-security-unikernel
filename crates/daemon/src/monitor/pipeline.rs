@@ -8,7 +8,7 @@ use super::names::{HelloAssembler, HostName, NameSource, NameTable};
 use super::net::LocalNetworks;
 use super::quic;
 use super::time::UnixNanos;
-use super::tls::ServerName;
+use super::tls::{self, ServerName};
 use super::totals::TrafficTotals;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -199,7 +199,7 @@ impl Monitor {
                 let Some(role) = role.filter(|r| r.from_client) else {
                     return;
                 };
-                if tcp.payload.starts_with(&[22, 3]) {
+                if tls::is_handshake_record(tcp.payload) {
                     self.diagnostics.tls_hellos_seen += 1;
                 }
                 if let Some(hello) =
