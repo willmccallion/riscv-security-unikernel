@@ -66,8 +66,6 @@ pub struct NetStats {
     pub bpf: AtomicU64,
     /// Current packets per second dropped by heuristic analysis.
     pub heur: AtomicU64,
-    /// Current memory usage in bytes.
-    pub memory: AtomicU64,
     /// Current number of active network flows being tracked.
     pub flows: AtomicU64,
     /// Management-plane packets observed in the last interval

@@ -384,7 +384,7 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
         mal,
         bpf,
         heur,
-        memory,
+        _memory_used,
         flows,
         mgmt,
         _epoch,
@@ -402,7 +402,6 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
         gauge.store(value, Ordering::Relaxed);
         stats.total_dropped.fetch_add(value, Ordering::Relaxed);
     }
-    stats.memory.store(memory, Ordering::Relaxed);
     stats.flows.store(flows, Ordering::Relaxed);
     stats.mgmt.store(mgmt, Ordering::Relaxed);
 }
