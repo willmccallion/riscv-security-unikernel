@@ -20,10 +20,9 @@ use sec_core::security::report_auth::{Report, ReportVerifier, report_key, teleme
 /// Namespace prefix used by `make setup_net_many`. Must match the
 /// value in the Makefile.
 const NETNS_PREFIX: &str = "sec-ns";
-/// Default number of namespaces the pool expects at startup. Can be
-/// overridden with the `AEGIS_NS_COUNT` env var (e.g. for a lighter
-/// dev setup with fewer bridges/veths). Must match the `N=` value
-/// passed to `make setup_net_many`.
+/// Default number of namespaces the pool expects at startup. The
+/// `SEC_NS_COUNT` env var overrides it, and `make gui` sets that to the
+/// `NS_COUNT` that `make setup_net_many` used.
 const NETNS_DEFAULT_COUNT: usize = 200;
 
 /// Seals `body` with the mgmt key and a fresh monotonic counter, then
@@ -180,7 +179,7 @@ pub async fn start_background_task(
 
     // Namespaces from `make setup_net_many` give each packet a distinct
     // source IP; without them, fall back to the host socket pool.
-    let ns_count: usize = std::env::var("AEGIS_NS_COUNT")
+    let ns_count: usize = std::env::var("SEC_NS_COUNT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(NETNS_DEFAULT_COUNT);

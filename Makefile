@@ -67,7 +67,7 @@ gui: $(KEY_DEP)
 	@echo "[*] Granting cap_sys_admin to GUI binary (sudo)..."
 	@sudo setcap cap_sys_admin,cap_net_admin+ep $(GUI_BIN)
 	@echo "[*] Running GUI..."
-	@$(KEY_CMD) $(GUI_BIN)
+	@$(KEY_CMD) SEC_NS_COUNT=$(NS_COUNT) $(GUI_BIN)
 
 # The dashboard's live network view alone, reading a monitor started with
 # `security-daemon monitor --serve`. Needs no management key or special
