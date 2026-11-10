@@ -179,11 +179,6 @@ impl FlowTable {
     ///
     /// Marks flows as inactive if they haven't been seen within the
     /// specified timeout period. Updates the active count accordingly.
-    ///
-    /// # Arguments
-    ///
-    /// * `now` - Current time-source value
-    /// * `timeout` - Timeout in time-source units (flows older than this are pruned)
     pub fn prune(&mut self, now: u64, timeout: u64) {
         let mut removed = 0;
         for i in 0..MAX_FLOWS {

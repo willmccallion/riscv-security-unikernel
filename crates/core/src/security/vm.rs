@@ -141,13 +141,6 @@ pub struct Instruction {
 
 impl Instruction {
     /// Creates a new instruction with the specified fields.
-    ///
-    /// # Arguments
-    ///
-    /// * `op` - Opcode value
-    /// * `reg_a` - First register index
-    /// * `reg_b` - Second register index
-    /// * `imm` - Immediate value
     pub const fn new(op: u8, reg_a: u8, reg_b: u8, imm: u32) -> Self {
         Self {
             op,
@@ -224,20 +217,11 @@ impl VM {
     /// Runs the instruction sequence until a Ret instruction is encountered
     /// or the maximum cycle limit is reached. Resets all state before execution.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `program` - Slice of instructions to execute
-    /// * `packet` - Packet data to process
-    ///
-    /// # Returns
-    ///
-    /// `Ok(VmAction::Drop | Pass)` for the two valid outcomes of a
-    /// `Ret` instruction (immediate 0 or 1).
-    /// `Err(VmRuntimeError::Timeout)` if the program burns through
-    /// `MAX_CYCLES`; `Err(VmRuntimeError::InvalidAction(n))` if a `Ret`
-    /// carried any other immediate; `Err(VmRuntimeError::MissingReturn)`
-    /// if execution stepped past the end. Callers must treat every error
-    /// as drop + alert.
+    /// `Timeout` past `MAX_CYCLES`, `InvalidAction` for a `Ret` other than
+    /// 0 or 1, and `MissingReturn` on stepping past the end. Callers must
+    /// treat every error as drop + alert.
     #[inline(always)]
     pub fn execute(
         &mut self,

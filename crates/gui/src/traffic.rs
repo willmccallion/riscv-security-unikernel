@@ -159,12 +159,6 @@ impl MgmtCounter {
 /// - Listens for UDP telemetry and alerts from the kernel
 /// - Processes GUI commands and forwards them to the kernel
 /// - Generates test traffic based on the current mode
-///
-/// # Arguments
-///
-/// * `stats` - Shared statistics structure updated with kernel telemetry
-/// * `events` - Channel for log entries and command status updates
-/// * `cmd_rx` - Channel receiver for commands from the GUI
 pub async fn start_background_task(
     stats: Arc<NetStats>,
     events: UnboundedSender<UiEvent>,
@@ -429,14 +423,6 @@ async fn send_traffic(
 /// Alert packets contain a reason code, source IP address, and optional
 /// payload data. This function extracts this information and creates a
 /// `LogEntry` with appropriate formatting and color coding.
-///
-/// # Arguments
-///
-/// * `data` - Raw UDP payload containing the alert data
-///
-/// # Returns
-///
-/// A `LogEntry` with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
     // Verified reports can still be short; check before any fixed offset.
     if data.len() < alert_packet::ALERT_BODY_LEN {

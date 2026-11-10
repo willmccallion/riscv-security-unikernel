@@ -37,14 +37,6 @@ impl ManagementMessageType {
     ///
     /// This method is used internally when parsing management commands
     /// from UDP payloads. Returns None if the type is not recognized.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Raw u8 message type from packet payload
-    ///
-    /// # Returns
-    ///
-    /// Some `ManagementMessageType` variant if recognized, None otherwise
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(Self::BlockPort),

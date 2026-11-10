@@ -17,14 +17,6 @@ impl HeuristicEngine {
     /// Detects common port scanning techniques:
     /// - Xmas scan: FIN, URG, and PSH flags set together
     /// - Null scan: No flags set
-    ///
-    /// # Arguments
-    ///
-    /// * `flags` - TCP flags byte from the TCP header
-    ///
-    /// # Returns
-    ///
-    /// Some reason string if suspicious flags detected, None otherwise
     pub const fn check_tcp_flags(flags: u8) -> Option<&'static str> {
         use super::heuristic_constants::tcp_flags;
         if (flags & tcp_flags::XMAS_SCAN) == tcp_flags::XMAS_SCAN {
@@ -42,14 +34,6 @@ impl HeuristicEngine {
     ///
     /// Detects NOP sleds (sequences of 0x90 bytes) which are commonly
     /// used in buffer overflow attacks and shellcode injection.
-    ///
-    /// # Arguments
-    ///
-    /// * `payload` - Packet payload bytes to analyze
-    ///
-    /// # Returns
-    ///
-    /// Some reason string if suspicious pattern detected, None otherwise
     pub fn check_payload(payload: &[u8]) -> Option<&'static str> {
         use super::heuristic_constants::payload;
         // A decaying score rather than a run length, so junk bytes spliced

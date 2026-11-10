@@ -216,11 +216,6 @@ impl VirtioNet {
     }
 
     /// Writes a 32-bit value to a VirtIO register.
-    ///
-    /// # Arguments
-    ///
-    /// * `offset` - Register offset from device base address
-    /// * `val` - Value to write
     fn reg_write(offset: usize, val: u32) {
         // SAFETY: ACTIVE_BASE is a valid VirtIO MMIO base address (verified in init).
         // The offset is a known register offset from the VirtIO spec.
@@ -296,10 +291,6 @@ impl VirtioNet {
     ///
     /// Copies the packet data into a transmit buffer and notifies
     /// the device. The packet should be a complete Ethernet frame.
-    ///
-    /// # Arguments
-    ///
-    /// * `packet` - Complete Ethernet frame to transmit
     pub fn send(packet: &[u8]) {
         // The packet body has to fit alongside the 10-byte VirtIO net
         // header in a single `BUF_SIZE` buffer. Current callers all
