@@ -1,6 +1,7 @@
 //! The sketch configurations under study, behind one object-safe trait so
 //! each experiment can sweep sizes that are const generic parameters.
 
+use sec_core::security::hash::SketchKey;
 use sec_core::security::scan::PortScanDetector;
 use sec_core::security::sketch::{CountMinSketch, VirtualHyperLogLog};
 use std::net::Ipv4Addr;
@@ -44,12 +45,12 @@ pub struct Cms<const W: usize, const D: usize> {
     sketch: Box<CountMinSketch<W, D>>,
     update: Update,
     aging: Aging,
-    key: [u8; 16],
+    key: SketchKey,
 }
 
 impl<const W: usize, const D: usize> Cms<W, D> {
     /// A fresh sketch keyed with `key`.
-    pub fn new(update: Update, aging: Aging, key: [u8; 16]) -> Self {
+    pub fn new(update: Update, aging: Aging, key: SketchKey) -> Self {
         Self {
             sketch: Box::new(CountMinSketch::new(key)),
             update,
@@ -133,7 +134,7 @@ pub struct VhllThreshold<const POOL: usize, const PER_FLOW: usize> {
 
 impl<const POOL: usize, const PER_FLOW: usize> VhllThreshold<POOL, PER_FLOW> {
     /// A fresh detector keyed with `key`.
-    pub fn new(key: [u8; 16]) -> Self {
+    pub fn new(key: SketchKey) -> Self {
         Self {
             estimates: Box::new(VirtualHyperLogLog::new(key)),
         }

@@ -14,6 +14,7 @@ use sec_core::config::{
     CMS_DECAY_INTERVAL_CYCLES, HEAVY_HITTER_THRESHOLD, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
 };
 use sec_core::security::dos::Ipv4Prefix;
+use sec_core::security::hash::SketchKey;
 use sec_core::security::scan::PortScanDetector;
 use sec_core::security::sketch::HyperLogLog;
 use sketches::{Aging, Cms, FrequencySketch, ScanDetector, Update, VhllThreshold};
@@ -30,7 +31,7 @@ type MakeSketch = fn() -> Box<dyn FrequencySketch>;
 type MakeScanDetector = fn() -> Box<dyn ScanDetector>;
 
 /// Every sketch in the studies uses this key; results do not depend on it.
-const KEY: [u8; 16] = [7; 16];
+const KEY: SketchKey = SketchKey::new([7; 16]);
 
 fn main() -> Result<()> {
     let out = std::env::args()
@@ -299,7 +300,7 @@ fn hll_errors<const REGISTERS: usize>(rows: &mut Vec<String>) {
     for distinct in DISTINCT {
         let errors: Vec<f64> = (0..TRIALS)
             .map(|trial| {
-                let mut hll = HyperLogLog::<REGISTERS>::new([trial; 16]);
+                let mut hll = HyperLogLog::<REGISTERS>::new(SketchKey::new([trial; 16]));
                 for i in 0..distinct {
                     let _ = hll.insert(&i.to_be_bytes());
                 }

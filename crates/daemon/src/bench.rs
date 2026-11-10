@@ -18,6 +18,7 @@ use sec_core::engine::{BootSecrets, Verdict};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::alert::AlertReason;
+use sec_core::security::hash::{MgmtKey, SketchKey};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -110,7 +111,7 @@ pub struct BenchConfig {
 }
 
 /// Mgmt key for benchmark engines; no mgmt traffic is generated.
-const BENCH_KEY: [u8; 16] = [0; 16];
+const BENCH_KEY: MgmtKey = MgmtKey::new([0; 16]);
 
 /// Runs the configured engines and returns what every thread measured.
 pub fn run(config: BenchConfig) -> Vec<ThreadResult> {
@@ -139,7 +140,7 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     let mut engine = Box::new(DaemonEngine::new(BENCH_KEY));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
-        cms_key: rand::random(),
+        cms_key: SketchKey::new(rand::random()),
         mgmt_epoch: 1,
     });
 

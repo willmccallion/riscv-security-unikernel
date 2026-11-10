@@ -11,7 +11,7 @@
 //! never be replayed to the kernel as a command, and the 64-bit sequence
 //! cannot wrap under any realistic alert rate.
 
-use crate::security::hash::{ct_eq, derive_key, siphash24};
+use crate::security::hash::{ReportKey, ct_eq};
 
 /// Bytes before the body: epoch and sequence.
 pub const HEADER_LEN: usize = 4 + 8;
@@ -37,15 +37,10 @@ pub mod telemetry_packet {
 /// Epochs a verifier remembers so replays from earlier boots stay rejected.
 const REMEMBERED_EPOCHS: usize = 8;
 
-/// Derives the report-signing key from the pre-shared mgmt key.
-pub const fn report_key(mgmt_key: &[u8; 16]) -> [u8; 16] {
-    derive_key(mgmt_key, b"sec-core report key")
-}
-
 /// Writes `body` into `out` as a sealed report and returns its length, or
 /// `None` if `out` is too small.
 pub fn seal_report(
-    key: &[u8; 16],
+    key: &ReportKey,
     epoch: u32,
     seq: u64,
     body: &[u8],
@@ -56,7 +51,7 @@ pub fn seal_report(
     out[..4].copy_from_slice(&epoch.to_be_bytes());
     out[4..HEADER_LEN].copy_from_slice(&seq.to_be_bytes());
     out[HEADER_LEN..signed_len].copy_from_slice(body);
-    let mac = siphash24(key, &out[..signed_len]);
+    let mac = key.hash(&out[..signed_len]);
     out[signed_len..].copy_from_slice(&mac.to_be_bytes());
     Some(out.len())
 }
@@ -81,7 +76,7 @@ pub struct Report<'a> {
 /// receiver back to a stale epoch.
 #[derive(Debug)]
 pub struct ReportVerifier {
-    key: [u8; 16],
+    key: ReportKey,
     current: Option<(u32, u64)>,
     retired: [Option<u32>; REMEMBERED_EPOCHS],
     next_retired: usize,
@@ -89,7 +84,7 @@ pub struct ReportVerifier {
 
 impl ReportVerifier {
     /// Creates a verifier for reports sealed under `report_key`.
-    pub const fn new(report_key: [u8; 16]) -> Self {
+    pub const fn new(report_key: ReportKey) -> Self {
         Self {
             key: report_key,
             current: None,
@@ -110,7 +105,7 @@ impl ReportVerifier {
         if signed_len < HEADER_LEN {
             return None;
         }
-        let expected = siphash24(&self.key, &packet[..signed_len]).to_be_bytes();
+        let expected = self.key.hash(&packet[..signed_len]).to_be_bytes();
         if !ct_eq(&expected, &packet[signed_len..]) {
             return None;
         }
@@ -142,8 +137,9 @@ impl ReportVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::hash::MgmtKey;
 
-    const KEY: [u8; 16] = [7; 16];
+    const KEY: ReportKey = ReportKey::derive(&MgmtKey::new([7; 16]));
 
     fn sealed(epoch: u32, seq: u64, body: &[u8]) -> ([u8; 64], usize) {
         let mut out = [0u8; 64];
@@ -194,10 +190,5 @@ mod tests {
 
         assert!(v.verify(&older[..n_older]).is_none());
         assert_eq!(v.epoch(), Some(6));
-    }
-
-    #[test]
-    fn report_key_differs_from_the_mgmt_key() {
-        assert_ne!(report_key(&KEY), KEY);
     }
 }

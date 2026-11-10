@@ -1,7 +1,7 @@
 //! Virtual HyperLogLog: distinct counts for many flows in one register pool.
 
 use super::hyperloglog;
-use crate::security::hash::{derive_key, siphash24};
+use crate::security::hash::SketchKey;
 
 /// Estimates, for any flow, how many distinct elements it has carried, e.g.
 /// how many destination ports a source has touched.
@@ -17,8 +17,8 @@ use crate::security::hash::{derive_key, siphash24};
 #[derive(Debug)]
 pub struct VirtualHyperLogLog<const POOL: usize, const PER_FLOW: usize> {
     pool: [u8; POOL],
-    flow_key: [u8; 16],
-    element_key: [u8; 16],
+    flow_key: SketchKey,
+    element_key: SketchKey,
     /// Exact `Σ 2^-register` over the pool, scaled by `2^64`, so the pool
     /// estimate costs O(1) instead of a pass over every register.
     scaled_inverse_sum: u128,
@@ -33,19 +33,19 @@ impl<const POOL: usize, const PER_FLOW: usize> VirtualHyperLogLog<POOL, PER_FLOW
     );
 
     /// An empty estimator whose hashing is keyed with `key`.
-    pub const fn new(key: [u8; 16]) -> Self {
+    pub const fn new(key: SketchKey) -> Self {
         let () = Self::VALID;
         Self {
             pool: [0; POOL],
-            flow_key: derive_key(&key, b"vhll flow"),
-            element_key: derive_key(&key, b"vhll element"),
+            flow_key: key.derive(b"vhll flow"),
+            element_key: key.derive(b"vhll element"),
             scaled_inverse_sum: (POOL as u128) << 64,
             zeros: POOL,
         }
     }
 
     /// Clears the estimator and switches to hashing with `key`.
-    pub fn rekey(&mut self, key: [u8; 16]) {
+    pub fn rekey(&mut self, key: SketchKey) {
         *self = Self {
             pool: self.pool,
             ..Self::new(key)
@@ -56,13 +56,13 @@ impl<const POOL: usize, const PER_FLOW: usize> VirtualHyperLogLog<POOL, PER_FLOW
     /// Records that `flow` carried `element`. Returns whether a register
     /// changed, which is the only time any estimate can change.
     pub fn insert(&mut self, flow: &[u8], element: &[u8]) -> bool {
-        let element_hash = siphash24(&self.element_key, element);
+        let element_hash = self.element_key.hash(element);
         let virtual_index = (element_hash as usize) & (PER_FLOW - 1);
         let remaining_bits = 64 - Self::INDEX_BITS;
         let shifted = (element_hash >> Self::INDEX_BITS) << Self::INDEX_BITS;
         let rank = (shifted.leading_zeros().min(remaining_bits) + 1) as u8;
 
-        let position = Self::physical(siphash24(&self.flow_key, flow), virtual_index);
+        let position = Self::physical(self.flow_key.hash(flow), virtual_index);
         let old = self.pool[position];
         if rank <= old {
             return false;
@@ -76,7 +76,7 @@ impl<const POOL: usize, const PER_FLOW: usize> VirtualHyperLogLog<POOL, PER_FLOW
 
     /// The estimated number of distinct elements `flow` has carried.
     pub fn estimate(&self, flow: &[u8]) -> f64 {
-        let flow_hash = siphash24(&self.flow_key, flow);
+        let flow_hash = self.flow_key.hash(flow);
         let mut registers = [0u8; PER_FLOW];
         for (i, register) in registers.iter_mut().enumerate() {
             *register = self.pool[Self::physical(flow_hash, i)];
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn a_scanner_stands_out_from_ordinary_sources() {
-        let mut vhll = VirtualHyperLogLog::<1024, 32>::new([4; 16]);
+        let mut vhll = VirtualHyperLogLog::<1024, 32>::new(SketchKey::new([4; 16]));
         for source in 0u32..300 {
             for port in [80u16, 443, 53] {
                 let _ = vhll.insert(&source.to_be_bytes(), &port.to_be_bytes());
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn repeated_elements_count_once() {
-        let mut vhll = VirtualHyperLogLog::<1024, 32>::new([4; 16]);
+        let mut vhll = VirtualHyperLogLog::<1024, 32>::new(SketchKey::new([4; 16]));
         for _ in 0..1000 {
             let _ = vhll.insert(b"src", &80u16.to_be_bytes());
         }
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn running_pool_estimate_matches_a_full_recount() {
-        let mut vhll = VirtualHyperLogLog::<1024, 32>::new([4; 16]);
+        let mut vhll = VirtualHyperLogLog::<1024, 32>::new(SketchKey::new([4; 16]));
         for i in 0u32..5000 {
             let _ = vhll.insert(&(i % 97).to_be_bytes(), &i.to_be_bytes());
         }
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn clear_forgets_every_flow() {
-        let mut vhll = VirtualHyperLogLog::<1024, 32>::new([4; 16]);
+        let mut vhll = VirtualHyperLogLog::<1024, 32>::new(SketchKey::new([4; 16]));
         for port in 0u16..300 {
             let _ = vhll.insert(b"src", &port.to_be_bytes());
         }

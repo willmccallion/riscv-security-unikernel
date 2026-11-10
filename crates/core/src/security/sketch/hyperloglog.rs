@@ -1,6 +1,6 @@
 //! HyperLogLog: approximate count of distinct items in fixed memory.
 
-use crate::security::hash::siphash24;
+use crate::security::hash::SketchKey;
 
 /// Estimates how many distinct items it has seen, with relative standard
 /// error about `1.04 / sqrt(REGISTERS)` (6.5% for 256 registers).
@@ -14,7 +14,7 @@ use crate::security::hash::siphash24;
 #[derive(Debug)]
 pub struct HyperLogLog<const REGISTERS: usize> {
     registers: [u8; REGISTERS],
-    key: [u8; 16],
+    key: SketchKey,
 }
 
 impl<const REGISTERS: usize> HyperLogLog<REGISTERS> {
@@ -25,7 +25,7 @@ impl<const REGISTERS: usize> HyperLogLog<REGISTERS> {
     );
 
     /// An empty counter whose hashing is keyed with `key`.
-    pub const fn new(key: [u8; 16]) -> Self {
+    pub const fn new(key: SketchKey) -> Self {
         let () = Self::VALID;
         Self {
             registers: [0; REGISTERS],
@@ -34,7 +34,7 @@ impl<const REGISTERS: usize> HyperLogLog<REGISTERS> {
     }
 
     /// Clears the counter and switches to hashing with `key`.
-    pub fn rekey(&mut self, key: [u8; 16]) {
+    pub fn rekey(&mut self, key: SketchKey) {
         self.clear();
         self.key = key;
     }
@@ -42,7 +42,7 @@ impl<const REGISTERS: usize> HyperLogLog<REGISTERS> {
     /// Records `item`. Returns whether any register changed, which is the
     /// only time the estimate can change.
     pub fn insert(&mut self, item: &[u8]) -> bool {
-        self.insert_hash(siphash24(&self.key, item))
+        self.insert_hash(self.key.hash(item))
     }
 
     /// Records an item by its already-computed 64-bit hash.
@@ -149,14 +149,14 @@ mod tests {
 
     #[test]
     fn empty_counter_estimates_zero() {
-        let hll = HyperLogLog::<256>::new([1; 16]);
+        let hll = HyperLogLog::<256>::new(SketchKey::new([1; 16]));
 
         assert!(close(hll.estimate(), 0.0, 1e-9));
     }
 
     #[test]
     fn repeats_do_not_change_the_estimate() {
-        let mut hll = HyperLogLog::<256>::new([1; 16]);
+        let mut hll = HyperLogLog::<256>::new(SketchKey::new([1; 16]));
         for i in 0u32..100 {
             let _ = hll.insert(&i.to_be_bytes());
         }
@@ -176,7 +176,7 @@ mod tests {
     fn estimates_are_within_a_few_standard_errors() {
         // 1.04 / sqrt(256) = 6.5% standard error; allow 4 sigma.
         for (key, distinct) in [(1u8, 50u32), (2, 1_000), (3, 20_000), (4, 200_000)] {
-            let mut hll = HyperLogLog::<256>::new([key; 16]);
+            let mut hll = HyperLogLog::<256>::new(SketchKey::new([key; 16]));
             for i in 0..distinct {
                 let _ = hll.insert(&i.to_be_bytes());
             }
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn clear_forgets_everything() {
-        let mut hll = HyperLogLog::<64>::new([1; 16]);
+        let mut hll = HyperLogLog::<64>::new(SketchKey::new([1; 16]));
         for i in 0u32..1000 {
             let _ = hll.insert(&i.to_be_bytes());
         }

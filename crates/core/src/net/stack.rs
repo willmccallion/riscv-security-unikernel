@@ -12,12 +12,13 @@ use crate::net::constants::{
     ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp, udp,
 };
 use crate::net::tcp::TcpFlags;
-use crate::security::hash::siphash24;
+use crate::security::hash::secret_key;
 
-/// Per-boot secret keying the SYN-cookie PRF, so a cookie cannot be
-/// derived from packet headers or reused across reboots.
-#[derive(Debug)]
-pub struct SynCookieSecret([u8; 16]);
+secret_key! {
+    /// Per-boot secret keying the SYN-cookie PRF, so a cookie cannot be
+    /// derived from packet headers or reused across reboots.
+    SynCookieSecret
+}
 
 impl SynCookieSecret {
     /// Wraps 16 bytes of entropy into a secret. The caller is
@@ -35,7 +36,7 @@ impl SynCookieSecret {
         buf[4..8].copy_from_slice(&dst_ip.octets());
         buf[8..10].copy_from_slice(&src_port.to_be_bytes());
         buf[10..12].copy_from_slice(&dst_port.to_be_bytes());
-        siphash24(&self.0, &buf) as u32
+        self.hash(&buf) as u32
     }
 }
 

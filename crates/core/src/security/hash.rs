@@ -129,6 +129,103 @@ pub const fn derive_key(key: &[u8; 16], label: &[u8]) -> [u8; 16] {
     out
 }
 
+/// Declares a 128-bit secret that keys SipHash, kept out of `Debug` output.
+macro_rules! secret_key {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy)]
+        pub struct $name([u8; 16]);
+
+        impl $name {
+            /// SipHash-2-4 of `data` under this key.
+            pub(crate) const fn hash(&self, data: &[u8]) -> u64 {
+                $crate::security::hash::siphash24(&self.0, data)
+            }
+        }
+
+        impl core::fmt::Debug for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                f.write_str(concat!(stringify!($name), "(..)"))
+            }
+        }
+    };
+}
+
+pub(crate) use secret_key;
+
+secret_key! {
+    /// The key the operator and the kernel share: it signs mgmt commands,
+    /// and the report key derives from it.
+    MgmtKey
+}
+
+secret_key! {
+    /// Signs the kernel's reports; derived from the [`MgmtKey`], so holding
+    /// it does not let anyone forge commands.
+    ReportKey
+}
+
+secret_key! {
+    /// Keys a sketch's hashes, so an attacker cannot aim traffic at chosen
+    /// counters.
+    SketchKey
+}
+
+impl MgmtKey {
+    /// The key whose bytes are `bytes`.
+    pub const fn new(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parses a key written as 32 hex characters, as in `KERNEL_MGMT_KEY`
+    /// and `.mgmt-key.local`.
+    pub fn parse_hex(hex: &str) -> Option<Self> {
+        let hex = hex.as_bytes();
+        if hex.len() != 32 {
+            return None;
+        }
+        let mut key = [0u8; 16];
+        for (byte, pair) in key.iter_mut().zip(hex.as_chunks::<2>().0) {
+            *byte = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
+        }
+        Some(Self(key))
+    }
+
+    /// The key's bytes, for the kernel's build script to embed.
+    pub const fn to_bytes(self) -> [u8; 16] {
+        self.0
+    }
+}
+
+impl ReportKey {
+    /// The report key that goes with `mgmt_key`.
+    pub const fn derive(mgmt_key: &MgmtKey) -> Self {
+        Self(derive_key(&mgmt_key.0, b"sec-core report key"))
+    }
+}
+
+impl SketchKey {
+    /// The key whose bytes are `bytes`.
+    pub const fn new(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// An independent key for the purpose `label`.
+    #[must_use]
+    pub const fn derive(&self, label: &[u8]) -> Self {
+        Self(derive_key(&self.0, label))
+    }
+}
+
+const fn hex_digit(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Constant-time equality check for two byte slices of equal length.
 ///
 /// Avoids early-exit on first mismatch so an attacker measuring reply
@@ -151,6 +248,40 @@ pub const fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mgmt_key_parses_from_32_hex_characters_in_either_case() {
+        let key = MgmtKey::parse_hex("00112233445566778899AaBbCcDdEeFf");
+
+        assert_eq!(
+            key.map(MgmtKey::to_bytes),
+            Some([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+                0xEE, 0xFF,
+            ])
+        );
+    }
+
+    #[test]
+    fn a_mgmt_key_of_the_wrong_length_or_with_non_hex_does_not_parse() {
+        assert!(MgmtKey::parse_hex("0011").is_none());
+        assert!(MgmtKey::parse_hex("0011223344556677889900aabbccddeg").is_none());
+    }
+
+    #[test]
+    fn the_report_key_differs_from_the_mgmt_key_it_derives_from() {
+        let mgmt = MgmtKey::new([7; 16]);
+
+        assert_ne!(ReportKey::derive(&mgmt).0, mgmt.0);
+    }
+
+    #[test]
+    fn a_key_never_shows_its_bytes_in_debug_output() {
+        extern crate std;
+        let shown = std::format!("{:?}", MgmtKey::new([0xAB; 16]));
+
+        assert_eq!(shown, "MgmtKey(..)");
+    }
 
     /// SipHash-2-4 official test vector from the reference paper:
     /// key = 00..0f, message = 00..0e, expected output = 0xa129ca6149be45e5.

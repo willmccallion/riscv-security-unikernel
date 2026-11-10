@@ -5,6 +5,7 @@ use crate::config::{
     PORT_SCAN_CANDIDATES, PORT_SCAN_CONFIRM_PORTS, PORT_SCAN_NOMINATE_PORTS,
     PORT_SCAN_POOL_REGISTERS, PORT_SCAN_REGISTERS_PER_SOURCE, PORT_SCAN_WINDOW_INTERVALS,
 };
+use crate::security::hash::SketchKey;
 use crate::security::sketch::VirtualHyperLogLog;
 use core::net::Ipv4Addr;
 
@@ -63,7 +64,7 @@ impl Suspect {
 
 impl PortScanDetector {
     /// An empty detector whose hashing is keyed with `key`.
-    pub const fn new(key: [u8; 16]) -> Self {
+    pub const fn new(key: SketchKey) -> Self {
         Self {
             estimates: VirtualHyperLogLog::new(key),
             suspects: [None; PORT_SCAN_CANDIDATES],
@@ -72,7 +73,7 @@ impl PortScanDetector {
     }
 
     /// Clears the detector and switches to hashing with `key`.
-    pub fn rekey(&mut self, key: [u8; 16]) {
+    pub fn rekey(&mut self, key: SketchKey) {
         self.estimates.rekey(key);
         self.suspects = [None; PORT_SCAN_CANDIDATES];
         self.intervals_in_window = 0;
@@ -142,7 +143,7 @@ mod tests {
 
     #[test]
     fn a_source_trying_hundreds_of_ports_is_confirmed() {
-        let mut detector = PortScanDetector::new([3; 16]);
+        let mut detector = PortScanDetector::new(SketchKey::new([3; 16]));
 
         let confirmed = scan(&mut detector, Ipv4Addr::new(10, 0, 0, 9), 1..1000);
 
@@ -157,7 +158,7 @@ mod tests {
 
     #[test]
     fn sources_using_a_few_ports_are_never_confirmed() {
-        let mut detector = PortScanDetector::new([3; 16]);
+        let mut detector = PortScanDetector::new(SketchKey::new([3; 16]));
 
         let confirmed = (0u32..5_000).find_map(|s| {
             let source = Ipv4Addr::from_bits(s | 0x0A00_0000);
@@ -182,7 +183,7 @@ mod tests {
     #[test]
     fn a_new_window_forgets_progress() {
         let per_window = PORT_SCAN_CONFIRM_PORTS as u16;
-        let mut detector = PortScanDetector::new([3; 16]);
+        let mut detector = PortScanDetector::new(SketchKey::new([3; 16]));
         let source = Ipv4Addr::new(10, 0, 0, 9);
         assert_eq!(scan(&mut detector, source, 0..per_window), None);
 
@@ -198,7 +199,7 @@ mod tests {
 
     #[test]
     fn eviction_spares_the_suspect_closest_to_confirmation() {
-        let mut detector = PortScanDetector::new([3; 16]);
+        let mut detector = PortScanDetector::new(SketchKey::new([3; 16]));
         detector.suspects[0] = Some(Suspect {
             seen: PORT_SCAN_CONFIRM_PORTS - 1,
             ..Suspect::new(Ipv4Addr::new(9, 9, 9, 9), 1)

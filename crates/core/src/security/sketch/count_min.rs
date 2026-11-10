@@ -1,6 +1,6 @@
 //! Count-Min Sketch: approximate per-item counts in fixed memory.
 
-use crate::security::hash::siphash24;
+use crate::security::hash::SketchKey;
 
 /// Count-Min Sketch data structure for approximate frequency counting.
 ///
@@ -18,7 +18,7 @@ use crate::security::hash::siphash24;
 #[derive(Debug)]
 pub struct CountMinSketch<const WIDTH: usize, const DEPTH: usize> {
     rows: [[u16; WIDTH]; DEPTH],
-    key: [u8; 16],
+    key: SketchKey,
 }
 
 impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
@@ -32,7 +32,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     pub const MEMORY_BYTES: usize = WIDTH * DEPTH * size_of::<u16>();
 
     /// Creates an empty sketch whose hashing is keyed with `key`.
-    pub const fn new(key: [u8; 16]) -> Self {
+    pub const fn new(key: SketchKey) -> Self {
         let () = Self::VALID;
         Self {
             rows: [[0; WIDTH]; DEPTH],
@@ -42,7 +42,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
 
     /// Clears every counter and switches to hashing with `key`, in place,
     /// so a large sketch is never copied through the stack.
-    pub fn rekey(&mut self, key: [u8; 16]) {
+    pub fn rekey(&mut self, key: SketchKey) {
         self.rows
             .iter_mut()
             .flatten()
@@ -57,7 +57,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     /// true count, but counters shared with other items grow far less, so
     /// estimates are much tighter than with [`Self::insert_classic`].
     pub fn insert(&mut self, item: &[u8]) -> u16 {
-        self.insert_hash(siphash24(&self.key, item))
+        self.insert_hash(self.key.hash(item))
     }
 
     /// Like [`Self::insert`], for an item whose keyed 64-bit hash the
@@ -75,7 +75,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
     /// counters, the textbook update. Kept for comparison with
     /// [`Self::insert`].
     pub fn insert_classic(&mut self, item: &[u8]) -> u16 {
-        let columns = Self::columns(siphash24(&self.key, item));
+        let columns = Self::columns(self.key.hash(item));
         for (row, column) in self.rows.iter_mut().zip(columns) {
             row[column] = row[column].saturating_add(1);
         }
@@ -84,7 +84,7 @@ impl<const WIDTH: usize, const DEPTH: usize> CountMinSketch<WIDTH, DEPTH> {
 
     /// The current estimate for `item`, without counting it.
     pub fn estimate(&self, item: &[u8]) -> u16 {
-        self.estimate_at(&Self::columns(siphash24(&self.key, item)))
+        self.estimate_at(&Self::columns(self.key.hash(item)))
     }
 
     fn estimate_at(&self, columns: &[usize; DEPTH]) -> u16 {
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn estimate_matches_insert_and_does_not_count() {
-        let mut cms = CountMinSketch::<64, 3>::new([1; 16]);
+        let mut cms = CountMinSketch::<64, 3>::new(SketchKey::new([1; 16]));
         for _ in 0..5 {
             let _ = cms.insert(b"a");
         }
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn unseen_item_in_an_empty_sketch_estimates_zero() {
-        let cms = CountMinSketch::<64, 3>::new([1; 16]);
+        let cms = CountMinSketch::<64, 3>::new(SketchKey::new([1; 16]));
 
         assert_eq!(cms.estimate(b"never"), 0);
     }
@@ -146,8 +146,8 @@ mod tests {
     fn conservative_update_is_never_looser_than_classic() {
         const DISTINCT: u16 = 37;
         const INSERTS: u16 = 200;
-        let mut conservative = CountMinSketch::<8, 2>::new([3; 16]);
-        let mut classic = CountMinSketch::<8, 2>::new([3; 16]);
+        let mut conservative = CountMinSketch::<8, 2>::new(SketchKey::new([3; 16]));
+        let mut classic = CountMinSketch::<8, 2>::new(SketchKey::new([3; 16]));
         for i in 0..INSERTS {
             let item = (i % DISTINCT).to_be_bytes();
             let _ = conservative.insert(&item);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn decay_halves_estimates() {
-        let mut cms = CountMinSketch::<64, 3>::new([1; 16]);
+        let mut cms = CountMinSketch::<64, 3>::new(SketchKey::new([1; 16]));
         for _ in 0..90 {
             let _ = cms.insert(b"a");
         }
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn a_burst_straddling_a_decay_still_accumulates() {
-        let mut cms = CountMinSketch::<64, 3>::new([1; 16]);
+        let mut cms = CountMinSketch::<64, 3>::new(SketchKey::new([1; 16]));
         for _ in 0..90 {
             let _ = cms.insert(b"a");
         }
@@ -194,12 +194,11 @@ mod tests {
     #[cfg_attr(miri, ignore = "statistical test; runs natively in CI")]
     fn rows_collide_independently() {
         const ITEMS: usize = 2000;
-        let cms = CountMinSketch::<16, 4>::new([5; 16]);
+        let cms = CountMinSketch::<16, 4>::new(SketchKey::new([5; 16]));
         let mut columns = [[0u8; 4]; ITEMS];
         for (i, slot) in columns.iter_mut().enumerate() {
-            *slot =
-                CountMinSketch::<16, 4>::columns(siphash24(&cms.key, &(i as u32).to_be_bytes()))
-                    .map(|c| c as u8);
+            *slot = CountMinSketch::<16, 4>::columns(cms.key.hash(&(i as u32).to_be_bytes()))
+                .map(|c| c as u8);
         }
 
         let mut full_collisions = 0;

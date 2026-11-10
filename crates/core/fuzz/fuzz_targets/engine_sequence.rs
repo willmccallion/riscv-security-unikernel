@@ -19,10 +19,11 @@ use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::mgmt::ack_packet;
 use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
-use sec_core::security::report_auth::{ReportVerifier, report_key};
+use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
+use sec_core::security::report_auth::ReportVerifier;
 use std::net::Ipv4Addr;
 
-const KEY: [u8; 16] = [0x5A; 16];
+const KEY: MgmtKey = MgmtKey::new([0x5A; 16]);
 const EPOCH: u32 = 7;
 const MAX_FRAME: usize = 1526;
 const OPERATOR_IP: [u8; 4] = [192, 168, 100, 1];
@@ -49,7 +50,7 @@ struct CheckedSink {
 impl CheckedSink {
     fn new() -> Self {
         Self {
-            reports: ReportVerifier::new(report_key(&KEY)),
+            reports: ReportVerifier::new(ReportKey::derive(&KEY)),
             acked_seqs: Vec::new(),
         }
     }
@@ -109,7 +110,7 @@ fuzz_target!(|steps: Vec<Step>| {
     let mut engine: Engine = Engine::new(KEY);
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
-        cms_key: [1; 16],
+        cms_key: SketchKey::new([1; 16]),
         mgmt_epoch: EPOCH,
     });
     let mut now: u64 = 0;

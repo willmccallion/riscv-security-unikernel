@@ -42,7 +42,7 @@ use sec_core::config::{
 };
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::stack::SynCookieSecret;
-use sec_core::security::hash::derive_key;
+use sec_core::security::hash::{MgmtKey, SketchKey, derive_key};
 use sec_core::time::TimeSource;
 use sec_core::types::TakeOnce;
 
@@ -99,7 +99,7 @@ pub fn halt() -> ! {
 const BATCH_SIZE: usize = 64;
 
 /// Global security engine instance.
-static ENGINE: TakeOnce<Engine> = TakeOnce::new(Engine::new(MGMT_KEY));
+static ENGINE: TakeOnce<Engine> = TakeOnce::new(Engine::new(MgmtKey::new(MGMT_KEY)));
 
 /// Kernel main entry point.
 ///
@@ -213,7 +213,7 @@ fn boot_secrets(entropy: &[u8; 32]) -> BootSecrets {
     let mgmt_epoch = u32::from_le_bytes([epoch[0], epoch[1], epoch[2], epoch[3]]).max(1);
     BootSecrets {
         syn_cookie: SynCookieSecret::new(*syn_cookie),
-        cms_key: derive_key(other, b"heavy-hitter sketch"),
+        cms_key: SketchKey::new(derive_key(other, b"heavy-hitter sketch")),
         mgmt_epoch,
     }
 }
