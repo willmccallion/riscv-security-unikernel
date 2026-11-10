@@ -32,10 +32,6 @@ impl Uart {
     }
 
     /// Writes a single byte to the UART transmit register.
-    ///
-    /// # Arguments
-    ///
-    /// * `byte` - Byte to transmit
     pub fn write_byte(&self, byte: u8) {
         // SAFETY: UART_BASE is a valid MMIO address for this hardware platform;
         // the THR offset is the standard transmit holding register offset.
@@ -47,14 +43,6 @@ impl Uart {
 
 impl fmt::Write for Uart {
     /// Writes a string to the UART by writing each byte sequentially.
-    ///
-    /// # Arguments
-    ///
-    /// * `s` - String to write
-    ///
-    /// # Returns
-    ///
-    /// Always returns Ok(()) as UART writes are fire-and-forget
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for byte in s.bytes() {
             self.write_byte(byte);
@@ -72,10 +60,6 @@ pub struct GlobalUart;
 
 impl fmt::Write for GlobalUart {
     /// Writes a string using a temporary Uart instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `s` - String to write
     fn write_str(&mut self, s: &str) -> fmt::Result {
         Uart::new().write_str(s)
     }

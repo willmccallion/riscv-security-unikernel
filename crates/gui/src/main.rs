@@ -21,7 +21,7 @@ mod traffic;
 /// Type definitions for statistics, log entries, and GUI commands.
 mod types;
 
-use crate::app::AegisApp;
+use crate::app::Dashboard;
 use crate::live::view::LiveView;
 use crate::types::{NetStats, UiEvent};
 use clap::Parser;
@@ -73,11 +73,10 @@ async fn main() -> Result<(), eframe::Error> {
     let stats = Arc::new(NetStats {
         passed: AtomicU64::new(0),
         ddos: AtomicU64::new(0),
-        fw: AtomicU64::new(0),
-        mal: AtomicU64::new(0),
+        firewall: AtomicU64::new(0),
+        malware: AtomicU64::new(0),
         bpf: AtomicU64::new(0),
-        heur: AtomicU64::new(0),
-        memory: AtomicU64::new(0),
+        heuristic: AtomicU64::new(0),
         flows: AtomicU64::new(0),
         mgmt: AtomicU64::new(0),
 
@@ -112,7 +111,7 @@ async fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             let live = LiveView::new(socket, &cc.egui_ctx);
-            Box::new(AegisApp::new(stats, event_rx_sync, cmd_tx, live))
+            Box::new(Dashboard::new(stats, event_rx_sync, cmd_tx, live))
         }),
     )
 }

@@ -46,20 +46,10 @@ impl SynCookieSecret {
 /// - TCP data: Returns the TCP application payload for inspection
 /// - Other IPv4: Extracts payload for security inspection
 ///
-/// The packet buffer may be modified in-place for generating responses.
-/// Replies are sent via `sink` — the caller supplies a concrete
-/// [`PacketSink`] implementation tied to its underlying NIC or `AF_XDP`
-/// TX ring.
-///
-/// # Arguments
-///
-/// * `packet` - Mutable reference to the packet buffer
-/// * `sink`   - Egress for generated replies (ARP, ICMP echo, SYN-ACK)
-///
-/// # Returns
-///
-/// `Some` payload slice if available, `None` if the packet was consumed
-/// (e.g., ARP reply sent) or invalid.
+/// The packet buffer may be modified in-place for generating responses,
+/// which go out through `sink`: the kernel's NIC or the daemon's
+/// `AF_PACKET` socket. Returns the payload to inspect, or `None` when the
+/// packet was answered (ARP, echo, SYN-ACK) or is invalid.
 pub fn process_packet<'a, S: PacketSink>(
     packet: &'a mut [u8],
     sink: &mut S,
@@ -88,10 +78,6 @@ pub fn process_packet<'a, S: PacketSink>(
 /// Responds to ARP requests for the kernel's IP address by generating
 /// an ARP reply. The reply is constructed in-place by modifying the
 /// original packet buffer and then sending it.
-///
-/// # Arguments
-///
-/// * `packet` - ARP packet buffer to process and modify
 fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
     if packet.len() < arp::MIN_PACKET_SIZE {
         return;
@@ -147,16 +133,8 @@ fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
 /// Handles IPv4 packets.
 ///
 /// Processes ICMP echo requests (ping) and TCP SYN packets, generating
-/// appropriate responses. For other protocols, extracts and returns
-/// the payload for security inspection.
-///
-/// # Arguments
-///
-/// * `packet` - IPv4 packet buffer to process
-///
-/// # Returns
-///
-/// Some payload slice if available, None if packet was consumed
+/// appropriate responses. For other protocols, returns the payload for
+/// security inspection; `None` when the packet was answered or is invalid.
 fn handle_ipv4<'a, S: PacketSink>(
     packet: &'a mut [u8],
     sink: &mut S,
@@ -261,15 +239,6 @@ fn udp_payload(packet: &[u8], offset: usize, ip_end: usize) -> Option<&[u8]> {
 ///
 /// Implements SYN cookies to protect against SYN flood attacks: the
 /// SYN-ACK is generated without maintaining connection state.
-///
-/// # Arguments
-///
-/// * `packet` - TCP packet buffer
-/// * `offset` - Byte offset to the TCP header
-/// * `src_ip` - Source IP address for cookie generation
-/// * `dst_ip` - Destination IP (this kernel) for cookie binding
-/// * `sink`   - Egress for the SYN-ACK reply
-/// * `syn_secret` - Per-boot secret keying the cookie PRF
 fn answer_connection_request<S: PacketSink>(
     packet: &mut [u8],
     offset: usize,
@@ -302,14 +271,6 @@ fn answer_connection_request<S: PacketSink>(
 /// Modifies the original packet buffer to create a TCP response by
 /// swapping MAC and IP addresses, constructing a new TCP header,
 /// and sending the result. Used for SYN-ACK responses.
-///
-/// # Arguments
-///
-/// * `packet` - Packet buffer to modify
-/// * `tcp_offset` - Byte offset to the TCP header
-/// * `seq` - Sequence number for the reply
-/// * `ack` - Acknowledgment number for the reply
-/// * `flags` - TCP flags to set in the reply
 fn send_tcp_reply_inplace<S: PacketSink>(
     packet: &mut [u8],
     tcp_offset: usize,
@@ -419,14 +380,6 @@ fn tcp_checksum(packet: &[u8], segment: core::ops::Range<usize>) -> u16 {
 /// Calculates the Internet checksum for protocol headers.
 ///
 /// Implements the standard one's complement checksum algorithm.
-///
-/// # Arguments
-///
-/// * `data` - Data buffer to checksum
-///
-/// # Returns
-///
-/// 16-bit checksum value
 pub const fn checksum(data: &[u8]) -> u16 {
     // The loop condition uses `data.len() - 1`, which would underflow
     // to usize::MAX on an empty slice and run off into unmapped memory.

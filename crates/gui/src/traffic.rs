@@ -12,18 +12,27 @@ use crate::types::{
     NotSentReason, TrafficMode, UiEvent,
 };
 use eframe::egui;
+use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
 use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, parse_hex_key, seal};
 use sec_core::security::report_auth::{Report, ReportVerifier, report_key, telemetry_packet};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
 /// value in the Makefile.
 const NETNS_PREFIX: &str = "sec-ns";
-/// Default number of namespaces the pool expects at startup. Can be
-/// overridden with the `AEGIS_NS_COUNT` env var (e.g. for a lighter
-/// dev setup with fewer bridges/veths). Must match the `N=` value
-/// passed to `make setup_net_many`.
+/// Default number of namespaces the pool expects at startup. The
+/// `SEC_NS_COUNT` env var overrides it, and `make gui` sets that to the
+/// `NS_COUNT` that `make setup_net_many` used.
 const NETNS_DEFAULT_COUNT: usize = 200;
 
 /// Seals `body` with the mgmt key and a fresh monotonic counter, then
@@ -47,16 +56,6 @@ async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Result<u3
     let _ = sock.send_to(&packet[..len], MGMT_ADDR).await;
     Ok(counter as u32)
 }
-use rand::Rng;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Loads the mgmt MAC key from the first source that resolves:
 ///   1. `KERNEL_MGMT_KEY` env var (32 hex chars).
@@ -159,12 +158,6 @@ impl MgmtCounter {
 /// - Listens for UDP telemetry and alerts from the kernel
 /// - Processes GUI commands and forwards them to the kernel
 /// - Generates test traffic based on the current mode
-///
-/// # Arguments
-///
-/// * `stats` - Shared statistics structure updated with kernel telemetry
-/// * `events` - Channel for log entries and command status updates
-/// * `cmd_rx` - Channel receiver for commands from the GUI
 pub async fn start_background_task(
     stats: Arc<NetStats>,
     events: UnboundedSender<UiEvent>,
@@ -186,7 +179,7 @@ pub async fn start_background_task(
 
     // Namespaces from `make setup_net_many` give each packet a distinct
     // source IP; without them, fall back to the host socket pool.
-    let ns_count: usize = std::env::var("AEGIS_NS_COUNT")
+    let ns_count: usize = std::env::var("SEC_NS_COUNT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(NETNS_DEFAULT_COUNT);
@@ -380,11 +373,11 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
     let [
         passed,
         ddos,
-        fw,
-        mal,
+        firewall,
+        malware,
         bpf,
-        heur,
-        memory,
+        heuristic,
+        _memory_used,
         flows,
         mgmt,
         _epoch,
@@ -394,15 +387,14 @@ fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
     stats.total_passed.fetch_add(passed, Ordering::Relaxed);
     for (gauge, value) in [
         (&stats.ddos, ddos),
-        (&stats.fw, fw),
-        (&stats.mal, mal),
+        (&stats.firewall, firewall),
+        (&stats.malware, malware),
         (&stats.bpf, bpf),
-        (&stats.heur, heur),
+        (&stats.heuristic, heuristic),
     ] {
         gauge.store(value, Ordering::Relaxed);
         stats.total_dropped.fetch_add(value, Ordering::Relaxed);
     }
-    stats.memory.store(memory, Ordering::Relaxed);
     stats.flows.store(flows, Ordering::Relaxed);
     stats.mgmt.store(mgmt, Ordering::Relaxed);
 }
@@ -430,14 +422,6 @@ async fn send_traffic(
 /// Alert packets contain a reason code, source IP address, and optional
 /// payload data. This function extracts this information and creates a
 /// `LogEntry` with appropriate formatting and color coding.
-///
-/// # Arguments
-///
-/// * `data` - Raw UDP payload containing the alert data
-///
-/// # Returns
-///
-/// A `LogEntry` with parsed alert information and formatted message.
 fn parse_alert(data: &[u8]) -> LogEntry {
     // Verified reports can still be short; check before any fixed offset.
     if data.len() < alert_packet::ALERT_BODY_LEN {
@@ -735,7 +719,7 @@ mod tests {
     /// Seal `body` under a fresh verifier, round-trip it, and return
     /// the bytes the kernel would actually dispatch on. Failing to
     /// verify would mean the GUI is signing a packet the kernel will
-    /// reject — which was the original C1 bug.
+    /// reject.
     fn seal_and_verify(body: &[u8]) -> Vec<u8> {
         let mut packet = vec![0u8; sealed_len(body.len())];
         let counter = ((TEST_EPOCH as u64) << 32) | 1;

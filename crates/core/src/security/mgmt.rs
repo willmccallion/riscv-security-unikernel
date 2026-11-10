@@ -37,14 +37,6 @@ impl ManagementMessageType {
     ///
     /// This method is used internally when parsing management commands
     /// from UDP payloads. Returns None if the type is not recognized.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Raw u8 message type from packet payload
-    ///
-    /// # Returns
-    ///
-    /// Some `ManagementMessageType` variant if recognized, None otherwise
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0x01 => Some(Self::BlockPort),
@@ -107,8 +99,6 @@ pub mod ack_packet {
 /// All offsets are body-relative — the caller has already validated
 /// the auth envelope and stripped the counter + MAC.
 pub mod mgmt_packet {
-    /// Minimum body length: 1 byte for the message type.
-    pub const MIN_PAYLOAD_LEN: usize = 1;
     /// Longest body any command has: a full `UploadBpfProgram`.
     pub const MAX_PAYLOAD_LEN: usize =
         upload_bpf::INSTR_OFFSET + upload_bpf::MAX_INSTR_COUNT * upload_bpf::INSTR_SIZE;
@@ -117,16 +107,12 @@ pub mod mgmt_packet {
 
     /// `BlockPort` and `UnblockPort` message format.
     pub mod block_port {
-        /// Minimum body length: type byte + u16 port.
-        pub const MIN_PAYLOAD_LEN: usize = 3;
         /// Offset to port number (bytes 1-2, big-endian).
         pub const PORT_OFFSET: usize = 1;
     }
 
     /// `AddDpiPattern` and `RemoveDpiPattern` message format.
     pub mod add_dpi {
-        /// Minimum body length: type byte + length byte.
-        pub const MIN_PAYLOAD_LEN: usize = 2;
         /// Offset to pattern length field.
         pub const LEN_OFFSET: usize = 1;
         /// Offset to pattern data.
@@ -137,8 +123,6 @@ pub mod mgmt_packet {
 
     /// `UploadBpfProgram` message format.
     pub mod upload_bpf {
-        /// Minimum body length for `UploadBpfProgram`: type byte + count byte.
-        pub const MIN_PAYLOAD_LEN: usize = 2;
         /// Offset to instruction count field.
         pub const COUNT_OFFSET: usize = 1;
         /// Offset to instruction data.
@@ -151,8 +135,6 @@ pub mod mgmt_packet {
 
     /// `BanIp` and `UnbanIp` message format.
     pub mod ban_ip {
-        /// Minimum body length: type byte + 4-byte IP.
-        pub const MIN_PAYLOAD_LEN: usize = 5;
         /// Offset to IP address (bytes 1-4).
         pub const IP_OFFSET: usize = 1;
     }

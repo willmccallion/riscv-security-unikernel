@@ -85,17 +85,11 @@ impl AhoCorasick {
     /// Builds the trie structure by adding nodes for each byte in the pattern.
     /// The automaton must be built with `build()` after all patterns are inserted.
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `pattern` - Byte pattern to add
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if every byte of the pattern was added; `Err(DpiError::TrieFull)`
-    /// if node capacity was hit partway through. On failure the trie is left
-    /// in a consistent state but the pattern's terminal node is not marked,
-    /// so `scan` will not match it. Callers must surface the error rather
-    /// than discard it.
+    /// `DpiError::TrieFull` if node capacity runs out partway through. The
+    /// trie stays consistent, but the pattern's terminal node is not
+    /// marked, so `scan` will not match it: callers must surface the error.
     pub fn insert(&mut self, pattern: &[u8]) -> Result<(), DpiError> {
         let mut curr = 0;
         for &b in pattern {
@@ -192,14 +186,6 @@ impl AhoCorasick {
     ///
     /// Traverses the automaton following transitions and failure links
     /// to find all pattern matches in a single pass.
-    ///
-    /// # Arguments
-    ///
-    /// * `text` - Text to search for patterns
-    ///
-    /// # Returns
-    ///
-    /// True if any pattern matches, false otherwise
     pub fn scan(&self, text: &[u8]) -> bool {
         let mut curr = 0;
         for &b in text {
@@ -334,14 +320,6 @@ impl DynamicRules {
     /// Checks if any dynamic rule matches the payload.
     ///
     /// Uses simple substring search to find pattern matches.
-    ///
-    /// # Arguments
-    ///
-    /// * `payload` - Packet payload to check
-    ///
-    /// # Returns
-    ///
-    /// True if any pattern matches, false otherwise
     pub fn check(&self, payload: &[u8]) -> bool {
         for i in 0..self.count {
             let pat = &self.patterns[i][0..self.lengths[i]];
