@@ -77,7 +77,6 @@ async fn main() -> Result<(), eframe::Error> {
         mal: AtomicU64::new(0),
         bpf: AtomicU64::new(0),
         heur: AtomicU64::new(0),
-        memory: AtomicU64::new(0),
         flows: AtomicU64::new(0),
         mgmt: AtomicU64::new(0),
 
