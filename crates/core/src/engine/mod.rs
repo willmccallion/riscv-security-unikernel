@@ -211,8 +211,8 @@ impl<
     }
 
     /// Number of flows currently tracked.
-    pub const fn active_flows(&self) -> usize {
-        self.flows.active_count
+    pub fn active_flows(&self) -> usize {
+        self.flows.active_count()
     }
 
     /// Counters accumulated since the last [`Self::start_interval`].
@@ -263,7 +263,7 @@ impl<
             s.bpf,
             s.heuristic,
             memory_used,
-            self.flows.active_count as u64,
+            self.flows.active_count() as u64,
             s.mgmt,
             u64::from(self.mgmt_auth.epoch()),
             u64::from(self.mgmt_auth.last_seq()),
