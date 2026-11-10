@@ -25,6 +25,7 @@ use sec_core::security::dos::{PenaltyBox, PenaltyBoxFull};
 use sec_core::security::dpi::{AhoCorasick, DynamicRules, Pattern, PatternError, RulesFull};
 use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::{FlowKey, FlowTable};
+use sec_core::security::hash::MgmtKey;
 use sec_core::security::heuristic;
 use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, REPLY_ADDR_LEN, seal, sealed_len};
 use sec_core::security::vm::{
@@ -857,7 +858,7 @@ fn ahocorasick_signals_when_a_pattern_failed_to_insert() {
 /// policy. Verifies CRIT-3 stays fixed.
 #[test]
 fn mgmt_auth_rejects_unsigned_packet() {
-    let key = [0x55u8; 16];
+    let key = MgmtKey::new([0x55u8; 16]);
     let mut auth = MgmtAuth::new(key);
     auth.set_epoch(0x1234_5678);
     let body = [0x04u8, 10, 0, 0, 7];
@@ -875,7 +876,7 @@ fn mgmt_auth_rejects_unsigned_packet() {
 /// the counter has to advance monotonically.
 #[test]
 fn mgmt_auth_rejects_replayed_packet() {
-    let key = [0x55u8; 16];
+    let key = MgmtKey::new([0x55u8; 16]);
     let mut auth = MgmtAuth::new(key);
     let epoch: u32 = 0x1234_5678;
     auth.set_epoch(epoch);
@@ -901,7 +902,7 @@ fn mgmt_auth_rejects_replayed_packet() {
 #[test]
 fn mgmt_auth_rejects_a_packet_longer_than_the_longest_command() {
     use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
-    let key = [0x55u8; 16];
+    let key = MgmtKey::new([0x55u8; 16]);
     let epoch: u32 = 0x1234_5678;
     let mut auth = MgmtAuth::new(key);
     auth.set_epoch(epoch);

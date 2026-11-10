@@ -24,6 +24,7 @@ use proptest::prelude::*;
 use sec_core::security::dos::{PenaltyBox, TokenBucket};
 use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::{FlowKey, FlowTable};
+use sec_core::security::hash::SketchKey;
 use sec_core::security::sketch::CountMinSketch;
 use std::net::Ipv4Addr;
 
@@ -98,7 +99,7 @@ proptest! {
         ),
         repeats in 1u16..200,
     ) {
-        let mut cms = CountMinSketch::<128, 4>::new([0; 16]);
+        let mut cms = CountMinSketch::<128, 4>::new(SketchKey::new([0; 16]));
         // Interleave the target inserts with noise inserts in a fixed
         // pattern. The order can change the *exact* counter values but
         // never the lower bound.

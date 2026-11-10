@@ -17,9 +17,10 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use sec_core::security::alert::{AlertReason, alert_packet};
+use sec_core::security::hash::{MgmtKey, ReportKey};
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
-use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, parse_hex_key, seal};
-use sec_core::security::report_auth::{Report, ReportVerifier, report_key, telemetry_packet};
+use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, seal};
+use sec_core::security::report_auth::{Report, ReportVerifier, telemetry_packet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,7 +48,7 @@ const NETNS_DEFAULT_COUNT: usize = 200;
 ///
 /// Returns the sequence number the packet was sealed with, which the
 /// kernel echoes in its ack, or why nothing was sent.
-async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Result<u32, NotSentReason> {
+async fn send_sealed(sock: &UdpSocket, key: &MgmtKey, body: &[u8]) -> Result<u32, NotSentReason> {
     let reply_to = reply_address(MGMT_ADDR).map_err(|_| NotSentReason::NoReplyAddress)?;
     let counter = MGMT_COUNTER.next().ok_or(NotSentReason::KernelNotSeen)?;
     let mut packet = [0u8; MAX_PACKET_LEN];
@@ -65,9 +66,9 @@ async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Result<u3
 /// Exits the process on failure. There is deliberately no built-in
 /// fallback: a constant key would let any copy of the binary
 /// authenticate to any kernel built without an explicit one.
-fn load_mgmt_key() -> [u8; 16] {
+fn load_mgmt_key() -> MgmtKey {
     if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
-        if let Some(key) = parse_hex_key(&hex) {
+        if let Some(key) = MgmtKey::parse_hex(&hex) {
             return key;
         }
         eprintln!("[gui] KERNEL_MGMT_KEY must be 32 hex chars");
@@ -84,7 +85,7 @@ fn load_mgmt_key() -> [u8; 16] {
     std::process::exit(1);
 }
 
-fn read_dev_key_file() -> Option<[u8; 16]> {
+fn read_dev_key_file() -> Option<MgmtKey> {
     // Walk up from cwd looking for `.mgmt-key.local`. `make run` sets
     // KERNEL_MGMT_KEY directly, so this fallback only fires when the
     // dev runs `cargo run -p security-dashboard` from somewhere inside
@@ -94,7 +95,7 @@ fn read_dev_key_file() -> Option<[u8; 16]> {
         let candidate = dir.join(".mgmt-key.local");
         if candidate.exists() {
             let raw = std::fs::read_to_string(&candidate).ok()?;
-            return parse_hex_key(raw.trim());
+            return MgmtKey::parse_hex(raw.trim());
         }
         if !dir.pop() {
             break;
@@ -189,7 +190,7 @@ pub async fn start_background_task(
     let mut mode = TrafficMode::Idle;
     let start_time = Instant::now();
     let mgmt_key = load_mgmt_key();
-    let mut reports = ReportVerifier::new(report_key(&mgmt_key));
+    let mut reports = ReportVerifier::new(ReportKey::derive(&mgmt_key));
     let mut pending = PendingAcks::default();
 
     let target_ip = std::net::IpAddr::from(sec_core::config::IP_ADDR);
@@ -714,7 +715,7 @@ mod tests {
     use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, seal, sealed_len};
     use std::net::Ipv4Addr;
 
-    const TEST_KEY: [u8; 16] = *b"TEST-KEY-TEST!KE";
+    const TEST_KEY: MgmtKey = MgmtKey::new(*b"TEST-KEY-TEST!KE");
     const TEST_EPOCH: u32 = 0xABCD_1234;
 
     /// Seal `body` under a fresh verifier, round-trip it, and return
@@ -1004,10 +1005,16 @@ mod tests {
 
     #[test]
     fn forged_report_is_rejected() {
-        let mut reports = ReportVerifier::new(report_key(&TEST_KEY));
+        let mut reports = ReportVerifier::new(ReportKey::derive(&TEST_KEY));
         let mut forged = [0u8; 64];
-        let n = sec_core::security::report_auth::seal_report(&[0xAA; 16], 1, 1, &[1], &mut forged)
-            .unwrap();
+        let n = sec_core::security::report_auth::seal_report(
+            &ReportKey::derive(&MgmtKey::new([0xAA; 16])),
+            1,
+            1,
+            &[1],
+            &mut forged,
+        )
+        .unwrap();
 
         assert!(reports.verify(&forged[..n]).is_none());
     }

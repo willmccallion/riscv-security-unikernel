@@ -11,6 +11,7 @@ use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::constants::{BROADCAST_MAC, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
 use crate::security::alert::{AlertMeta, AlertReason, alert_packet};
+use crate::security::hash::ReportKey;
 use crate::security::mgmt::{MgmtOutcome, ack_packet};
 use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::report_auth::{self, telemetry_packet};
@@ -36,7 +37,7 @@ pub struct ReportHeader<'a> {
     /// UDP destination port.
     pub dst_port: u16,
     /// Report-signing key.
-    pub key: &'a [u8; 16],
+    pub key: &'a ReportKey,
     /// Boot epoch.
     pub epoch: u32,
     /// Position in this boot's report stream.

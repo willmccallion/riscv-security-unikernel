@@ -3,9 +3,9 @@
 use crate::{Kernel, frame};
 use anyhow::{Context, Result, bail};
 use sec_core::config::MANAGEMENT_PORT;
-use sec_core::security::mgmt_auth::parse_hex_key;
+use sec_core::security::hash::{MgmtKey, ReportKey};
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
-use sec_core::security::report_auth::{ReportVerifier, report_key};
+use sec_core::security::report_auth::ReportVerifier;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
@@ -16,7 +16,7 @@ const MGMT_SRC_PORT: u16 = 40_000;
 /// Sends mgmt commands sealed with the kernel's key and current epoch.
 #[derive(Debug)]
 pub struct MgmtClient {
-    key: [u8; 16],
+    key: MgmtKey,
     epoch: u32,
     seq: u32,
 }
@@ -39,7 +39,7 @@ impl MgmtClient {
     /// Verifies a report frame's signature under the key the kernel was
     /// built with, returning its body.
     pub fn verify_report<'a>(&self, frame: &'a [u8]) -> Option<&'a [u8]> {
-        let mut verifier = ReportVerifier::new(report_key(&self.key));
+        let mut verifier = ReportVerifier::new(ReportKey::derive(&self.key));
         verifier.verify(frame.get(42..)?).map(|report| report.body)
     }
 
@@ -85,7 +85,7 @@ impl MgmtClient {
     }
 }
 
-fn load_key() -> Result<[u8; 16]> {
+fn load_key() -> Result<MgmtKey> {
     let hex = if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
         hex
     } else {
@@ -95,5 +95,5 @@ fn load_key() -> Result<[u8; 16]> {
             .trim()
             .to_string()
     };
-    parse_hex_key(&hex).context("mgmt key must be 32 hex characters")
+    MgmtKey::parse_hex(&hex).context("mgmt key must be 32 hex characters")
 }

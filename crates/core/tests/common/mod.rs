@@ -7,11 +7,12 @@ use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::{SynCookieSecret, checksum};
 use sec_core::security::alert::{AlertReason, alert_packet};
+use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
-use sec_core::security::report_auth::{ReportVerifier, report_key};
+use sec_core::security::report_auth::ReportVerifier;
 use std::net::Ipv4Addr;
 
-pub const KEY: [u8; 16] = *b"engine-test-key!";
+pub const KEY: MgmtKey = MgmtKey::new(*b"engine-test-key!");
 pub const EPOCH: u32 = 0x1234_5678;
 pub const PEER_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x01];
 pub const PEER_IP: [u8; 4] = [192, 168, 100, 1];
@@ -32,7 +33,7 @@ impl CaptureSink {
     /// Bodies of every report emitted, in order. Panics if any report
     /// fails verification under the test key.
     pub fn report_bodies(&self) -> Vec<Vec<u8>> {
-        let mut verifier = ReportVerifier::new(report_key(&KEY));
+        let mut verifier = ReportVerifier::new(ReportKey::derive(&KEY));
         self.sent
             .iter()
             .filter(|f| f.len() > 42 && f[23] == 17)
@@ -59,7 +60,7 @@ pub fn engine() -> Engine {
     let mut e = Engine::new(KEY);
     e.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([7; 16]),
-        cms_key: [0; 16],
+        cms_key: SketchKey::new([0; 16]),
         mgmt_epoch: EPOCH,
     });
     e

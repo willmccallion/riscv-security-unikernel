@@ -36,7 +36,7 @@
 
 use core::net::Ipv4Addr;
 
-use crate::security::hash::{ct_eq, siphash24};
+use crate::security::hash::{MgmtKey, ct_eq};
 use crate::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
 
 /// Width of the per-packet counter prefix, in bytes.
@@ -84,7 +84,7 @@ pub struct Verified<'a> {
 /// all three before its body is surfaced to the dispatcher.
 #[derive(Debug)]
 pub struct MgmtAuth {
-    key: [u8; 16],
+    key: MgmtKey,
     epoch: u32,
     last_seq: u32,
 }
@@ -97,7 +97,7 @@ impl MgmtAuth {
     /// at zero — the kernel must call [`Self::set_epoch`] during init with
     /// per-boot entropy before any mgmt packet can verify, so a packet
     /// captured before a reboot can never replay against the new boot.
-    pub const fn new(key: [u8; 16]) -> Self {
+    pub const fn new(key: MgmtKey) -> Self {
         Self {
             key,
             epoch: 0,
@@ -148,7 +148,7 @@ impl MgmtAuth {
         let signed_region = &packet[..mac_start];
         let provided_mac = &packet[mac_start..];
 
-        let expected = siphash24(&self.key, signed_region).to_be_bytes();
+        let expected = self.key.hash(signed_region).to_be_bytes();
         if !ct_eq(&expected, provided_mac) {
             return None;
         }
@@ -176,29 +176,6 @@ impl MgmtAuth {
     }
 }
 
-/// Parses a mgmt key written as 32 hex characters, as in
-/// `KERNEL_MGMT_KEY` and `.mgmt-key.local`.
-pub fn parse_hex_key(hex: &str) -> Option<[u8; 16]> {
-    let hex = hex.as_bytes();
-    if hex.len() != 32 {
-        return None;
-    }
-    let mut key = [0u8; 16];
-    for (byte, pair) in key.iter_mut().zip(hex.as_chunks::<2>().0) {
-        *byte = (hex_digit(pair[0])? << 4) | hex_digit(pair[1])?;
-    }
-    Some(key)
-}
-
-const fn hex_digit(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
 /// Helper for senders: stamps `body` with `counter`, the address the
 /// kernel should report to, and an authentic MAC, returning the
 /// wire-format byte length written into `out`.
@@ -208,7 +185,7 @@ const fn hex_digit(c: u8) -> Option<u8> {
 /// it so the GUI, the QEMU harness and the tests seal with the exact same
 /// construction.
 pub fn seal(
-    key: &[u8; 16],
+    key: &MgmtKey,
     counter: u64,
     reply_to: &OperatorAddr,
     body: &[u8],
@@ -223,7 +200,7 @@ pub fn seal(
     reply[..6].copy_from_slice(&reply_to.mac);
     reply[6..].copy_from_slice(&reply_to.ip.octets());
     body_bytes.copy_from_slice(body);
-    mac.copy_from_slice(&siphash24(key, signed).to_be_bytes());
+    mac.copy_from_slice(&key.hash(signed).to_be_bytes());
     Some(total)
 }
 
@@ -241,33 +218,14 @@ mod tests {
         ((epoch as u64) << 32) | (seq as u64)
     }
 
-    fn fixture() -> ([u8; 16], MgmtAuth) {
-        let key = [
+    fn fixture() -> (MgmtKey, MgmtAuth) {
+        let key = MgmtKey::new([
             0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
             0x1e, 0x1f,
-        ];
+        ]);
         let mut auth = MgmtAuth::new(key);
         auth.set_epoch(TEST_EPOCH);
         (key, auth)
-    }
-
-    #[test]
-    fn parse_hex_key_accepts_32_hex_characters_in_either_case() {
-        let key = parse_hex_key("00112233445566778899AaBbCcDdEeFf");
-
-        assert_eq!(
-            key,
-            Some([
-                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
-                0xEE, 0xFF,
-            ])
-        );
-    }
-
-    #[test]
-    fn parse_hex_key_rejects_wrong_length_or_non_hex() {
-        assert_eq!(parse_hex_key("0011"), None);
-        assert_eq!(parse_hex_key("0011223344556677889900aabbccddeg"), None);
     }
 
     #[test]
@@ -346,7 +304,7 @@ mod tests {
     #[test]
     fn verify_rejects_packet_signed_with_wrong_key() {
         let (_, mut auth) = fixture();
-        let attacker_key = [0xAA; 16];
+        let attacker_key = MgmtKey::new([0xAA; 16]);
         let body = [0x04, 10, 0, 0, 5];
         let mut packet = [0u8; 32];
         let n = seal(

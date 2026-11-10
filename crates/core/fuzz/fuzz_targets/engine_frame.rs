@@ -10,6 +10,7 @@ use sec_core::engine::{BootSecrets, Engine, IntervalStats, Verdict};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::alert::AlertReason;
+use sec_core::security::hash::{MgmtKey, SketchKey};
 
 /// Largest Ethernet frame (without FCS) the VirtIO TX path accepts.
 const MAX_FRAME: usize = 1526;
@@ -49,10 +50,10 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_FRAME {
         return;
     }
-    let mut engine: Engine = Engine::new([0x5A; 16]);
+    let mut engine: Engine = Engine::new(MgmtKey::new([0x5A; 16]));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
-        cms_key: [1; 16],
+        cms_key: SketchKey::new([1; 16]),
         mgmt_epoch: 1,
     });
     let before = counters(engine.interval_stats());

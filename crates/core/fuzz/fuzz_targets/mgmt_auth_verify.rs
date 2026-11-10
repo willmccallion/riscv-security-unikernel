@@ -8,10 +8,11 @@
 //! the length / counter / MAC checks without knowing the key.
 
 use libfuzzer_sys::fuzz_target;
+use sec_core::security::hash::MgmtKey;
 use sec_core::security::mgmt_auth::MgmtAuth;
 
 fuzz_target!(|data: &[u8]| {
-    let mut auth = MgmtAuth::new(*b"FUZZ-KEY-FUZZKEY");
+    let mut auth = MgmtAuth::new(MgmtKey::new(*b"FUZZ-KEY-FUZZKEY"));
     auth.set_epoch(0xDEADBEEF);
     let _ = auth.verify(data);
 });

@@ -23,23 +23,21 @@ use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
 use crate::net::tcp::{TcpFlags, extract_ports};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
-use crate::security::hash::{derive_key, siphash24};
+use crate::security::hash::{MgmtKey, ReportKey, SketchKey};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
-use crate::security::{
-    anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, report_auth, scan, sketch, vm,
-};
+use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, scan, sketch, vm};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
 
 /// Per-boot secrets the engine needs before it processes traffic.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BootSecrets {
     /// Keys the SYN-cookie PRF.
     pub syn_cookie: SynCookieSecret,
     /// Keys the heavy-hitter sketch's hash.
-    pub cms_key: [u8; 16],
+    pub cms_key: SketchKey,
     /// High 32 bits of every accepted mgmt counter for this boot.
     pub mgmt_epoch: u32,
 }
@@ -111,7 +109,7 @@ pub struct Engine<
     source_rates: sketch::CountMinSketch<SKETCH_WIDTH, SKETCH_DEPTH>,
     /// Keys the one hash of each source address that every per-source
     /// sketch shares.
-    source_key: [u8; 16],
+    source_key: SketchKey,
     sources: sketch::HyperLogLog<SOURCE_COUNTER_REGISTERS>,
     /// Packet rates per /24 and /16, keyed by the prefix.
     prefixes: sketch::CountMinSketch<PREFIX_WIDTH, PREFIX_DEPTH>,
@@ -125,7 +123,7 @@ pub struct Engine<
     bpf: BpfSlot,
     flows: flow::FlowTable,
     mgmt_auth: mgmt_auth::MgmtAuth,
-    report_key: [u8; 16],
+    report_key: ReportKey,
     report_seq: u64,
     operator: Option<OperatorAddr>,
     syn_secret: SynCookieSecret,
@@ -142,16 +140,16 @@ impl<
     /// Creates an engine whose mgmt plane verifies with `mgmt_key`.
     ///
     /// [`Self::init`] must run before the first packet.
-    pub const fn new(mgmt_key: [u8; 16]) -> Self {
+    pub const fn new(mgmt_key: MgmtKey) -> Self {
         Self {
             signatures: dpi::AhoCorasick::new(),
             runtime_signatures: dpi::DynamicRules::new(),
             firewall: firewall::FirewallState::new(),
-            source_rates: sketch::CountMinSketch::new([0; 16]),
-            source_key: [0; 16],
-            sources: sketch::HyperLogLog::new([0; 16]),
-            prefixes: sketch::CountMinSketch::new([0; 16]),
-            port_scans: scan::PortScanDetector::new([0; 16]),
+            source_rates: sketch::CountMinSketch::new(SketchKey::new([0; 16])),
+            source_key: SketchKey::new([0; 16]),
+            sources: sketch::HyperLogLog::new(SketchKey::new([0; 16])),
+            prefixes: sketch::CountMinSketch::new(SketchKey::new([0; 16])),
+            port_scans: scan::PortScanDetector::new(SketchKey::new([0; 16])),
             source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
             penalty_box: dos::PenaltyBox::new(),
             limiter: dos::TokenBucket::new(
@@ -170,7 +168,7 @@ impl<
             },
             flows: flow::FlowTable::new(),
             mgmt_auth: mgmt_auth::MgmtAuth::new(mgmt_key),
-            report_key: report_auth::report_key(&mgmt_key),
+            report_key: ReportKey::derive(&mgmt_key),
             report_seq: 0,
             operator: None,
             syn_secret: SynCookieSecret::new([0; 16]),
@@ -201,9 +199,8 @@ impl<
         self.source_rates.rekey(secrets.cms_key);
         self.source_key = secrets.cms_key;
         self.prefixes
-            .rekey(derive_key(&secrets.cms_key, b"subnet sketch"));
-        self.port_scans
-            .rekey(derive_key(&secrets.cms_key, b"port scans"));
+            .rekey(secrets.cms_key.derive(b"subnet sketch"));
+        self.port_scans.rekey(secrets.cms_key.derive(b"port scans"));
         self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
     }
 
@@ -299,7 +296,7 @@ impl<
                 return self.handle_mgmt(envelope, &meta, now, sink);
             }
 
-            let source_hash = siphash24(&self.source_key, &meta.src_ip.octets());
+            let source_hash = self.source_key.hash(&meta.src_ip.octets());
             let _ = self.sources.insert_hash(source_hash);
             if self.penalty_box.is_banned(meta.src_ip, now) {
                 drop = true;
