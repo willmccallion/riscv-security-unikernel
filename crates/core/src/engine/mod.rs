@@ -188,11 +188,10 @@ impl<
     /// Installs per-boot secrets, the built-in signatures and the default
     /// firewall rule.
     pub fn init(&mut self, secrets: BootSecrets) {
-        // 4 short patterns into a 128-node trie cannot run out of nodes.
-        let _ = self.signatures.insert(b"DROP TABLE");
-        let _ = self.signatures.insert(b"<script>");
-        let _ = self.signatures.insert(b"eval(");
-        let _ = self.signatures.insert(b"UNION SELECT");
+        for signature in dpi::BUILTIN_SIGNATURES {
+            // The built-in signatures fit in an empty trie; a test checks it.
+            let _ = self.signatures.insert(signature);
+        }
         self.signatures.build();
         let _ = self.firewall.block_port(DEFAULT_BLOCKED_PORT);
 
@@ -613,8 +612,7 @@ impl<
         };
         match self.runtime_signatures.add(pattern) {
             Ok(()) => MgmtOutcome::Applied,
-            Err(dpi::DynRulesError::Full) => MgmtOutcome::TableFull,
-            Err(dpi::DynRulesError::TooLong | dpi::DynRulesError::Empty) => MgmtOutcome::Invalid,
+            Err(dpi::RulesFull) => MgmtOutcome::TableFull,
         }
     }
 
@@ -622,7 +620,7 @@ impl<
         let Some(pattern) = pattern_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        self.runtime_signatures.remove(pattern);
+        self.runtime_signatures.remove(&pattern);
         MgmtOutcome::Applied
     }
 
@@ -685,11 +683,12 @@ fn port_operand(body: &[u8]) -> Option<u16> {
     Some(u16::from_be_bytes([port[0], port[1]]))
 }
 
-/// The length-prefixed pattern operand of an Add/RemoveDpiPattern body.
-fn pattern_operand(body: &[u8]) -> Option<&[u8]> {
+/// The length-prefixed pattern operand of an Add/RemoveDpiPattern body;
+/// `None` when it runs past the body or is not a [`dpi::Pattern`].
+fn pattern_operand(body: &[u8]) -> Option<dpi::Pattern> {
     use mgmt_packet::add_dpi::{LEN_OFFSET, PATTERN_OFFSET};
     let len = usize::from(*body.get(LEN_OFFSET)?);
-    body.get(PATTERN_OFFSET..PATTERN_OFFSET + len)
+    dpi::Pattern::new(body.get(PATTERN_OFFSET..PATTERN_OFFSET + len)?).ok()
 }
 
 /// The IPv4 operand of a (Un)BanIp body.

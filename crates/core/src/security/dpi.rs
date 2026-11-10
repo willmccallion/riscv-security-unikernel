@@ -4,6 +4,9 @@
 //! attack patterns in packet payloads. Uses the Aho-Corasick algorithm
 //! for efficient multi-pattern matching and supports dynamic rule addition.
 
+use crate::security::mgmt::mgmt_packet::add_dpi::MAX_PATTERN_LEN;
+use core::num::NonZeroU8;
+
 /// Maximum number of nodes in the Aho-Corasick automaton.
 const MAX_NODES: usize = 128;
 
@@ -92,35 +95,39 @@ impl AhoCorasick {
     /// marked, so `scan` will not match it: callers must surface the error.
     pub fn insert(&mut self, pattern: &[u8]) -> Result<(), DpiError> {
         let mut curr = 0;
-        for &b in pattern {
-            let mut found = false;
-            let mut child = self.nodes[curr].child;
-
-            while child != 0 {
-                if self.nodes[child as usize].byte == b {
-                    curr = child as usize;
-                    found = true;
-                    break;
-                }
-                child = self.nodes[child as usize].sibling;
-            }
-
-            if !found {
-                if self.count >= MAX_NODES {
-                    return Err(DpiError::TrieFull);
-                }
-                let new_node_idx = self.count;
-                self.count += 1;
-
-                self.nodes[new_node_idx].byte = b;
-                self.nodes[new_node_idx].sibling = self.nodes[curr].child;
-                self.nodes[curr].child = new_node_idx as u16;
-
-                curr = new_node_idx;
-            }
+        for &byte in pattern {
+            curr = match self.child(curr, byte) {
+                Some(next) => next,
+                None => self.add_child(curr, byte)?,
+            };
         }
         self.nodes[curr].is_match = true;
         Ok(())
+    }
+
+    /// The child of `node` along `byte`, if the trie has one.
+    const fn child(&self, node: usize, byte: u8) -> Option<usize> {
+        let mut child = self.nodes[node].child;
+        while child != 0 {
+            if self.nodes[child as usize].byte == byte {
+                return Some(child as usize);
+            }
+            child = self.nodes[child as usize].sibling;
+        }
+        None
+    }
+
+    /// Adds a child of `node` along `byte` and returns it.
+    const fn add_child(&mut self, node: usize, byte: u8) -> Result<usize, DpiError> {
+        if self.count >= MAX_NODES {
+            return Err(DpiError::TrieFull);
+        }
+        let added = self.count;
+        self.count += 1;
+        self.nodes[added].byte = byte;
+        self.nodes[added].sibling = self.nodes[node].child;
+        self.nodes[node].child = added as u16;
+        Ok(added)
     }
 
     /// Builds the failure links for the automaton.
@@ -141,44 +148,36 @@ impl AhoCorasick {
         }
 
         while head < tail {
-            let u = self.queue[head] as usize;
+            let parent = self.queue[head] as usize;
             head += 1;
-
-            let mut v = self.nodes[u].child;
-            while v != 0 {
-                let byte = self.nodes[v as usize].byte;
-                let mut f = self.nodes[u].fail as usize;
-
-                loop {
-                    let mut next_state = 0;
-                    let mut temp = self.nodes[f].child;
-                    while temp != 0 {
-                        if self.nodes[temp as usize].byte == byte {
-                            next_state = temp as usize;
-                            break;
-                        }
-                        temp = self.nodes[temp as usize].sibling;
-                    }
-
-                    if next_state != 0 {
-                        self.nodes[v as usize].fail = next_state as u16;
-                        if self.nodes[next_state].is_match {
-                            self.nodes[v as usize].is_match = true;
-                        }
-                        break;
-                    }
-
-                    if f == 0 {
-                        self.nodes[v as usize].fail = 0;
-                        break;
-                    }
-                    f = self.nodes[f].fail as usize;
-                }
-
-                self.queue[tail] = v;
+            let mut child = self.nodes[parent].child;
+            while child != 0 {
+                self.link_failure(parent, child as usize);
+                self.queue[tail] = child;
                 tail += 1;
-                v = self.nodes[v as usize].sibling;
+                child = self.nodes[child as usize].sibling;
             }
+        }
+    }
+
+    /// Points `node`, a child of `parent`, at the longest proper suffix of
+    /// its path that the trie also holds, inheriting that suffix's match.
+    const fn link_failure(&mut self, parent: usize, node: usize) {
+        let byte = self.nodes[node].byte;
+        let mut suffix = self.nodes[parent].fail as usize;
+        loop {
+            if let Some(next) = self.child(suffix, byte) {
+                self.nodes[node].fail = next as u16;
+                if self.nodes[next].is_match {
+                    self.nodes[node].is_match = true;
+                }
+                return;
+            }
+            if suffix == 0 {
+                self.nodes[node].fail = 0;
+                return;
+            }
+            suffix = self.nodes[suffix].fail as usize;
         }
     }
 
@@ -188,29 +187,17 @@ impl AhoCorasick {
     /// to find all pattern matches in a single pass.
     pub fn scan(&self, text: &[u8]) -> bool {
         let mut curr = 0;
-        for &b in text {
+        for &byte in text {
             loop {
-                let mut next_state = 0;
-                let mut child = self.nodes[curr].child;
-                while child != 0 {
-                    if self.nodes[child as usize].byte == b {
-                        next_state = child as usize;
-                        break;
-                    }
-                    child = self.nodes[child as usize].sibling;
-                }
-
-                if next_state != 0 {
-                    curr = next_state;
+                if let Some(next) = self.child(curr, byte) {
+                    curr = next;
                     break;
                 }
-
                 if curr == 0 {
                     break;
                 }
                 curr = self.nodes[curr].fail as usize;
             }
-
             if self.nodes[curr].is_match {
                 return true;
             }
@@ -219,114 +206,133 @@ impl AhoCorasick {
     }
 }
 
-/// Why a [`DynamicRules::add`] call was rejected.
-///
-/// None is fatal: the existing rules keep running, and the mgmt ack tells
-/// the operator their command was not applied.
+/// The signatures every engine starts with, before any are added at run time.
+pub const BUILTIN_SIGNATURES: [&[u8]; 4] = [b"DROP TABLE", b"<script>", b"eval(", b"UNION SELECT"];
+
+/// How many patterns can be added at run time.
+pub const MAX_RUNTIME_PATTERNS: usize = 8;
+
+/// Why bytes are not a [`Pattern`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DynRulesError {
-    /// The 8-slot table is already full.
-    Full,
-    /// The submitted pattern is longer than 32 bytes.
+pub enum PatternError {
+    /// Longer than [`MAX_PATTERN_LEN`] bytes.
     TooLong,
-    /// The submitted pattern has zero length. Accepting one would
-    /// store a pattern whose effective match-width is zero; `check`
-    /// then calls `slice::windows(0)`, which the standard library
-    /// defines as a panic. Rejecting at add-time turns a crashable
-    /// mgmt command into a visible error.
+    /// Zero bytes, which would match nowhere (and `slice::windows(0)` panics).
     Empty,
 }
 
-/// Dynamic rules storage for runtime-added DPI patterns.
-///
-/// Maintains a fixed-size array of byte patterns that can be added
-/// at runtime via the management interface. Uses simple substring
-/// matching for pattern detection.
-#[derive(Debug)]
-pub struct DynamicRules {
-    /// Array of pattern byte arrays, limited to 8 patterns.
-    pub patterns: [[u8; 32]; 8],
-    /// Length of each pattern in bytes.
-    pub lengths: [usize; 8],
-    /// Number of active patterns.
-    pub count: usize,
+/// [`DynamicRules::add`] found every slot taken; the existing rules keep
+/// running, and the mgmt ack tells the operator nothing was added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RulesFull;
+
+/// A run-time pattern: 1 to [`MAX_PATTERN_LEN`] bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pattern {
+    bytes: [u8; MAX_PATTERN_LEN],
+    len: NonZeroU8,
 }
 
-impl Default for DynamicRules {
-    fn default() -> Self {
-        Self::new()
+impl Pattern {
+    /// The pattern `bytes` spell.
+    ///
+    /// # Errors
+    ///
+    /// [`PatternError::Empty`] or [`PatternError::TooLong`].
+    pub fn new(bytes: &[u8]) -> Result<Self, PatternError> {
+        if bytes.len() > MAX_PATTERN_LEN {
+            return Err(PatternError::TooLong);
+        }
+        let len = u8::try_from(bytes.len())
+            .ok()
+            .and_then(NonZeroU8::new)
+            .ok_or(PatternError::Empty)?;
+        let mut stored = [0; MAX_PATTERN_LEN];
+        stored[..bytes.len()].copy_from_slice(bytes);
+        Ok(Self { bytes: stored, len })
     }
+
+    /// The pattern's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len.get())]
+    }
+}
+
+/// Patterns added at run time through the management interface, matched
+/// by plain substring search.
+#[derive(Debug, Default)]
+pub struct DynamicRules {
+    patterns: [Option<Pattern>; MAX_RUNTIME_PATTERNS],
 }
 
 impl DynamicRules {
     /// Creates a new empty dynamic rules structure.
     pub const fn new() -> Self {
         Self {
-            patterns: [[0; 32]; 8],
-            lengths: [0; 8],
-            count: 0,
+            patterns: [None; MAX_RUNTIME_PATTERNS],
         }
     }
 
-    /// Adds a new pattern to the dynamic rules.
-    ///
-    /// Patterns are limited to 32 bytes and there can be at most 8
-    /// active patterns. Adding a pattern already present is a no-op.
+    /// Adds `pattern`; adding one already present is a no-op, so repeating
+    /// a pattern cannot fill the table.
     ///
     /// # Errors
     ///
-    /// Returns [`DynRulesError::Empty`] if the pattern is zero-length
-    /// (would crash `check` via `slice::windows(0)`),
-    /// [`DynRulesError::TooLong`] if the pattern is longer than 32
-    /// bytes, or [`DynRulesError::Full`] if the 8-slot table is
-    /// already full.
-    pub fn add(&mut self, pattern: &[u8]) -> Result<(), DynRulesError> {
-        if pattern.is_empty() {
-            return Err(DynRulesError::Empty);
+    /// [`RulesFull`] when every slot is taken.
+    pub fn add(&mut self, pattern: Pattern) -> Result<(), RulesFull> {
+        if self.patterns.contains(&Some(pattern)) {
+            return Ok(());
         }
-        if pattern.len() > 32 {
-            return Err(DynRulesError::TooLong);
-        }
-        // Dedup: without this an authenticated attacker can spam the
-        // same pattern 8 times and wedge the table against further
-        // legitimate signatures.
-        for i in 0..self.count {
-            if self.lengths[i] == pattern.len() && &self.patterns[i][..pattern.len()] == pattern {
-                return Ok(());
-            }
-        }
-        if self.count >= 8 {
-            return Err(DynRulesError::Full);
-        }
-        self.patterns[self.count][..pattern.len()].copy_from_slice(pattern);
-        self.lengths[self.count] = pattern.len();
-        self.count += 1;
+        let slot = self
+            .patterns
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(RulesFull)?;
+        *slot = Some(pattern);
         Ok(())
     }
 
     /// Removes `pattern` if present. Removing an absent pattern is a no-op.
-    /// Does not preserve the order of the others.
-    pub fn remove(&mut self, pattern: &[u8]) {
-        let Some(i) = (0..self.count).find(|&i| {
-            self.lengths[i] == pattern.len() && self.patterns[i][..pattern.len()] == *pattern
-        }) else {
-            return;
-        };
-        self.count -= 1;
-        self.patterns[i] = self.patterns[self.count];
-        self.lengths[i] = self.lengths[self.count];
-    }
-
-    /// Checks if any dynamic rule matches the payload.
-    ///
-    /// Uses simple substring search to find pattern matches.
-    pub fn check(&self, payload: &[u8]) -> bool {
-        for i in 0..self.count {
-            let pat = &self.patterns[i][0..self.lengths[i]];
-            if payload.windows(pat.len()).any(|window| window == pat) {
-                return true;
+    pub fn remove(&mut self, pattern: &Pattern) {
+        for slot in &mut self.patterns {
+            if slot.as_ref() == Some(pattern) {
+                *slot = None;
             }
         }
-        false
+    }
+
+    /// Whether any run-time pattern occurs in `payload`.
+    pub fn check(&self, payload: &[u8]) -> bool {
+        self.patterns.iter().flatten().any(|pattern| {
+            let pattern = pattern.as_bytes();
+            payload
+                .windows(pattern.len())
+                .any(|window| window == pattern)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_builtin_signatures_fit_in_an_empty_trie() {
+        let mut trie = AhoCorasick::new();
+        for signature in BUILTIN_SIGNATURES {
+            assert_eq!(trie.insert(signature), Ok(()));
+        }
+        trie.build();
+
+        assert!(trie.scan(b"id=1 UNION SELECT password"));
+    }
+
+    #[test]
+    fn a_pattern_of_the_maximum_length_is_accepted() {
+        let longest = [b'x'; MAX_PATTERN_LEN];
+
+        let pattern = Pattern::new(&longest);
+
+        assert_eq!(pattern.map(|p| p.as_bytes().len()), Ok(MAX_PATTERN_LEN));
     }
 }
