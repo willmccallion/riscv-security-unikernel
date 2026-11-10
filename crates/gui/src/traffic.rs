@@ -12,10 +12,20 @@ use crate::types::{
     NotSentReason, TrafficMode, UiEvent,
 };
 use eframe::egui;
+use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
 use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, parse_hex_key, seal};
 use sec_core::security::report_auth::{Report, ReportVerifier, report_key, telemetry_packet};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
 /// value in the Makefile.
@@ -46,16 +56,6 @@ async fn send_sealed(sock: &UdpSocket, key: &[u8; 16], body: &[u8]) -> Result<u3
     let _ = sock.send_to(&packet[..len], MGMT_ADDR).await;
     Ok(counter as u32)
 }
-use rand::Rng;
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Loads the mgmt MAC key from the first source that resolves:
 ///   1. `KERNEL_MGMT_KEY` env var (32 hex chars).
