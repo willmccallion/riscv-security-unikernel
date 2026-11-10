@@ -86,7 +86,7 @@ fn update_rules<T>(rules: &mut Vec<Rule<T>>, id: CommandId, status: CommandStatu
 }
 
 /// Main application state and UI implementation.
-pub struct AegisApp {
+pub struct Dashboard {
     /// Shared network statistics from the kernel.
     stats: Arc<NetStats>,
     /// Receiver for log entries and command status updates.
@@ -134,15 +134,8 @@ pub struct AegisApp {
     live: LiveView,
 }
 
-impl AegisApp {
+impl Dashboard {
     /// Creates a new application instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `stats` - Shared statistics structure
-    /// * `events` - Receiver for log entries and command status updates
-    /// * `cmd_tx` - Sender for GUI commands
-    /// * `live` - The live network view
     pub fn new(
         stats: Arc<NetStats>,
         events: std::sync::mpsc::Receiver<UiEvent>,
@@ -808,7 +801,7 @@ impl AegisApp {
     }
 }
 
-impl eframe::App for AegisApp {
+impl eframe::App for Dashboard {
     /// Main UI update loop called every frame.
     ///
     /// Processes incoming log entries, updates statistics, maintains

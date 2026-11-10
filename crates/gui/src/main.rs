@@ -21,7 +21,7 @@ mod traffic;
 /// Type definitions for statistics, log entries, and GUI commands.
 mod types;
 
-use crate::app::AegisApp;
+use crate::app::Dashboard;
 use crate::live::view::LiveView;
 use crate::types::{NetStats, UiEvent};
 use clap::Parser;
@@ -111,7 +111,7 @@ async fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             let live = LiveView::new(socket, &cc.egui_ctx);
-            Box::new(AegisApp::new(stats, event_rx_sync, cmd_tx, live))
+            Box::new(Dashboard::new(stats, event_rx_sync, cmd_tx, live))
         }),
     )
 }
