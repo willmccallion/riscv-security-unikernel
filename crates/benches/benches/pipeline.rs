@@ -11,6 +11,7 @@ use benches::flow::FlowKey;
 use benches::{dpi, flow, heuristic, sketch, vm};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use sec_core::config::{CMS_DEPTH, CMS_WIDTH};
+use sec_core::net::tcp::TcpFlags;
 
 /// A synthetic 128-byte UDP payload used across benchmarks.
 const CLEAN_PAYLOAD: &[u8] = b"GET /index.html HTTP/1.1\r\nHost: 192.168.100.1\r\nAccept: */*\r\n\
@@ -165,8 +166,8 @@ fn bench_heuristic_tcp_flags(c: &mut Criterion) {
     c.bench_function("heuristic_check_tcp_flags", |b| {
         b.iter(|| {
             // Alternate between xmas scan (0x29) and a clean SYN (0x02)
-            black_box(heuristic::HeuristicEngine::check_tcp_flags(black_box(0x29)));
-            black_box(heuristic::HeuristicEngine::check_tcp_flags(black_box(0x02)));
+            black_box(heuristic::is_scan_probe(black_box(TcpFlags::new(0x29))));
+            black_box(heuristic::is_scan_probe(black_box(TcpFlags::SYN)));
         });
     });
 }
@@ -174,9 +175,7 @@ fn bench_heuristic_tcp_flags(c: &mut Criterion) {
 fn bench_heuristic_payload_clean(c: &mut Criterion) {
     c.bench_function("heuristic_check_payload_clean", |b| {
         b.iter(|| {
-            black_box(heuristic::HeuristicEngine::check_payload(black_box(
-                CLEAN_PAYLOAD,
-            )));
+            black_box(heuristic::has_nop_sled(black_box(CLEAN_PAYLOAD)));
         });
     });
 }
@@ -184,9 +183,7 @@ fn bench_heuristic_payload_clean(c: &mut Criterion) {
 fn bench_heuristic_payload_nop_sled(c: &mut Criterion) {
     c.bench_function("heuristic_check_payload_nop_sled", |b| {
         b.iter(|| {
-            black_box(heuristic::HeuristicEngine::check_payload(black_box(
-                NOP_SLED_PAYLOAD,
-            )));
+            black_box(heuristic::has_nop_sled(black_box(NOP_SLED_PAYLOAD)));
         });
     });
 }

@@ -7,6 +7,7 @@
 //! is read as "to the end of the frame": segmentation offload hands
 //! capture sockets outgoing TCP super-packets that leave it unset.
 
+pub use sec_core::net::tcp::TcpFlags;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -62,37 +63,6 @@ pub struct TcpSegment<'a> {
     pub flags: TcpFlags,
     /// Data after the header, without link-layer padding.
     pub payload: &'a [u8],
-}
-
-/// The low eight TCP flag bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TcpFlags(u8);
-
-impl TcpFlags {
-    const FIN: u8 = 0x01;
-    const SYN: u8 = 0x02;
-    const RST: u8 = 0x04;
-    const ACK: u8 = 0x10;
-
-    /// Flags from the header byte.
-    pub const fn new(bits: u8) -> Self {
-        Self(bits)
-    }
-
-    /// SYN without ACK: a client opening a connection.
-    pub const fn is_connection_attempt(self) -> bool {
-        self.0 & Self::SYN != 0 && self.0 & Self::ACK == 0
-    }
-
-    /// SYN with ACK: a server accepting a connection.
-    pub const fn is_syn_ack(self) -> bool {
-        self.0 & Self::SYN != 0 && self.0 & Self::ACK != 0
-    }
-
-    /// FIN or RST: one side is ending the connection.
-    pub const fn is_close(self) -> bool {
-        self.0 & (Self::FIN | Self::RST) != 0
-    }
 }
 
 /// The UDP fields the monitor uses.

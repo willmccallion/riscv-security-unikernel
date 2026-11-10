@@ -19,7 +19,7 @@ use crate::config::{
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
 use crate::net::stack::{SynCookieSecret, process_packet};
-use crate::net::tcp::{TCP_ACK, TCP_SYN, extract_ports};
+use crate::net::tcp::{TcpFlags, extract_ports};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::hash::{derive_key, siphash24};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
@@ -342,7 +342,7 @@ impl<
         }
 
         if let Some(flags) = ip.as_ref().and_then(|ip| tcp_flags(packet, ip))
-            && heuristic::HeuristicEngine::check_tcp_flags(flags).is_some()
+            && heuristic::is_scan_probe(flags)
         {
             self.stats.heuristic += 1;
             return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
@@ -374,7 +374,7 @@ impl<
             return Verdict::Consumed;
         };
 
-        if heuristic::HeuristicEngine::check_payload(payload).is_some() {
+        if heuristic::has_nop_sled(payload) {
             self.stats.heuristic += 1;
             return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
         }
@@ -457,9 +457,7 @@ impl<
         ip: &Ipv4Fields,
         dst_port: u16,
     ) -> Option<scan::ConfirmedScan> {
-        let flags = u16::from(tcp_flags(packet, ip)?);
-        let is_connection_attempt = flags & TCP_SYN != 0 && flags & TCP_ACK == 0;
-        if !is_connection_attempt {
+        if !tcp_flags(packet, ip)?.is_connection_attempt() {
             return None;
         }
         self.port_scans.observe(ip.src_ip, dst_port)
@@ -815,14 +813,14 @@ fn mgmt_envelope<'a>(packet: &'a [u8], ip: &Ipv4Fields, dst_port: u16) -> Option
     Some(envelope.map_or(MgmtEnvelope::Malformed, MgmtEnvelope::Sealed))
 }
 
-/// The TCP flags byte, if this is a TCP segment with a full header.
-fn tcp_flags(packet: &[u8], ip: &Ipv4Fields) -> Option<u8> {
+/// The TCP flags, if this is a TCP segment with a full header.
+fn tcp_flags(packet: &[u8], ip: &Ipv4Fields) -> Option<TcpFlags> {
     if IpProtocol::from_u8(ip.protocol) != Some(IpProtocol::Tcp)
         || packet.len() < ip.l4_offset + tcp::MIN_HEADER_SIZE
     {
         return None;
     }
-    Some(packet[ip.l4_offset + tcp::FLAGS_OFFSET])
+    Some(TcpFlags::new(packet[ip.l4_offset + tcp::FLAGS_OFFSET]))
 }
 
 /// True for IPv4 frames to our address and ARP frames asking about it.

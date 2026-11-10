@@ -9,7 +9,7 @@ use crate::net::PacketSink;
 use crate::net::constants::{
     ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp, udp,
 };
-use crate::net::tcp::{TCP_ACK, TCP_SYN, is_connection_request};
+use crate::net::tcp::TcpFlags;
 use crate::security::hash::siphash24;
 
 /// Per-boot secret keying the SYN-cookie PRF, so a cookie cannot be
@@ -189,9 +189,8 @@ fn handle_ipv4<'a, S: PacketSink>(
         // so we can decide whether to emit a SYN-ACK (which rewrites
         // `packet` in place) or hand the TCP application payload back
         // to the caller for DPI / firewall inspection.
-        let dof_flags_be = ((packet[offset + 12] as u16) << 8) | (packet[offset + 13] as u16);
-        let flags = dof_flags_be & 0x003F;
-        let tcp_header_len = (((dof_flags_be >> 12) & 0x0F) as usize) * 4;
+        let flags = TcpFlags::new(packet[offset + tcp::FLAGS_OFFSET]);
+        let tcp_header_len = usize::from(packet[offset + tcp::DATA_OFFSET_OFFSET] >> 4) * 4;
         // Same shape as the IHL check above: a data-offset under 5
         // (= 20 bytes) lets the "payload" returned to DPI / firewall
         // start inside the TCP header, which makes port-based rules
@@ -200,7 +199,7 @@ fn handle_ipv4<'a, S: PacketSink>(
             return None;
         }
 
-        if is_connection_request(flags) {
+        if flags.is_connection_request() {
             let src_ip = [
                 packet[ipv4::SRC_IP_OFFSET],
                 packet[ipv4::SRC_IP_OFFSET + 1],
@@ -261,7 +260,7 @@ fn answer_connection_request<S: PacketSink>(
         offset,
         cookie,
         seq.wrapping_add(1),
-        TCP_SYN | TCP_ACK,
+        TcpFlags::SYN_ACK,
         sink,
     );
 }
@@ -276,7 +275,7 @@ fn send_tcp_reply_inplace<S: PacketSink>(
     tcp_offset: usize,
     seq: u32,
     ack: u32,
-    flags: u16,
+    flags: TcpFlags,
     sink: &mut S,
 ) {
     /// Default TCP receive-window size advertised in SYN-ACK replies.
@@ -300,7 +299,7 @@ fn send_tcp_reply_inplace<S: PacketSink>(
     reply[2..4].copy_from_slice(&reply_dst_port.to_be_bytes());
     reply[4..8].copy_from_slice(&seq.to_be_bytes());
     reply[8..12].copy_from_slice(&ack.to_be_bytes());
-    reply[12..14].copy_from_slice(&(DATA_OFFSET_5 | flags).to_be_bytes());
+    reply[12..14].copy_from_slice(&(DATA_OFFSET_5 | u16::from(flags.bits())).to_be_bytes());
     reply[14..16].copy_from_slice(&REPLY_WINDOW.to_be_bytes());
     reply[16..20].copy_from_slice(&[0, 0, 0, 0]);
     let csum = tcp_checksum(packet, tcp_offset..reply_end);
