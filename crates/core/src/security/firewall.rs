@@ -3,11 +3,14 @@
 //! Maintains a list of blocked destination ports and provides
 //! fast lookup for packet filtering decisions.
 
+/// How many ports can be blocked at once.
+pub const MAX_BLOCKED_PORTS: usize = 16;
+
 /// Reasons a [`FirewallState::block_port`] call may be rejected, so the
 /// mgmt dispatcher can report the failure in the command's ack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirewallError {
-    /// The 16-slot table is already full.
+    /// [`MAX_BLOCKED_PORTS`] ports are already blocked.
     Full,
 }
 
@@ -18,7 +21,7 @@ pub enum FirewallError {
 #[derive(Debug)]
 pub struct FirewallState {
     /// Array of blocked port numbers.
-    blocked_ports: [u16; 16],
+    blocked_ports: [u16; MAX_BLOCKED_PORTS],
     /// Number of ports currently blocked.
     count: usize,
 }
@@ -33,7 +36,7 @@ impl FirewallState {
     /// Creates a new empty firewall state.
     pub const fn new() -> Self {
         Self {
-            blocked_ports: [0; 16],
+            blocked_ports: [0; MAX_BLOCKED_PORTS],
             count: 0,
         }
     }
@@ -41,21 +44,19 @@ impl FirewallState {
     /// Blocks a destination port.
     ///
     /// Duplicates are no-ops that return `Ok(())`: without dedup an
-    /// authenticated attacker could spam the same port 16 times and
-    /// permanently wedge the table against further legitimate blocks.
+    /// authenticated attacker could spam the same port until the table
+    /// was full and wedge it against further legitimate blocks.
     ///
     /// # Errors
     ///
-    /// Returns [`FirewallError::Full`] if the 16-slot table is full
-    /// and `port` is not already present. Callers must surface the
-    /// error rather than discard it.
+    /// Returns [`FirewallError::Full`] if the table is full and `port` is
+    /// not already present. Callers must surface the error rather than
+    /// discard it.
     pub fn block_port(&mut self, port: u16) -> Result<(), FirewallError> {
-        for i in 0..self.count {
-            if self.blocked_ports[i] == port {
-                return Ok(());
-            }
+        if self.is_blocked(port) {
+            return Ok(());
         }
-        if self.count >= 16 {
+        if self.count >= MAX_BLOCKED_PORTS {
             return Err(FirewallError::Full);
         }
         self.blocked_ports[self.count] = port;
@@ -78,11 +79,6 @@ impl FirewallState {
 
     /// Checks if a port is blocked.
     pub fn is_blocked(&self, port: u16) -> bool {
-        for i in 0..self.count {
-            if self.blocked_ports[i] == port {
-                return true;
-            }
-        }
-        false
+        self.blocked_ports[..self.count].contains(&port)
     }
 }
