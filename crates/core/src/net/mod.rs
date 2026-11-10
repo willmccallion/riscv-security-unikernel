@@ -13,8 +13,8 @@ pub mod tcp;
 
 /// Egress side for frames emitted by the network stack.
 ///
-/// Implemented by the kernel over the VirtIO NIC and (in future) by
-/// the Linux daemon over `AF_XDP` TX rings or `nfnetlink` verdicts. The
+/// Implemented by the kernel over the VirtIO NIC and by the Linux daemon
+/// over an `AF_PACKET` socket. The
 /// stack only calls [`PacketSink::send`] when it needs to emit an ARP
 /// reply, an ICMP echo reply, or a TCP SYN-ACK; otherwise it just
 /// returns the payload slice to the caller for inspection.

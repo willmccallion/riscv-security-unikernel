@@ -203,7 +203,7 @@ const fn hex_digit(c: u8) -> Option<u8> {
 ///
 /// Returns `None` if `out` is shorter than [`sealed_len`] of the body. The
 /// kernel does not need this — it only verifies — but `sec_core` exposes
-/// it so the GUI and any future Linux daemon use the exact same
+/// it so the GUI, the QEMU harness and the tests seal with the exact same
 /// construction.
 pub fn seal(
     key: &[u8; 16],
