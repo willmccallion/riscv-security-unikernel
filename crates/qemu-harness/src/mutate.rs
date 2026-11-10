@@ -7,6 +7,7 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 use sec_core::config::{MANAGEMENT_PORT, TELEMETRY_PORT};
 use sec_core::security::mgmt::ManagementMessageType;
+use sec_core::security::vm::Opcode;
 
 /// Largest frame the kernel's RX buffers hold (1536 minus the VirtIO header).
 pub const MAX_FRAME: usize = 1526;
@@ -95,17 +96,7 @@ pub fn seed_frame(rng: &mut impl Rng) -> Vec<u8> {
 
 /// A random, plausibly well-formed mgmt command body.
 pub fn mgmt_body(rng: &mut impl Rng) -> Vec<u8> {
-    let kinds = [
-        ManagementMessageType::BlockPort,
-        ManagementMessageType::AddDpiPattern,
-        ManagementMessageType::UploadBpfProgram,
-        ManagementMessageType::BanIp,
-        ManagementMessageType::UnblockPort,
-        ManagementMessageType::RemoveDpiPattern,
-        ManagementMessageType::UnloadBpfProgram,
-        ManagementMessageType::UnbanIp,
-    ];
-    let kind = *kinds
+    let kind = *ManagementMessageType::ALL
         .choose(rng)
         .unwrap_or(&ManagementMessageType::BlockPort);
     let mut body = vec![kind as u8];
@@ -127,7 +118,7 @@ pub fn mgmt_body(rng: &mut impl Rng) -> Vec<u8> {
             let count = rng.gen_range(0..=12u8);
             body.push(count);
             for _ in 0..count {
-                body.push(rng.gen_range(0..=0x0E));
+                body.push(Opcode::ALL.choose(rng).map_or(0, |&op| op as u8));
                 body.push(rng.gen_range(0..18));
                 body.push(rng.gen_range(0..18));
                 let imm: u32 = if rng.gen_bool(0.7) {
