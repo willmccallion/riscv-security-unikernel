@@ -166,6 +166,9 @@ pub mod arp {
 pub mod tcp {
     /// Minimum TCP header size in bytes.
     pub const MIN_HEADER_SIZE: usize = 20;
+    /// Offset to the byte whose high four bits give the header length in
+    /// 32-bit words.
+    pub const DATA_OFFSET_OFFSET: usize = 12;
     /// Offset to TCP flags field within TCP header (byte 13).
     pub const FLAGS_OFFSET: usize = 13;
     /// Offset to source port (bytes 0-1).

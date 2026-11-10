@@ -19,13 +19,13 @@
 use sec_core::net::PacketSink;
 use sec_core::net::constants::{arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
-use sec_core::net::tcp::{TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, extract_ports};
+use sec_core::net::tcp::{TcpFlags, extract_ports};
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::{PenaltyBox, PenaltyBoxFull};
 use sec_core::security::dpi::{AhoCorasick, DynamicRules, Pattern, PatternError, RulesFull};
 use sec_core::security::firewall::{FirewallError, FirewallState};
 use sec_core::security::flow::{FlowKey, FlowTable};
-use sec_core::security::heuristic::HeuristicEngine;
+use sec_core::security::heuristic;
 use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, REPLY_ADDR_LEN, seal, sealed_len};
 use sec_core::security::vm::{
     Instruction, Opcode, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
@@ -70,7 +70,7 @@ fn build_tcp_frame(
     src_ip: [u8; 4],
     src_port: u16,
     dst_port: u16,
-    flags: u16,
+    flags: TcpFlags,
     seq: u32,
     payload: &[u8],
 ) -> Vec<u8> {
@@ -97,9 +97,8 @@ fn build_tcp_frame(
     f[tcp_off + 2] = (dst_port >> 8) as u8;
     f[tcp_off + 3] = dst_port as u8;
     f[tcp_off + 4..tcp_off + 8].copy_from_slice(&seq.to_be_bytes());
-    let dof = (5u16 << 12) | flags;
-    f[tcp_off + 12] = (dof >> 8) as u8;
-    f[tcp_off + 13] = dof as u8;
+    f[tcp_off + 12] = 5 << 4;
+    f[tcp_off + 13] = flags.bits();
 
     let payload_off = tcp_off + tcp::MIN_HEADER_SIZE;
     f[payload_off..payload_off + payload.len()].copy_from_slice(payload);
@@ -159,8 +158,8 @@ fn syn_cookie_depends_on_destination_port() {
     let mut sink_a = CaptureSink::default();
     let mut sink_b = CaptureSink::default();
 
-    let mut frame_a = build_tcp_frame([10, 0, 0, 7], 4444, 80, TCP_SYN, 0xDEAD_BEEF, &[]);
-    let mut frame_b = build_tcp_frame([10, 0, 0, 7], 4444, 443, TCP_SYN, 0xDEAD_BEEF, &[]);
+    let mut frame_a = build_tcp_frame([10, 0, 0, 7], 4444, 80, TcpFlags::SYN, 0xDEAD_BEEF, &[]);
+    let mut frame_b = build_tcp_frame([10, 0, 0, 7], 4444, 443, TcpFlags::SYN, 0xDEAD_BEEF, &[]);
 
     let secret = test_syn_secret();
     let _ = process_packet(&mut frame_a, &mut sink_a, &secret);
@@ -186,7 +185,7 @@ fn syn_cookie_is_not_derivable_from_public_inputs() {
     let mut sink = CaptureSink::default();
     let src = [10, 0, 0, 9];
     let src_port: u16 = 51_234;
-    let mut frame = build_tcp_frame(src, src_port, 80, TCP_SYN, 0, &[]);
+    let mut frame = build_tcp_frame(src, src_port, 80, TcpFlags::SYN, 0, &[]);
 
     let secret = test_syn_secret();
     let _ = process_packet(&mut frame, &mut sink, &secret);
@@ -212,10 +211,9 @@ const fn read_seq(frame: &[u8]) -> u32 {
     ])
 }
 
-const fn read_flags(frame: &[u8]) -> u16 {
+const fn read_flags(frame: &[u8]) -> TcpFlags {
     let tcp_off = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
-    let dof = ((frame[tcp_off + 12] as u16) << 8) | frame[tcp_off + 13] as u16;
-    dof & 0x003F
+    TcpFlags::new(frame[tcp_off + tcp::FLAGS_OFFSET])
 }
 
 /// `process_packet` must hand TCP application bytes back to the
@@ -225,7 +223,7 @@ const fn read_flags(frame: &[u8]) -> u16 {
 fn non_syn_tcp_returns_payload_to_caller() {
     let mut sink = CaptureSink::default();
     let payload = b"GET / HTTP/1.1\r\nDROP TABLE users--";
-    let mut frame = build_tcp_frame([10, 0, 0, 5], 1024, 80, TCP_ACK, 1, payload);
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 1024, 80, TcpFlags::ACK, 1, payload);
 
     let secret = test_syn_secret();
     let result = process_packet(&mut frame, &mut sink, &secret);
@@ -245,7 +243,7 @@ fn non_syn_tcp_returns_payload_to_caller() {
 /// produce the right values for raw TCP segments.
 #[test]
 fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
-    let frame = build_tcp_frame([10, 0, 0, 5], 4444, 23, TCP_SYN, 0, &[]);
+    let frame = build_tcp_frame([10, 0, 0, 5], 4444, 23, TcpFlags::SYN, 0, &[]);
     let l4_offset = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
     let (sp, dp) = extract_ports(&frame[l4_offset..]).expect("ports must extract from frame");
     assert_eq!(sp, 4444);
@@ -258,7 +256,7 @@ fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
 #[test]
 fn process_packet_handles_syn_with_max_seq_without_panicking() {
     let mut sink = CaptureSink::default();
-    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, u32::MAX, &[]);
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TcpFlags::SYN, u32::MAX, &[]);
     let secret = test_syn_secret();
     let _ = process_packet(&mut frame, &mut sink, &secret);
 }
@@ -288,12 +286,12 @@ fn process_packet_handles_truncated_icmp_without_panicking() {
 #[test]
 fn process_packet_emits_syn_ack_for_syn() {
     let mut sink = CaptureSink::default();
-    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, 0, &[]);
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TcpFlags::SYN, 0, &[]);
     let secret = test_syn_secret();
     let _ = process_packet(&mut frame, &mut sink, &secret);
     assert_eq!(sink.sent.len(), 1, "SYN must produce SYN-ACK");
     let flags = read_flags(&sink.sent[0]);
-    assert_eq!(flags & (TCP_SYN | TCP_ACK), TCP_SYN | TCP_ACK);
+    assert!(flags.contains(TcpFlags::SYN_ACK));
 }
 
 /// A SYN-ACK is the answer to a connection request only: a segment with
@@ -301,13 +299,17 @@ fn process_packet_emits_syn_ack_for_syn() {
 /// traffic at whoever the source address names.
 #[test]
 fn process_packet_answers_only_bare_syns_with_a_syn_ack() {
-    for flags in [TCP_SYN | TCP_ACK, TCP_SYN | TCP_FIN, TCP_SYN | TCP_RST] {
+    for flags in [
+        TcpFlags::SYN_ACK,
+        TcpFlags::SYN | TcpFlags::FIN,
+        TcpFlags::SYN | TcpFlags::RST,
+    ] {
         let mut sink = CaptureSink::default();
         let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, flags, 0, &[]);
 
         let _ = process_packet(&mut frame, &mut sink, &test_syn_secret());
 
-        assert!(sink.sent.is_empty(), "flags {flags:#06x} got a reply");
+        assert!(sink.sent.is_empty(), "flags {flags:?} got a reply");
     }
 }
 
@@ -343,8 +345,8 @@ fn process_packet_handles_syn_with_extended_ip_options() {
     frame[tcp_off..tcp_off + 2].copy_from_slice(&src_port.to_be_bytes());
     frame[tcp_off + 2..tcp_off + 4].copy_from_slice(&dst_port.to_be_bytes());
     frame[tcp_off + 4..tcp_off + 8].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
-    let dof = (5u16 << 12) | TCP_SYN;
-    frame[tcp_off + 12..tcp_off + 14].copy_from_slice(&dof.to_be_bytes());
+    frame[tcp_off + 12] = 5 << 4;
+    frame[tcp_off + 13] = TcpFlags::SYN.bits();
 
     let mut sink = CaptureSink::default();
     let secret = test_syn_secret();
@@ -353,8 +355,8 @@ fn process_packet_handles_syn_with_extended_ip_options() {
     assert_eq!(sink.sent.len(), 1, "SYN with IHL=9 must produce SYN-ACK");
     let reply = &sink.sent[0];
     let reply_tcp_off = ethernet::MIN_FRAME_SIZE + IHL_BYTES;
-    let flags = u16::from_be_bytes([reply[reply_tcp_off + 12], reply[reply_tcp_off + 13]]) & 0x003F;
-    assert_eq!(flags & (TCP_SYN | TCP_ACK), TCP_SYN | TCP_ACK);
+    let flags = TcpFlags::new(reply[reply_tcp_off + tcp::FLAGS_OFFSET]);
+    assert!(flags.contains(TcpFlags::SYN_ACK));
     let reply_src = u16::from_be_bytes([reply[reply_tcp_off], reply[reply_tcp_off + 1]]);
     let reply_dst = u16::from_be_bytes([reply[reply_tcp_off + 2], reply[reply_tcp_off + 3]]);
     assert_eq!(reply_src, dst_port);
@@ -367,7 +369,7 @@ fn process_packet_handles_syn_with_extended_ip_options() {
 /// destination port. `process_packet` must drop these.
 #[test]
 fn process_packet_rejects_ipv4_with_ihl_less_than_5() {
-    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, 0, &[]);
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TcpFlags::SYN, 0, &[]);
     frame[ipv4::VERSION_IHL_OFFSET] = 0x40; // version=4, ihl=0
     let mut sink = CaptureSink::default();
     let secret = test_syn_secret();
@@ -381,7 +383,7 @@ fn process_packet_rejects_ipv4_with_ihl_less_than_5() {
 /// header, evading DPI / firewall inspection on the real bytes.
 #[test]
 fn process_packet_rejects_tcp_with_data_offset_less_than_5() {
-    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_ACK, 1, b"payload");
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TcpFlags::ACK, 1, b"payload");
     let tcp_off = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
     // Data offset = 0, flags preserved.
     frame[tcp_off + 12] = 0x00;
@@ -396,7 +398,7 @@ fn process_packet_rejects_tcp_with_data_offset_less_than_5() {
 /// rather than silently parsed as IPv4.
 #[test]
 fn process_packet_rejects_ipv4_with_wrong_version() {
-    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TCP_SYN, 0, &[]);
+    let mut frame = build_tcp_frame([10, 0, 0, 5], 4444, 80, TcpFlags::SYN, 0, &[]);
     frame[ipv4::VERSION_IHL_OFFSET] = 0x65; // version=6, ihl=5
     let mut sink = CaptureSink::default();
     let secret = test_syn_secret();
@@ -777,7 +779,7 @@ fn shellcode_heuristic_detects_riscv_nop_sled() {
         payload.extend_from_slice(&0x0000_0013u32.to_le_bytes());
     }
     assert!(
-        HeuristicEngine::check_payload(&payload).is_some(),
+        heuristic::has_nop_sled(&payload),
         "RISC-V NOP sled should trigger the shellcode heuristic"
     );
 }
@@ -789,7 +791,7 @@ fn shellcode_heuristic_detects_riscv_nop_sled() {
 fn shellcode_heuristic_resists_interleaved_nop_bypass() {
     let payload: Vec<u8> = (0..200).flat_map(|_| [0x00u8, 0x90, 0x90]).collect();
     assert!(
-        HeuristicEngine::check_payload(&payload).is_some(),
+        heuristic::has_nop_sled(&payload),
         "interleaved NOP pattern should still be flagged"
     );
 }
