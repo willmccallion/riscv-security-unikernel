@@ -49,10 +49,7 @@ impl PacketSink for CaptureSink {
     }
 }
 
-/// Kernel IP from `sec_core::config::IP_ADDR` (192.168.100.2).
-const KERNEL_IP: [u8; 4] = [192, 168, 100, 2];
-/// Kernel MAC from `sec_core::config::MAC_ADDR`.
-const KERNEL_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+use sec_core::config::{IP_ADDR as KERNEL_IP, MAC_ADDR as KERNEL_MAC};
 
 /// Deterministic SYN-cookie secret used by every test that exercises
 /// the SYN-ACK reply path. Real kernels build one per boot from

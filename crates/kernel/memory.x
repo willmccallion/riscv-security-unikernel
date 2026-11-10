@@ -3,7 +3,7 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* 64KB Total RAM */
+    /* 64KB Total RAM: sec_core::config::TOTAL_MEMORY_SIZE */
     RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 64K
 }
 

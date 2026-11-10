@@ -9,6 +9,7 @@ BRIDGE := br-sec
 NS_PREFIX := sec-ns
 NS_COUNT ?= 200
 
+# sec_core::config::TOTAL_MEMORY_SIZE, the RAM length in memory.x.
 RAM_LIMIT := 65536
 
 # rustup users get nightly via `+nightly`; the Nix dev shell sets

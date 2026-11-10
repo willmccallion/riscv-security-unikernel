@@ -5,7 +5,7 @@
 //! log entries, and command types.
 
 use eframe::egui;
-use sec_core::config::{IP_ADDR, MANAGEMENT_PORT};
+use sec_core::config::{IP_ADDR, MANAGEMENT_PORT, TELEMETRY_PORT};
 use sec_core::security::mgmt::MgmtOutcome;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::AtomicU64;
@@ -17,7 +17,8 @@ pub const MGMT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(
 ));
 
 /// Local address for receiving telemetry and alerts from the kernel.
-pub const LISTEN_ADDR: &str = "0.0.0.0:8888";
+pub const LISTEN_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, TELEMETRY_PORT));
 
 /// Represents a single security event or alert logged by the kernel.
 ///

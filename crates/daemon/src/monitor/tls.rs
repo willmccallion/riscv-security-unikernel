@@ -10,6 +10,8 @@
 const MAX_NAME_LEN: usize = 253;
 
 const CONTENT_HANDSHAKE: u8 = 22;
+/// The record-layer major version of every TLS release (SSL 3.0 onwards).
+const TLS_MAJOR_VERSION: u8 = 3;
 const HANDSHAKE_CLIENT_HELLO: u8 = 1;
 const EXTENSION_SERVER_NAME: u16 = 0;
 const EXTENSION_ENCRYPTED_CLIENT_HELLO: u16 = 0xFE0D;
@@ -42,6 +44,11 @@ pub enum Hello {
     NotTls,
 }
 
+/// Whether `stream` starts with a TLS handshake record.
+pub fn is_handshake_record(stream: &[u8]) -> bool {
+    stream.starts_with(&[CONTENT_HANDSHAKE, TLS_MAJOR_VERSION])
+}
+
 /// Reads the ClientHello at the start of a client's TLS-over-TCP stream,
 /// which wraps handshake messages in records.
 pub fn parse_client_hello(stream: &[u8]) -> Hello {
@@ -51,7 +58,7 @@ pub fn parse_client_hello(stream: &[u8]) -> Hello {
             needed: RECORD_HEADER,
         };
     };
-    if content_type != CONTENT_HANDSHAKE || major != 3 {
+    if content_type != CONTENT_HANDSHAKE || major != TLS_MAJOR_VERSION {
         return Hello::NotTls;
     }
     let Some(record_len) = read_u16(stream, 3) else {
