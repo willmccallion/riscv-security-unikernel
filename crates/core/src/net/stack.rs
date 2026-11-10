@@ -46,20 +46,10 @@ impl SynCookieSecret {
 /// - TCP data: Returns the TCP application payload for inspection
 /// - Other IPv4: Extracts payload for security inspection
 ///
-/// The packet buffer may be modified in-place for generating responses.
-/// Replies are sent via `sink` — the caller supplies a concrete
-/// [`PacketSink`] implementation tied to its underlying NIC or `AF_XDP`
-/// TX ring.
-///
-/// # Arguments
-///
-/// * `packet` - Mutable reference to the packet buffer
-/// * `sink`   - Egress for generated replies (ARP, ICMP echo, SYN-ACK)
-///
-/// # Returns
-///
-/// `Some` payload slice if available, `None` if the packet was consumed
-/// (e.g., ARP reply sent) or invalid.
+/// The packet buffer may be modified in-place for generating responses,
+/// which go out through `sink`: the kernel's NIC or the daemon's
+/// `AF_PACKET` socket. Returns the payload to inspect, or `None` when the
+/// packet was answered (ARP, echo, SYN-ACK) or is invalid.
 pub fn process_packet<'a, S: PacketSink>(
     packet: &'a mut [u8],
     sink: &mut S,

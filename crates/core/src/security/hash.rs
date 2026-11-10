@@ -2,15 +2,17 @@
 //!
 //! SipHash is the canonical short-input keyed primitive: small, fast,
 //! `no_std`-friendly, and widely deployed (Linux uses it for SYN
-//! cookies; the Rust stdlib uses it for `HashMap`). We use it for two
-//! purposes inside `sec_core`:
+//! cookies; the Rust stdlib uses it for `HashMap`). Inside `sec_core` it:
 //!
-//! - Mgmt-plane MAC (`security::mgmt_auth`) — verifying that a UDP
-//!   command came from a holder of the pre-shared key.
-//! - Per-boot SYN-cookie keying (`net::stack`) — making the cookie's
-//!   sequence number unforgeable to an off-path attacker.
+//! - MACs mgmt-plane commands (`security::mgmt_auth`), proving a UDP
+//!   command came from a holder of the pre-shared key;
+//! - signs reports (`security::report_auth`) with a key derived from it;
+//! - keys the SYN cookies (`net::stack`), making the cookie's sequence
+//!   number unforgeable to an off-path attacker;
+//! - keys the sketches (`security::sketch`), so an attacker cannot aim
+//!   traffic at chosen counters.
 //!
-//! 64-bit output is enough for both: forgery probability is 2⁻⁶⁴ per
+//! 64-bit output is enough for the MACs: forgery probability is 2⁻⁶⁴ per
 //! attempt and the mgmt path further requires a strictly increasing
 //! counter, so the window for online brute force is one packet wide.
 

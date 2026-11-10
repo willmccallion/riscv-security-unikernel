@@ -206,8 +206,6 @@ impl VirtioNet {
         Self::reg_write(QUEUE_ALIGN, GUEST_PAGE);
         Self::reg_write(QUEUE_PFN, (addr_of_mut!(RX_QUEUE) as u32) / GUEST_PAGE);
 
-        // SAFETY: ACTIVE_BASE is valid (asserted above). reg_write uses write_volatile to MMIO
-        // addresses derived from it. All offsets are from the VirtIO 1.0 legacy spec.
         Self::reg_write(QUEUE_SEL, 1);
         Self::reg_write(QUEUE_NUM, QUEUE_SIZE as u32);
         Self::reg_write(QUEUE_ALIGN, GUEST_PAGE);

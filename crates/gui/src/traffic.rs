@@ -734,7 +734,7 @@ mod tests {
     /// Seal `body` under a fresh verifier, round-trip it, and return
     /// the bytes the kernel would actually dispatch on. Failing to
     /// verify would mean the GUI is signing a packet the kernel will
-    /// reject — which was the original C1 bug.
+    /// reject.
     fn seal_and_verify(body: &[u8]) -> Vec<u8> {
         let mut packet = vec![0u8; sealed_len(body.len())];
         let counter = ((TEST_EPOCH as u64) << 32) | 1;
