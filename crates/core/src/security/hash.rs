@@ -212,6 +212,7 @@ impl SketchKey {
 
     /// An independent key for the purpose `label`.
     #[must_use]
+    #[inline(always)]
     pub const fn derive(&self, label: &[u8]) -> Self {
         Self(derive_key(&self.0, label))
     }
