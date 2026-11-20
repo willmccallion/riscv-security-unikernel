@@ -456,3 +456,79 @@ fn ipv4_total_length_shorter_than_its_header_is_dropped_as_malformed() {
 
     assert_eq!(v, Verdict::Dropped(AlertReason::MalformedIp));
 }
+
+/// Offset of the TCP or UDP header in the frames `common` builds.
+const L4: usize = 34;
+
+fn verdict_for(mut frame: Vec<u8>) -> (Verdict, Vec<AlertReason>) {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let v = e.process(&mut frame, Ticks::new(1), &mut sink);
+    (v, sink.alert_reasons())
+}
+
+#[test]
+fn a_tcp_header_cut_short_by_the_ip_total_length_is_dropped_as_malformed() {
+    let frame = tcp(PEER_IP, 5000, DEFAULT_BLOCKED_PORT, 0x02, b"");
+    let frame = with_ip_total_length(frame, 20 + 10);
+
+    let (v, alerts) = verdict_for(frame);
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::MalformedIp));
+    assert_eq!(alerts, [AlertReason::MalformedIp]);
+}
+
+#[test]
+fn a_tcp_data_offset_under_five_words_is_dropped_as_malformed() {
+    let mut frame = tcp(PEER_IP, 5000, 80, PSH_ACK, b"hello");
+    frame[L4 + 12] = 0x40;
+
+    assert_eq!(
+        verdict_for(frame).0,
+        Verdict::Dropped(AlertReason::MalformedIp)
+    );
+}
+
+#[test]
+fn a_tcp_data_offset_past_the_datagram_is_dropped_as_malformed() {
+    let mut frame = tcp(PEER_IP, 5000, 80, PSH_ACK, b"hello");
+    frame[L4 + 12] = 0xF0;
+
+    assert_eq!(
+        verdict_for(frame).0,
+        Verdict::Dropped(AlertReason::MalformedIp)
+    );
+}
+
+#[test]
+fn a_udp_length_shorter_than_its_header_is_dropped_as_malformed() {
+    let mut frame = udp(PEER_IP, 5000, 80, b"hello");
+    frame[L4 + 4..L4 + 6].copy_from_slice(&7u16.to_be_bytes());
+
+    assert_eq!(
+        verdict_for(frame).0,
+        Verdict::Dropped(AlertReason::MalformedIp)
+    );
+}
+
+#[test]
+fn a_udp_length_past_the_datagram_is_dropped_as_malformed() {
+    let mut frame = udp(PEER_IP, 5000, 80, b"hello");
+    frame.extend_from_slice(&[0; 8]);
+    frame[L4 + 4..L4 + 6].copy_from_slice(&(8u16 + 5 + 1).to_be_bytes());
+
+    assert_eq!(
+        verdict_for(frame).0,
+        Verdict::Dropped(AlertReason::MalformedIp)
+    );
+}
+
+#[test]
+fn an_icmp_message_shorter_than_its_header_is_dropped_as_malformed() {
+    let frame = ipv4(PEER_IP, 1, &[8, 0, 0, 0]);
+
+    assert_eq!(
+        verdict_for(frame).0,
+        Verdict::Dropped(AlertReason::MalformedIp)
+    );
+}

@@ -1,6 +1,5 @@
-//! TCP header flags and port extraction.
+//! TCP header flags.
 
-use crate::net::constants::tcp as tcp_consts;
 use core::ops::BitOr;
 
 /// The flag byte of a TCP header: CWR, ECE, URG, ACK, PSH, RST, SYN, FIN.
@@ -83,23 +82,6 @@ impl BitOr for TcpFlags {
     fn bitor(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
-}
-
-/// Reads the source and destination ports (host byte order) from the start
-/// of a TCP or UDP header, or `None` if `data` is too short.
-pub const fn extract_ports(data: &[u8]) -> Option<(u16, u16)> {
-    if data.len() < tcp_consts::DST_PORT_OFFSET + tcp_consts::PORT_SIZE {
-        return None;
-    }
-    let src_port = u16::from_be_bytes([
-        data[tcp_consts::SRC_PORT_OFFSET],
-        data[tcp_consts::SRC_PORT_OFFSET + 1],
-    ]);
-    let dst_port = u16::from_be_bytes([
-        data[tcp_consts::DST_PORT_OFFSET],
-        data[tcp_consts::DST_PORT_OFFSET + 1],
-    ]);
-    Some((src_port, dst_port))
 }
 
 #[cfg(test)]

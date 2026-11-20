@@ -19,7 +19,7 @@
 use sec_core::net::PacketSink;
 use sec_core::net::constants::{arp, ethernet, ipv4, tcp};
 use sec_core::net::stack::{SynCookieSecret, checksum, process_packet};
-use sec_core::net::tcp::{TcpFlags, extract_ports};
+use sec_core::net::tcp::TcpFlags;
 use sec_core::security::alert::should_emit_ddos_alert;
 use sec_core::security::dos::{PenaltyBox, PenaltyBoxFull};
 use sec_core::security::dpi::{AhoCorasick, DynamicRules, Pattern, PatternError, RulesFull};
@@ -233,18 +233,6 @@ fn non_syn_tcp_returns_payload_to_caller() {
         returned.windows(payload.len()).any(|w| w == payload),
         "returned slice must contain the TCP payload bytes"
     );
-}
-
-/// `extract_ports` is the helper the kernel uses to read
-/// the destination port before invoking `process_packet`, so it must
-/// produce the right values for raw TCP segments.
-#[test]
-fn extract_ports_reads_dst_port_from_raw_tcp_segment() {
-    let frame = build_tcp_frame([10, 0, 0, 5], 4444, 23, TcpFlags::SYN, 0, &[]);
-    let l4_offset = ethernet::MIN_FRAME_SIZE + ipv4::MIN_HEADER_SIZE;
-    let (sp, dp) = extract_ports(&frame[l4_offset..]).expect("ports must extract from frame");
-    assert_eq!(sp, 4444);
-    assert_eq!(dp, 23);
 }
 
 /// Regression: a SYN with `seq == u32::MAX` must wrap the ACK number

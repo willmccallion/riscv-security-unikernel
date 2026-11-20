@@ -20,9 +20,9 @@ use crate::config::{
     TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
-use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
-use crate::net::stack::{SynCookieSecret, process_packet};
-use crate::net::tcp::{TcpFlags, extract_ports};
+use crate::net::constants::{EthernetType, arp, ethernet, ipv4};
+use crate::net::frame::{self, Frame, Ipv4Packet, Ports, Rejected, Rejection, Transport};
+use crate::net::stack::{self, SynCookieSecret};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::hash::{MgmtKey, ReportKey, SketchKey};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
@@ -264,24 +264,15 @@ impl<
         if is_for_us(packet) {
             self.stats.received_for_us += 1;
         }
-        let mut drop = false;
-        let mut meta = AlertMeta::empty();
-        meta.packet_len = packet.len().min(u16::MAX as usize) as u16;
-
-        let ip = match parse_ipv4(packet) {
-            Ok(ip) => ip,
-            Err(rejected) => return self.drop_rejected_ipv4(&rejected, &meta, now, sink),
+        let packet_len = packet.len().min(u16::MAX as usize) as u16;
+        let frame = match frame::parse(packet) {
+            Ok(frame) => frame,
+            Err(rejected) => return self.drop_rejected_ipv4(&rejected, packet_len, now, sink),
         };
-        if let Some(ip) = &ip {
-            meta.src_ip = ip.src_ip;
-            meta.dst_ip = ip.dst_ip;
-            meta.protocol = ip.protocol;
-            if let Some((src_port, dst_port)) = transport_ports(packet, ip) {
-                meta.src_port = src_port;
-                meta.dst_port = dst_port;
-            }
-
-            if let Some(envelope) = mgmt_envelope(packet, ip, meta.dst_port) {
+        let meta = alert_meta(&frame, packet_len);
+        let mut drop = false;
+        if let Frame::Ipv4(ip) = &frame {
+            if let Some(envelope) = mgmt_envelope(ip) {
                 return self.handle_mgmt(envelope, &meta, now, sink);
             }
 
@@ -303,7 +294,7 @@ impl<
                 };
                 self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
                 drop = true;
-            } else if let Some(scan) = self.count_connection_attempt(packet, ip, meta.dst_port) {
+            } else if let Some(scan) = self.count_connection_attempt(ip) {
                 self.penalty_box.ban(scan.source, IP_BAN_DURATION, now);
                 let alert = AlertMeta {
                     value: scan.distinct_ports,
@@ -323,19 +314,20 @@ impl<
             return Verdict::Dropped(AlertReason::Ddos);
         }
 
-        if ip.is_some() {
-            self.track_flow(&meta, packet.len(), now, sink);
+        if let Frame::Ipv4(ip) = &frame {
+            self.track_flow(&meta, ip.bytes().len(), now, sink);
         }
 
-        if let Some(flags) = ip.as_ref().and_then(|ip| tcp_flags(packet, ip))
-            && heuristic::is_scan_probe(flags)
+        if let Frame::Ipv4(ip) = &frame
+            && let Transport::Tcp(tcp) = ip.transport
+            && heuristic::is_scan_probe(tcp.flags)
         {
             self.stats.heuristic += 1;
             return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
         }
 
         if let Some(program) = &self.bpf {
-            let drop_reason = match vm::execute(program, packet) {
+            let drop_reason = match vm::execute(program, frame.bytes()) {
                 Ok(VmAction::Pass) => None,
                 Ok(VmAction::Drop) => Some(AlertReason::Bpf),
                 Err(vm::Timeout) => Some(AlertReason::BpfTimeout),
@@ -351,8 +343,7 @@ impl<
             return self.drop_with_alert(&meta, AlertReason::Firewall, now, sink);
         }
 
-        let syn_secret = &self.syn_secret;
-        let Some(payload) = process_packet(packet, sink, syn_secret) else {
+        let Some(payload) = stack::respond(frame, sink, &self.syn_secret) else {
             return Verdict::Consumed;
         };
 
@@ -386,15 +377,12 @@ impl<
     /// captured command re-sent from elsewhere cannot redirect them.
     fn handle_mgmt<S: PacketSink>(
         &mut self,
-        envelope: MgmtEnvelope<'_>,
+        envelope: &[u8],
         meta: &AlertMeta,
         now: Ticks,
         sink: &mut S,
     ) -> Verdict {
         self.stats.mgmt += 1;
-        let MgmtEnvelope::Sealed(envelope) = envelope else {
-            return Verdict::Management;
-        };
         let Some(command) = self.mgmt_auth.verify(envelope) else {
             if self.mgmt_failure_limiter.allow(now) {
                 self.alert(meta, AlertReason::MgmtAuthFail, now, sink);
@@ -433,16 +421,14 @@ impl<
     /// Feeds a TCP connection attempt (SYN without ACK) to the port-scan
     /// detector. Replies and established traffic never count, so a server
     /// answering many client ports is not mistaken for a scanner.
-    fn count_connection_attempt(
-        &mut self,
-        packet: &[u8],
-        ip: &Ipv4Fields,
-        dst_port: u16,
-    ) -> Option<scan::ConfirmedScan> {
-        if !tcp_flags(packet, ip)?.is_connection_attempt() {
+    fn count_connection_attempt(&mut self, ip: &Ipv4Packet<'_>) -> Option<scan::ConfirmedScan> {
+        let Transport::Tcp(tcp) = ip.transport else {
+            return None;
+        };
+        if !tcp.flags.is_connection_attempt() {
             return None;
         }
-        self.port_scans.observe(ip.src_ip, dst_port)
+        self.port_scans.observe(ip.src, tcp.ports.dst)
     }
 
     /// Records the packet against its flow, alerting on a sample of new
@@ -469,18 +455,23 @@ impl<
 
     fn drop_rejected_ipv4<S: PacketSink>(
         &mut self,
-        rejected: &RejectedIpv4,
-        meta: &AlertMeta,
+        rejected: &Rejected,
+        packet_len: u16,
         now: Ticks,
         sink: &mut S,
     ) -> Verdict {
         let alert = AlertMeta {
-            src_ip: rejected.src_ip,
-            dst_ip: rejected.dst_ip,
+            src_ip: rejected.src,
+            dst_ip: rejected.dst,
             protocol: rejected.protocol,
-            ..*meta
+            packet_len,
+            ..AlertMeta::empty()
         };
-        self.drop_with_alert(&alert, rejected.reason, now, sink)
+        let reason = match rejected.reason {
+            Rejection::Malformed => AlertReason::MalformedIp,
+            Rejection::Fragment => AlertReason::IpFragment,
+        };
+        self.drop_with_alert(&alert, reason, now, sink)
     }
 
     fn drop_with_alert<S: PacketSink>(
@@ -685,133 +676,48 @@ struct HeavySubnet {
     rate: u16,
 }
 
-/// The IPv4 header fields the pipeline acts on.
-#[derive(Debug, Clone, Copy)]
-struct Ipv4Fields {
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    protocol: u8,
-    /// Offset of the transport header within the frame.
-    l4_offset: usize,
-}
-
-/// An IPv4 packet the engine drops without inspecting it, and why.
-#[derive(Debug, Clone, Copy)]
-struct RejectedIpv4 {
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    protocol: u8,
-    reason: AlertReason,
-}
-
-/// Reads the IPv4 header of an Ethernet frame: `Ok(None)` if the frame is
-/// not IPv4 or too short to hold a minimal header, `Err` if it is a
-/// fragment or its version or header length is invalid.
-fn parse_ipv4(packet: &[u8]) -> Result<Option<Ipv4Fields>, RejectedIpv4> {
-    let Some(header) = packet.get(ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE)
-    else {
-        return Ok(None);
+/// The alert fields `frame` fills: addresses, protocol and ports for IPv4.
+fn alert_meta(frame: &Frame<'_>, packet_len: u16) -> AlertMeta {
+    let empty = AlertMeta {
+        packet_len,
+        ..AlertMeta::empty()
     };
-    if packet[ethernet::TYPE_OFFSET..ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE] != [0x08, 0x00] {
-        return Ok(None);
-    }
-    let src_ip = Ipv4Addr::new(header[12], header[13], header[14], header[15]);
-    let dst_ip = Ipv4Addr::new(header[16], header[17], header[18], header[19]);
-    let protocol = header[9];
-    if let Some(reason) = ipv4_rejection(header, packet.len()) {
-        return Err(RejectedIpv4 {
-            src_ip,
-            dst_ip,
-            protocol,
-            reason,
-        });
-    }
-    let ihl = usize::from(header[0] & ipv4::IHL_MASK) * 4;
-    Ok(Some(Ipv4Fields {
-        src_ip,
-        dst_ip,
-        protocol,
-        l4_offset: ipv4::HEADER_OFFSET + ihl,
-    }))
-}
-
-/// Why the minimal IPv4 `header` of a frame `frame_len` bytes long cannot be
-/// inspected, if it cannot: a bad version or header length, a total length
-/// shorter than the header or longer than the frame, or a fragment.
-fn ipv4_rejection(header: &[u8], frame_len: usize) -> Option<AlertReason> {
-    const MIN_IHL_WORDS: u8 = 5;
-    let version_ihl = header[0];
-    let header_len = usize::from(version_ihl & ipv4::IHL_MASK) * 4;
-    let total_len = usize::from(u16::from_be_bytes([header[2], header[3]]));
-    let flags_fragment = u16::from_be_bytes([header[6], header[7]]);
-    if version_ihl >> 4 != 4
-        || version_ihl & ipv4::IHL_MASK < MIN_IHL_WORDS
-        || total_len < header_len
-        || ipv4::HEADER_OFFSET + total_len > frame_len
-    {
-        Some(AlertReason::MalformedIp)
-    } else if flags_fragment & ipv4::FRAGMENT_MASK != 0 {
-        Some(AlertReason::IpFragment)
-    } else {
-        None
+    let Frame::Ipv4(ip) = frame else {
+        return empty;
+    };
+    let ports = ip.transport.ports().unwrap_or(Ports { src: 0, dst: 0 });
+    AlertMeta {
+        src_ip: ip.src,
+        dst_ip: ip.dst,
+        protocol: ip.transport.protocol(),
+        src_port: ports.src,
+        dst_port: ports.dst,
+        ..empty
     }
 }
 
-/// Source and destination ports, for TCP and UDP only: other protocols
-/// have no ports, and reading their header bytes as ports would let an
-/// ICMP checksum match a firewall rule.
-fn transport_ports(packet: &[u8], ip: &Ipv4Fields) -> Option<(u16, u16)> {
-    match IpProtocol::from_u8(ip.protocol)? {
-        IpProtocol::Tcp | IpProtocol::Udp => packet.get(ip.l4_offset..).and_then(extract_ports),
-        IpProtocol::Icmp => None,
+/// The sealed envelope, if `ip` is a UDP datagram to our mgmt port.
+fn mgmt_envelope<'a>(ip: &'a Ipv4Packet<'_>) -> Option<&'a [u8]> {
+    match ip.transport {
+        Transport::Udp(ports) if ip.dst == IP_ADDR && ports.dst == MANAGEMENT_PORT => {
+            Some(ip.payload())
+        }
+        _ => None,
     }
-}
-
-/// The payload of a UDP datagram addressed to the mgmt port.
-#[derive(Debug, Clone, Copy)]
-enum MgmtEnvelope<'a> {
-    /// The UDP payload, bounded by the UDP length so Ethernet padding on
-    /// short frames is not mistaken for part of the sealed envelope.
-    Sealed(&'a [u8]),
-    /// The UDP header is truncated or its length field is inconsistent.
-    Malformed,
-}
-
-/// Returns the mgmt envelope if `packet` is UDP to our mgmt port.
-fn mgmt_envelope<'a>(packet: &'a [u8], ip: &Ipv4Fields, dst_port: u16) -> Option<MgmtEnvelope<'a>> {
-    if IpProtocol::from_u8(ip.protocol) != Some(IpProtocol::Udp)
-        || ip.dst_ip != IP_ADDR
-        || dst_port != MANAGEMENT_PORT
-    {
-        return None;
-    }
-    let payload_start = ip.l4_offset + udp::HEADER_SIZE;
-    let envelope = packet
-        .get(ip.l4_offset + 4..ip.l4_offset + 6)
-        .map(|len| usize::from(u16::from_be_bytes([len[0], len[1]])))
-        .filter(|&udp_len| udp_len >= udp::HEADER_SIZE)
-        .and_then(|udp_len| packet.get(payload_start..ip.l4_offset + udp_len));
-    Some(envelope.map_or(MgmtEnvelope::Malformed, MgmtEnvelope::Sealed))
-}
-
-/// The TCP flags, if this is a TCP segment with a full header.
-fn tcp_flags(packet: &[u8], ip: &Ipv4Fields) -> Option<TcpFlags> {
-    if IpProtocol::from_u8(ip.protocol) != Some(IpProtocol::Tcp)
-        || packet.len() < ip.l4_offset + tcp::MIN_HEADER_SIZE
-    {
-        return None;
-    }
-    Some(TcpFlags::new(packet[ip.l4_offset + tcp::FLAGS_OFFSET]))
 }
 
 /// True for IPv4 frames to our address and ARP frames asking about it.
 fn is_for_us(packet: &[u8]) -> bool {
+    const ETHERTYPE_IPV4: u16 = EthernetType::Ipv4 as u16;
+    const ETHERTYPE_ARP: u16 = EthernetType::Arp as u16;
     let ethertype = packet
         .get(ethernet::TYPE_OFFSET..ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE)
         .map(|t| u16::from_be_bytes([t[0], t[1]]));
     let target_ip = match ethertype {
-        Some(0x0800) => packet.get(ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE),
-        Some(0x0806) => {
+        Some(ETHERTYPE_IPV4) => {
+            packet.get(ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE)
+        }
+        Some(ETHERTYPE_ARP) => {
             packet.get(arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE)
         }
         _ => None,

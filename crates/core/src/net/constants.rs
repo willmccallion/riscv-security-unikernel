@@ -124,6 +124,26 @@ pub mod ipv4 {
     pub const VERSION: u8 = 0x45;
     /// Default TTL value.
     pub const DEFAULT_TTL: u8 = 0x40;
+
+    /// Field offsets within the IPv4 header.
+    pub mod field {
+        /// The version (high nibble) and header length in words (low).
+        pub const VERSION_IHL: usize = 0;
+        /// The two-byte total length of the datagram.
+        pub const TOTAL_LEN: usize = 2;
+        /// The two-byte flags and fragment offset.
+        pub const FLAGS_FRAGMENT: usize = 6;
+        /// Time to live.
+        pub const TTL: usize = 8;
+        /// The transport protocol number.
+        pub const PROTOCOL: usize = 9;
+        /// The two-byte header checksum.
+        pub const CHECKSUM: usize = 10;
+        /// The source address.
+        pub const SRC: usize = 12;
+        /// The destination address.
+        pub const DST: usize = 16;
+    }
 }
 
 /// ARP packet offsets and sizes.
@@ -132,10 +152,10 @@ pub mod arp {
     pub const MIN_PACKET_SIZE: usize = 42;
     /// Offset to the hardware type field (bytes 14-15, right after the
     /// Ethernet header).
-    ///
-    /// Ethernet ARP has hardware type 0x0001; anything else is not ours to
-    /// answer.
     pub const HW_TYPE_OFFSET: usize = 14;
+    /// The hardware type of Ethernet ARP; anything else is not ours to
+    /// answer.
+    pub const HW_TYPE_ETHERNET: u16 = 1;
     /// Offset to operation code field (bytes 20-21). Two bytes wide;
     /// Request = 0x0001, Reply = 0x0002.
     pub const OPCODE_OFFSET: usize = 20;
@@ -158,12 +178,28 @@ pub mod tcp {
     pub const DATA_OFFSET_OFFSET: usize = 12;
     /// Offset to TCP flags field within TCP header (byte 13).
     pub const FLAGS_OFFSET: usize = 13;
+    /// Offset of the four-byte sequence number.
+    pub const SEQ_OFFSET: usize = 4;
+    /// Offset of the four-byte acknowledgment number.
+    pub const ACK_OFFSET: usize = 8;
+    /// Offset of the two-byte receive window.
+    pub const WINDOW_OFFSET: usize = 14;
+    /// Offset of the two-byte checksum.
+    pub const CHECKSUM_OFFSET: usize = 16;
+    /// Offset of the two-byte urgent pointer.
+    pub const URGENT_OFFSET: usize = 18;
     /// Offset to source port (bytes 0-1).
     pub const SRC_PORT_OFFSET: usize = 0;
     /// Offset to destination port (bytes 2-3).
     pub const DST_PORT_OFFSET: usize = 2;
-    /// Size of port number in bytes.
-    pub const PORT_SIZE: usize = 2;
+}
+
+/// ICMP header sizes.
+pub mod icmp {
+    /// Type, code, checksum and the four bytes every message type defines.
+    pub const HEADER_SIZE: usize = 8;
+    /// Offset of the two-byte checksum.
+    pub const CHECKSUM_OFFSET: usize = 2;
 }
 
 /// UDP header offsets and sizes.

@@ -46,7 +46,9 @@ wire_enum! {
         PortScan = 15,
         /// An IPv4 header whose version is not 4, whose length is under 20
         /// bytes, or whose total length is shorter than the header or longer
-        /// than the frame. The packet is dropped unread.
+        /// than the frame; or a TCP, UDP or ICMP header that does not fit
+        /// inside the datagram or whose own length is inconsistent. The
+        /// packet is dropped unread.
         MalformedIp = 16,
         /// An IPv4 fragment. The kernel cannot reassemble, and inspecting the
         /// pieces alone would let a header or signature split across them slip
