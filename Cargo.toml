@@ -58,6 +58,7 @@ missing_docs = "warn"
 missing_debug_implementations = "warn"
 unused_results = "warn"
 unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
 rust_2018_idioms = { level = "deny", priority = -1 }
 
 [workspace.lints.clippy]
@@ -65,6 +66,7 @@ pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 todo = "deny"
