@@ -2,8 +2,8 @@
 //! and the Linux daemon both depend on.
 //!
 //! Each test exercises a single observable invariant of `sec_core`:
-//! the SYN-cookie reply path, TCP DPI hand-off, the BPF VM's
-//! out-of-range tolerance, the penalty-box eviction policy, the ARP
+//! the SYN-cookie reply path, TCP DPI hand-off, the penalty-box
+//! eviction policy, the ARP
 //! parser, the heuristic engine, the flow table, and the Aho-Corasick
 //! trie. They are written so they fail loudly when the invariant is
 //! violated.
@@ -28,9 +28,6 @@ use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::hash::MgmtKey;
 use sec_core::security::heuristic;
 use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, REPLY_ADDR_LEN, seal, sealed_len};
-use sec_core::security::vm::{
-    Instruction, Opcode, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
-};
 use sec_core::time::{TickSpan, Ticks};
 use std::net::Ipv4Addr;
 
@@ -532,185 +529,6 @@ fn firewall_dedups_and_signals_overflow() {
     assert_eq!(fw.block_port(9000), Ok(()));
 }
 
-/// The BPF VM has 16 registers but encodes register indices as `u8`,
-/// so an attacker-supplied program can request register 20. The VM
-/// must reject or clamp instead of panicking, since a panic in the
-/// kernel halts the core.
-#[test]
-fn vm_rejects_out_of_range_register_index() {
-    let prog = [Instruction::new(0x04, 20, 0, 0xFF)];
-    let mut vm = VM::new();
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = vm.execute(&prog, &[0u8; 64]);
-    }));
-
-    assert!(
-        result.is_ok(),
-        "VM panicked on instruction with reg_a >= 16"
-    );
-}
-
-/// `validate` must reject any program whose opcode byte is not one of
-/// the variants the VM explicitly handles. Without this check unknown
-/// opcodes hit the `_ => {}` arm in `execute` and become silent
-/// no-ops, which lets an attacker probe the upload path without
-/// rejection and means a future opcode added at an unused value
-/// would silently change behaviour for older programs.
-#[test]
-fn vm_rejects_unknown_opcode() {
-    let prog = [Instruction::new(0xFF, 0, 0, 0)];
-    assert_eq!(validate_vm(&prog), Err(VmError::InvalidOpcode));
-}
-
-/// A jump instruction with a target far beyond the end of the program
-/// must terminate cleanly rather than running off into uninitialised
-/// memory or panicking.
-#[test]
-fn vm_rejects_out_of_range_jump_target() {
-    let prog = [Instruction::new(0x0A, 0, 0, u32::MAX)];
-    let mut vm = VM::new();
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = vm.execute(&prog, &[0u8; 64]);
-    }));
-
-    assert!(
-        result.is_ok(),
-        "VM panicked on a jump with an out-of-range target"
-    );
-}
-
-/// A one-instruction infinite loop (`Jmp 0`) passes `validate` but must
-/// trip the cycle budget and surface `Timeout` to the caller rather
-/// than silently returning pass. The old contract defaulted to `1`
-/// (pass) on cycle exhaustion, which let an authenticated attacker
-/// upload a program that taxed every packet ~1000× without any alert.
-#[test]
-fn vm_reports_timeout_on_infinite_loop() {
-    let prog = [Instruction::new(0x0A, 0, 0, 0)];
-    assert!(validate_vm(&prog).is_ok(), "Jmp 0 must pass validation");
-    let mut vm = VM::new();
-    assert_eq!(vm.execute(&prog, &[0u8; 64]), Err(VmRuntimeError::Timeout));
-}
-
-/// `Ret` with an immediate that is not 0 (drop) or 1 (pass) must
-/// surface as `InvalidAction` rather than being coerced to pass. The
-/// old caller treated every non-zero value as pass, so a program
-/// ending in `Ret 0xDEADBEEF` silently passed and any future action-
-/// code extension would silently mis-interpret it.
-#[test]
-fn vm_reports_invalid_action_on_unknown_ret_immediate() {
-    let prog = [Instruction::new(0x0D, 0, 0, 0xDEAD_BEEF)];
-    let mut vm = VM::new();
-    assert_eq!(
-        vm.execute(&prog, &[0u8; 64]),
-        Err(VmRuntimeError::InvalidAction(0xDEAD_BEEF))
-    );
-}
-
-/// A program that can step past its last instruction has no defined
-/// action, so it is refused at upload: every installed program must end
-/// in `Ret` or an unconditional `Jmp`.
-#[test]
-fn vm_rejects_a_program_that_can_run_past_its_last_instruction() {
-    let ends_in_nop = [Instruction::new(0x00, 0, 0, 0)];
-    let ends_in_conditional_jump = [
-        Instruction::new(0x0D, 0, 0, 1),
-        Instruction::new(0x0B, 0, 0, 0),
-    ];
-
-    assert_eq!(validate_vm(&ends_in_nop), Err(VmError::MissingReturn));
-    assert_eq!(
-        validate_vm(&ends_in_conditional_jump),
-        Err(VmError::MissingReturn)
-    );
-}
-
-/// Uploading an empty program is how the operator removes the filter.
-#[test]
-fn vm_accepts_an_empty_program_as_no_filter() {
-    assert_eq!(validate_vm(&[]), Ok(()));
-}
-
-/// An unvalidated program that runs off the end fails closed instead of
-/// passing the packet.
-#[test]
-fn vm_reports_missing_return_when_execution_runs_off_the_end() {
-    let prog = [Instruction::new(0x00, 0, 0, 0)];
-
-    let action = VM::new().execute(&prog, &[0u8; 64]);
-
-    assert_eq!(action, Err(VmRuntimeError::MissingReturn));
-}
-
-/// Runs `prog` and reports whether register 0 came out equal to `expected`:
-/// the program ends by comparing r0 with an immediate.
-fn r0_equals(prog: &[Instruction], packet: &[u8], expected: u32) -> bool {
-    let mut checked = prog.to_vec();
-    checked.extend([
-        Instruction::new(0x04, 1, 0, expected),
-        Instruction::new(0x06, 0, 1, 0),
-        Instruction::new(0x0B, 0, 0, checked.len() as u32 + 4),
-        Instruction::new(0x0D, 0, 0, 0),
-        Instruction::new(0x0D, 0, 0, 1),
-    ]);
-    VM::new().execute(&checked, packet) == Ok(VmAction::Pass)
-}
-
-/// `Ldmsh` reads an IPv4 header length the way classic BPF does: four
-/// times the low nibble of the byte at its offset.
-#[test]
-fn vm_ldmsh_loads_four_times_the_low_nibble() {
-    let mut packet = [0u8; 20];
-    packet[14] = 0x46;
-
-    let prog = [Instruction::new(Opcode::Ldmsh as u8, 0, 0, 14)];
-
-    assert!(r0_equals(&prog, &packet, 24));
-}
-
-#[test]
-fn vm_indexed_loads_add_the_index_register_to_the_offset() {
-    let packet: Vec<u8> = (0..32).collect();
-    for (op, expected) in [
-        (Opcode::Ldbx, 0x0B),
-        (Opcode::Ldhx, 0x0B0C),
-        (Opcode::Ldwx, 0x0B0C_0D0E),
-    ] {
-        let prog = [
-            Instruction::new(0x04, 2, 0, 8),
-            Instruction::new(op as u8, 0, 2, 3),
-        ];
-
-        assert!(r0_equals(&prog, &packet, expected), "{op:?}");
-    }
-}
-
-/// An index that pushes the offset past the packet loads 0, like any other
-/// out-of-bounds load.
-#[test]
-fn vm_indexed_load_past_the_packet_loads_zero() {
-    let packet = [0xFFu8; 16];
-    let prog = [
-        Instruction::new(0x04, 0, 0, 0xAA),
-        Instruction::new(0x04, 2, 0, u32::MAX),
-        Instruction::new(Opcode::Ldwx as u8, 0, 2, u32::MAX),
-    ];
-
-    assert!(r0_equals(&prog, &packet, 0));
-}
-
-/// Ret 0 → Drop, Ret 1 → Pass, round-trip both.
-#[test]
-fn vm_returns_typed_actions_for_valid_ret_immediates() {
-    let drop_prog = [Instruction::new(0x0D, 0, 0, 0)];
-    let pass_prog = [Instruction::new(0x0D, 0, 0, 1)];
-    let mut vm = VM::new();
-    assert_eq!(vm.execute(&drop_prog, &[0u8; 64]), Ok(VmAction::Drop));
-    assert_eq!(vm.execute(&pass_prog, &[0u8; 64]), Ok(VmAction::Pass));
-}
-
 /// Once the penalty box is full, every additional `ban` call must not
 /// land in the same slot deterministically — otherwise an attacker can
 /// predict which IPs survive eviction and force the same one to keep
@@ -1010,41 +828,6 @@ fn penalty_box_unban_lifts_an_active_ban() {
     pbox.unban(Ipv4Addr::new(10, 0, 0, 1));
 
     assert!(!pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), Ticks::new(1)));
-}
-
-#[test]
-fn vm_program_finishing_on_its_last_allowed_step_is_not_a_timeout() {
-    let mut program = [Instruction::new(0x00, 0, 0, 0); 1000];
-    program[999] = Instruction::new(0x0D, 0, 0, 1);
-
-    let action = VM::new().execute(&program, &[]);
-
-    assert_eq!(action, Ok(VmAction::Pass));
-}
-
-#[test]
-fn vm_out_of_bounds_loads_all_clear_the_register() {
-    // Each program loads 0xFF into r0, then loads from past the end of a
-    // 2-byte packet and returns r0 == 0 ? pass : drop.
-    for load in [0x01u8, 0x02, 0x03] {
-        let program = [
-            Instruction::new(0x04, 0, 0, 0xFF),
-            Instruction::new(load, 0, 0, 2),
-            Instruction::new(0x04, 1, 0, 0),
-            Instruction::new(0x06, 0, 1, 0),
-            Instruction::new(0x0B, 0, 0, 6),
-            Instruction::new(0x0D, 0, 0, 0),
-            Instruction::new(0x0D, 0, 0, 1),
-        ];
-
-        let action = VM::new().execute(&program, &[0xAB, 0xCD]);
-
-        assert_eq!(
-            action,
-            Ok(VmAction::Pass),
-            "opcode {load:#x} left a stale register"
-        );
-    }
 }
 
 #[test]

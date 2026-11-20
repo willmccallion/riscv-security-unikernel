@@ -992,23 +992,7 @@ const fn encode(op: Opcode, reg_a: u8, reg_b: u8, imm: u32) -> [u8; 7] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sec_core::security::vm::{Instruction, VM, VmAction, validate};
-
-    fn decode(bytecode: &[u8]) -> Vec<Instruction> {
-        let (chunks, rest) = bytecode.as_chunks::<7>();
-        assert!(rest.is_empty(), "bytecode is whole instructions");
-        chunks
-            .iter()
-            .map(|c| {
-                Instruction::new(
-                    c[0],
-                    c[1],
-                    c[2],
-                    u32::from_be_bytes([c[3], c[4], c[5], c[6]]),
-                )
-            })
-            .collect()
-    }
+    use sec_core::security::vm::{Program, VmAction, execute};
 
     fn frame(protocol: IpProtocol, dst_port: u16) -> Vec<u8> {
         frame_with_ip_header_words(protocol, dst_port, 5)
@@ -1027,11 +1011,9 @@ mod tests {
     }
 
     fn run(code: &str, packet: &[u8]) -> VmAction {
-        let program = decode(&compile_bpf(code).expect("compiles"));
-        validate(&program).expect("kernel accepts the program");
-        VM::new()
-            .execute(&program, packet)
-            .expect("program returns")
+        let program = Program::decode(&compile_bpf(code).expect("compiles"))
+            .expect("kernel accepts the program");
+        execute(&program, packet).expect("program returns")
     }
 
     #[test]

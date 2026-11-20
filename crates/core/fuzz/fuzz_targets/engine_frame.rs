@@ -35,9 +35,7 @@ fn expected_counter(verdict: Verdict) -> Option<usize> {
         Verdict::Dropped(AlertReason::Ddos) => Some(1),
         Verdict::Dropped(AlertReason::Firewall) => Some(2),
         Verdict::Dropped(AlertReason::Malware) => Some(3),
-        Verdict::Dropped(
-            AlertReason::Bpf | AlertReason::BpfTimeout | AlertReason::BpfInvalidAction,
-        ) => Some(4),
+        Verdict::Dropped(AlertReason::Bpf | AlertReason::BpfTimeout) => Some(4),
         Verdict::Dropped(AlertReason::Heuristic) => Some(5),
         Verdict::Management => Some(6),
         Verdict::Consumed => None,
