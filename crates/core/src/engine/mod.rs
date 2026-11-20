@@ -641,7 +641,9 @@ impl<
             seq: self.report_seq,
         };
         let mut frame = [0u8; MAX_REPORT_FRAME_LEN];
-        sink.send(report::report_frame(&mut frame, &header, body));
+        if let Some(frame) = report::report_frame(&mut frame, &header, body) {
+            sink.send(frame);
+        }
     }
 
     /// Applies an authenticated mgmt body and reports what happened.

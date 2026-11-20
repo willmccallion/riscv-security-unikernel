@@ -42,23 +42,23 @@ pub struct ReportHeader<'a> {
 }
 
 /// Writes `body` as a signed report frame into `buf` and returns the
-/// frame.
+/// frame, or `None` if the body is too long to seal into `buf`, so an
+/// unsigned frame can never go out.
 pub fn report_frame<'a>(
     buf: &'a mut [u8; MAX_REPORT_FRAME_LEN],
     header: &ReportHeader<'_>,
     body: &[u8],
-) -> &'a [u8] {
-    let len = UDP_PAYLOAD_OFFSET + report_auth::OVERHEAD + body.len();
-    let frame = &mut buf[..len];
-    write_udp_headers(frame, header.operator, header.src_port, header.dst_port);
-    let _ = report_auth::seal_report(
+) -> Option<&'a [u8]> {
+    let sealed_len = report_auth::seal_report(
         header.key,
         header.epoch,
         header.seq,
         body,
-        &mut frame[UDP_PAYLOAD_OFFSET..],
-    );
-    frame
+        &mut buf[UDP_PAYLOAD_OFFSET..],
+    )?;
+    let frame = &mut buf[..UDP_PAYLOAD_OFFSET + sealed_len];
+    write_udp_headers(frame, header.operator, header.src_port, header.dst_port);
+    Some(frame)
 }
 
 /// Fills the Ethernet, IPv4 and UDP headers for a frame that spans all of
@@ -105,4 +105,44 @@ fn udp_header(src_port: u16, dst_port: u16, len: u16) -> [u8; udp::HEADER_SIZE] 
     header[udp::DST_PORT_OFFSET..][..2].copy_from_slice(&dst_port.to_be_bytes());
     header[udp::LENGTH_OFFSET..][..2].copy_from_slice(&len.to_be_bytes());
     header
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::hash::MgmtKey;
+    use crate::security::report_auth::ReportVerifier;
+
+    const KEY: ReportKey = ReportKey::derive(&MgmtKey::new([7; 16]));
+
+    fn header() -> ReportHeader<'static> {
+        ReportHeader {
+            operator: None,
+            src_port: 1,
+            dst_port: 2,
+            key: &KEY,
+            epoch: 3,
+            seq: 4,
+        }
+    }
+
+    #[test]
+    fn a_report_frame_carries_its_body_sealed() {
+        let mut buf = [0u8; MAX_REPORT_FRAME_LEN];
+
+        let frame = report_frame(&mut buf, &header(), b"body").expect("fits");
+
+        let report = ReportVerifier::new(KEY)
+            .verify(&frame[UDP_PAYLOAD_OFFSET..])
+            .expect("verifies");
+        assert_eq!(report.body, b"body");
+    }
+
+    #[test]
+    fn a_body_too_long_to_seal_yields_no_frame() {
+        let mut buf = [0u8; MAX_REPORT_FRAME_LEN];
+        let too_long = [0u8; MAX_REPORT_FRAME_LEN];
+
+        assert!(report_frame(&mut buf, &header(), &too_long).is_none());
+    }
 }
