@@ -530,3 +530,30 @@ fn an_icmp_message_shorter_than_its_header_is_dropped_as_malformed() {
         Verdict::Dropped(AlertReason::MalformedIp)
     );
 }
+
+#[test]
+fn a_new_flow_is_alerted_only_on_sampled_ticks() {
+    use sec_core::config::FLOW_LOG_SAMPLE_MASK;
+    let sampled = Ticks::new(FLOW_LOG_SAMPLE_MASK + 1);
+    let unsampled = Ticks::new(FLOW_LOG_SAMPLE_MASK + 2);
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let _ = e.process(&mut udp(PEER_IP, 5000, 80, b"a"), sampled, &mut sink);
+    let _ = e.process(&mut udp(PEER_IP, 5001, 80, b"b"), unsampled, &mut sink);
+
+    let flows = sink
+        .alert_reasons()
+        .iter()
+        .filter(|&&r| r == AlertReason::Flow)
+        .count();
+    assert_eq!(flows, 1);
+}
+
+#[test]
+fn a_nop_sled_payload_is_dropped_as_a_heuristic_with_an_alert() {
+    let (v, alerts) = verdict_for(udp(PEER_IP, 5000, 80, &[0x90; 64]));
+
+    assert_eq!(v, Verdict::Dropped(AlertReason::Heuristic));
+    assert!(alerts.contains(&AlertReason::Heuristic));
+}
