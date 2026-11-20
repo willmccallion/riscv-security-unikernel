@@ -80,6 +80,7 @@ const ETHERTYPE_IPV4: u16 = 0x0800;
 const ETHERTYPE_IPV6: u16 = 0x86DD;
 const ETHERTYPE_VLAN: u16 = 0x8100;
 const ETHERTYPE_QINQ: u16 = 0x88A8;
+const ETHERNET_TYPE_OFFSET: usize = 12;
 const ETHERNET_HEADER_LEN: usize = 14;
 const SLL_HEADER_LEN: usize = 16;
 const SLL_PROTOCOL_OFFSET: usize = 14;
@@ -105,20 +106,50 @@ const MAX_IPV6_EXTENSIONS: usize = 8;
 /// Decodes a frame of the given link type; `None` if it is not an IP
 /// packet or is too short to be one.
 pub fn decode(link: LinkType, frame: &[u8]) -> Option<Packet<'_>> {
-    match link {
-        LinkType::Ethernet => {
-            decode_ethertype(read_u16(frame, 12)?, frame.get(ETHERNET_HEADER_LEN..)?)
-        }
-        LinkType::RawIp => decode_ip(frame),
-        LinkType::LinuxSll => decode_ethertype(
-            read_u16(frame, SLL_PROTOCOL_OFFSET)?,
-            frame.get(SLL_HEADER_LEN..)?,
-        ),
-        LinkType::LinuxSll2 => decode_ethertype(
-            read_u16(frame, SLL2_PROTOCOL_OFFSET)?,
-            frame.get(SLL2_HEADER_LEN..)?,
-        ),
+    match link_payload(link, frame)? {
+        Payload::Raw(packet) => decode_ip(packet),
+        Payload::Typed { ethertype, rest } => match skip_vlan_tags(ethertype, rest)? {
+            (ETHERTYPE_IPV4, packet) => decode_ipv4(packet),
+            (ETHERTYPE_IPV6, packet) => decode_ipv6(packet),
+            _ => None,
+        },
     }
+}
+
+/// What follows a frame's link header.
+enum Payload<'a> {
+    /// A bare IP packet, on a link with no header.
+    Raw(&'a [u8]),
+    /// The protocol the link header names, and the bytes after it.
+    Typed { ethertype: u16, rest: &'a [u8] },
+}
+
+/// What follows the link header of `frame`; `None` if the frame is too
+/// short to hold the header.
+fn link_payload(link: LinkType, frame: &[u8]) -> Option<Payload<'_>> {
+    let (type_offset, header_len) = match link {
+        LinkType::RawIp => return Some(Payload::Raw(frame)),
+        LinkType::Ethernet => (ETHERNET_TYPE_OFFSET, ETHERNET_HEADER_LEN),
+        LinkType::LinuxSll => (SLL_PROTOCOL_OFFSET, SLL_HEADER_LEN),
+        LinkType::LinuxSll2 => (SLL2_PROTOCOL_OFFSET, SLL2_HEADER_LEN),
+    };
+    Some(Payload::Typed {
+        ethertype: read_u16(frame, type_offset)?,
+        rest: frame.get(header_len..)?,
+    })
+}
+
+/// The protocol inside up to [`MAX_VLAN_TAGS`] VLAN tags, and what follows
+/// it; `None` if a tag is truncated.
+fn skip_vlan_tags(mut ethertype: u16, mut rest: &[u8]) -> Option<(u16, &[u8])> {
+    for _ in 0..MAX_VLAN_TAGS {
+        if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
+            break;
+        }
+        ethertype = read_u16(rest, 2)?;
+        rest = rest.get(VLAN_TAG_LEN..)?;
+    }
+    Some((ethertype, rest))
 }
 
 /// Why a frame did not decode as an IP packet.
@@ -152,57 +183,20 @@ impl fmt::Display for NotIp {
 
 /// Says why `frame`, which [`decode`] rejected, is not an IP packet.
 pub fn classify_rejected(link: LinkType, frame: &[u8]) -> NotIp {
-    let (ethertype, rest) = match link {
-        LinkType::RawIp => {
-            return match frame.first() {
-                None => NotIp::Truncated,
-                Some(&first) if first >> 4 == 4 || first >> 4 == 6 => NotIp::MalformedIp,
-                Some(&first) => NotIp::UnknownRaw(first),
-            };
-        }
-        LinkType::Ethernet => (read_u16(frame, 12), frame.get(ETHERNET_HEADER_LEN..)),
-        LinkType::LinuxSll => (
-            read_u16(frame, SLL_PROTOCOL_OFFSET),
-            frame.get(SLL_HEADER_LEN..),
-        ),
-        LinkType::LinuxSll2 => (
-            read_u16(frame, SLL2_PROTOCOL_OFFSET),
-            frame.get(SLL2_HEADER_LEN..),
-        ),
-    };
-    let (Some(mut ethertype), Some(mut rest)) = (ethertype, rest) else {
+    let Some(payload) = link_payload(link, frame) else {
         return NotIp::Truncated;
     };
-    for _ in 0..MAX_VLAN_TAGS {
-        if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
-            break;
-        }
-        let (Some(inner), Some(after)) = (read_u16(rest, 2), rest.get(VLAN_TAG_LEN..)) else {
-            return NotIp::Truncated;
-        };
-        ethertype = inner;
-        rest = after;
-    }
-    match ethertype {
-        ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => NotIp::MalformedIp,
-        other => NotIp::EtherType(other),
-    }
-}
-
-/// Decodes what follows a link header that named `ethertype`, stepping
-/// over VLAN tags.
-fn decode_ethertype(mut ethertype: u16, mut rest: &[u8]) -> Option<Packet<'_>> {
-    for _ in 0..MAX_VLAN_TAGS {
-        if ethertype != ETHERTYPE_VLAN && ethertype != ETHERTYPE_QINQ {
-            break;
-        }
-        ethertype = read_u16(rest, 2)?;
-        rest = rest.get(VLAN_TAG_LEN..)?;
-    }
-    match ethertype {
-        ETHERTYPE_IPV4 => decode_ipv4(rest),
-        ETHERTYPE_IPV6 => decode_ipv6(rest),
-        _ => None,
+    match payload {
+        Payload::Raw(packet) => match packet.first() {
+            None => NotIp::Truncated,
+            Some(&first) if first >> 4 == 4 || first >> 4 == 6 => NotIp::MalformedIp,
+            Some(&first) => NotIp::UnknownRaw(first),
+        },
+        Payload::Typed { ethertype, rest } => match skip_vlan_tags(ethertype, rest) {
+            None => NotIp::Truncated,
+            Some((ETHERTYPE_IPV4 | ETHERTYPE_IPV6, _)) => NotIp::MalformedIp,
+            Some((other, _)) => NotIp::EtherType(other),
+        },
     }
 }
 
