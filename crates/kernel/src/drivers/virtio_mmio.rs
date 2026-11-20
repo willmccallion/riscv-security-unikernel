@@ -1,7 +1,9 @@
 //! The legacy (version 1) VirtIO MMIO transport both VirtIO drivers use:
 //! finding a device, bringing it up, and the split virtqueue layout.
 
+use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{Ordering, fence};
 
 /// The VirtIO device types this kernel drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +59,37 @@ pub const DESC_F_WRITE: u16 = 2;
 /// the two 4 KB pages a 4096-byte page would cost in 64 KB of RAM.
 pub const GUEST_PAGE: u32 = 64;
 
+/// Memory the device reads or writes behind the compiler's back, so every
+/// access is volatile and none is cached or reordered away.
+#[repr(transparent)]
+pub struct VolatileCell<T: Copy>(UnsafeCell<T>);
+
+// SAFETY: the kernel runs on one hart, so the only other party touching a
+// cell is the device, which volatile accesses account for.
+unsafe impl<T: Copy> Sync for VolatileCell<T> {}
+
+impl<T: Copy> VolatileCell<T> {
+    /// A cell holding `value`.
+    pub const fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+
+    /// The value as it is in memory now.
+    pub fn get(&self) -> T {
+        // SAFETY: the pointer comes from a live `UnsafeCell`, so it is valid
+        // and aligned for `T`.
+        unsafe { read_volatile(self.0.get()) }
+    }
+
+    /// Stores `value` where the device can see it.
+    pub fn set(&self, value: T) {
+        // SAFETY: as for `get`.
+        unsafe { write_volatile(self.0.get(), value) }
+    }
+}
+
 /// A buffer descriptor.
+#[derive(Clone, Copy)]
 #[repr(C, align(16))]
 pub struct Desc {
     /// The buffer's physical address.
@@ -70,20 +102,28 @@ pub struct Desc {
     pub next: u16,
 }
 
+impl Desc {
+    const EMPTY: Self = Self {
+        addr: 0,
+        len: 0,
+        flags: 0,
+        next: 0,
+    };
+}
+
 /// The ring the driver offers descriptors on.
 #[repr(C)]
 pub struct Avail<const N: usize> {
-    /// Unused; the driver asks for every interrupt it does not take.
-    pub flags: u16,
+    flags: u16,
     /// Where the driver will put its next entry, wrapping.
-    pub idx: u16,
+    pub idx: VolatileCell<u16>,
     /// Descriptor ids, in the order offered.
-    pub ring: [u16; N],
-    /// Unused without the event-index feature.
-    pub event: u16,
+    pub ring: [VolatileCell<u16>; N],
+    event: u16,
 }
 
 /// One buffer the device has finished with.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct UsedElem {
     /// The descriptor id.
@@ -96,21 +136,19 @@ pub struct UsedElem {
 /// so it starts on the page after the available ring.
 #[repr(C, align(64))]
 pub struct Used<const N: usize> {
-    /// Unused by this driver.
-    pub flags: u16,
+    flags: VolatileCell<u16>,
     /// Where the device will put its next entry, wrapping.
-    pub idx: u16,
+    pub idx: VolatileCell<u16>,
     /// Returned buffers, in the order finished.
-    pub ring: [UsedElem; N],
-    /// Unused without the event-index feature.
-    pub event: u16,
+    pub ring: [VolatileCell<UsedElem>; N],
+    event: VolatileCell<u16>,
 }
 
 /// A legacy split virtqueue of `N` descriptors.
 #[repr(C, align(64))]
 pub struct Queue<const N: usize> {
     /// The descriptor table.
-    pub desc: [Desc; N],
+    pub desc: [VolatileCell<Desc>; N],
     /// The available ring.
     pub avail: Avail<N>,
     /// The used ring, one page in.
@@ -118,12 +156,88 @@ pub struct Queue<const N: usize> {
 }
 
 impl<const N: usize> Queue<N> {
+    /// An empty queue, before any buffer is offered.
+    pub const fn new() -> Self {
+        Self {
+            desc: [const { VolatileCell::new(Desc::EMPTY) }; N],
+            avail: Avail {
+                flags: 0,
+                idx: VolatileCell::new(0),
+                ring: [const { VolatileCell::new(0) }; N],
+                event: 0,
+            },
+            used: Used {
+                flags: VolatileCell::new(0),
+                idx: VolatileCell::new(0),
+                ring: [const { VolatileCell::new(UsedElem { id: 0, len: 0 }) }; N],
+                event: VolatileCell::new(0),
+            },
+        }
+    }
+
     /// Compile-time proof that the used ring sits exactly one page in,
     /// where the device looks for it.
     const USED_RING_ON_SECOND_PAGE: () = assert!(
         core::mem::offset_of!(Self, used) == GUEST_PAGE as usize
             && core::mem::align_of::<Self>() == GUEST_PAGE as usize
     );
+}
+
+/// The driver's view of a virtqueue: it describes buffers, offers them on
+/// the available ring and collects them from the used ring. Only the
+/// driver writes the available ring, so it keeps that index itself.
+pub struct Ring<const N: usize> {
+    queue: &'static Queue<N>,
+    next_offer: u16,
+    next_used: u16,
+}
+
+impl<const N: usize> Ring<N> {
+    /// The driver's side of `queue`, before any buffer is offered.
+    pub const fn new(queue: &'static Queue<N>) -> Self {
+        Self {
+            queue,
+            next_offer: 0,
+            next_used: 0,
+        }
+    }
+
+    /// Points descriptor `id` at a buffer.
+    pub fn describe(&self, id: usize, desc: Desc) {
+        self.queue.desc[id].set(desc);
+    }
+
+    /// Hands descriptor `id` to the device.
+    pub fn offer(&mut self, id: usize) {
+        self.queue.avail.ring[usize::from(self.next_offer) % N].set(id as u16);
+        // The device must see the entry before the index that publishes it.
+        fence(Ordering::SeqCst);
+        self.next_offer = self.next_offer.wrapping_add(1);
+        self.queue.avail.idx.set(self.next_offer);
+    }
+
+    /// The descriptor the next [`Self::offer`] fills, when buffers are
+    /// offered in rotation.
+    pub fn next_slot(&self) -> usize {
+        usize::from(self.next_offer) % N
+    }
+
+    /// The next buffer the device has returned, consuming its used entry.
+    pub fn next_used(&mut self) -> Option<UsedElem> {
+        if self.queue.used.idx.get() == self.next_used {
+            return None;
+        }
+        // Read the entry only after seeing the index that published it.
+        fence(Ordering::SeqCst);
+        let elem = self.queue.used.ring[usize::from(self.next_used) % N].get();
+        self.next_used = self.next_used.wrapping_add(1);
+        Some(elem)
+    }
+
+    /// How many offered buffers the device has not yet returned.
+    pub fn in_flight(&self) -> usize {
+        usize::from(self.next_offer.wrapping_sub(self.queue.used.idx.get()))
+    }
 }
 
 /// A probed device's register block.
@@ -172,12 +286,12 @@ impl Mmio {
 
     /// Hands the queue at `queue` to the device as virtqueue `index`. Its
     /// address must fit in 32 bits, as all of this kernel's RAM does.
-    pub fn install_queue<const N: usize>(self, index: u32, queue: *const Queue<N>) {
+    pub fn install_queue<const N: usize>(self, index: u32, queue: &Queue<N>) {
         let () = Queue::<N>::USED_RING_ON_SECOND_PAGE;
         self.write(reg::QUEUE_SEL, index);
         self.write(reg::QUEUE_NUM, N as u32);
         self.write(reg::QUEUE_ALIGN, GUEST_PAGE);
-        self.write(reg::QUEUE_PFN, queue as u32 / GUEST_PAGE);
+        self.write(reg::QUEUE_PFN, address_of(queue) / GUEST_PAGE);
     }
 
     /// Tells the device its queues are ready.
@@ -190,6 +304,8 @@ impl Mmio {
 
     /// Tells the device virtqueue `index` has new available buffers.
     pub fn notify(self, index: u32) {
+        // Ring updates must reach memory before the device is told of them.
+        fence(Ordering::SeqCst);
         self.write(reg::QUEUE_NOTIFY, index);
     }
 
@@ -204,4 +320,10 @@ impl Mmio {
         // device in that slot.
         unsafe { write_volatile((self.base + offset) as *mut u32, value) }
     }
+}
+
+/// The physical address of `value`; the kernel runs with paging off, and
+/// all of its RAM lies below 4 GB.
+pub fn address_of<T: ?Sized>(value: &T) -> u32 {
+    core::ptr::from_ref(value).cast::<u8>() as usize as u32
 }

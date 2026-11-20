@@ -36,12 +36,11 @@ pub trait EntropySource {
 }
 
 /// VirtIO entropy device (the QEMU path; works under any hypervisor
-/// that exposes a virtio-rng device).
-pub struct VirtioRngSource;
-
-impl EntropySource for VirtioRngSource {
+/// that exposes a virtio-rng device). A device that stops answering
+/// fills nothing.
+impl EntropySource for VirtioRng {
     fn fill(&mut self, buf: &mut [u8]) -> usize {
-        VirtioRng::read_into(buf)
+        self.read_into(buf).unwrap_or(0)
     }
 }
 
@@ -136,10 +135,8 @@ impl GatherReport {
 /// before calling — XOR-into-place means a non-zero starting buffer
 /// would silently bias the output.
 ///
-/// `virtio_rng_present` is the result of [`VirtioRng::init`]; we don't
-/// re-probe here because the probe already ran during driver bring-up
-/// and writes side-effecting values to MMIO.
-pub fn gather(out: &mut [u8], virtio_rng_present: bool) -> GatherReport {
+/// `virtio_rng` is the device [`VirtioRng::init`] brought up, if any.
+pub fn gather(out: &mut [u8], virtio_rng: Option<&mut VirtioRng>) -> GatherReport {
     let mut report = GatherReport::default();
     let mut tmp = [0u8; 32];
     let want = out.len().min(tmp.len());
@@ -151,11 +148,11 @@ pub fn gather(out: &mut [u8], virtio_rng_present: bool) -> GatherReport {
         report.zkr = n == want;
     }
 
-    if virtio_rng_present {
+    if let Some(device) = virtio_rng {
         // Reset tmp so a partial fill from a previous source doesn't
         // leak into virtio's contribution.
         tmp.fill(0);
-        let n = fill_fully(&mut VirtioRngSource, &mut tmp[..want]);
+        let n = fill_fully(device, &mut tmp[..want]);
         xor_into(&mut out[..n], &tmp[..n]);
         report.virtio_rng = n == want;
     }

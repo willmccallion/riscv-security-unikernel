@@ -1,14 +1,15 @@
 //! VirtIO network device driver.
 //!
-//! Implements the VirtIO 1.0 legacy interface for network device access.
-//! This driver manages receive and transmit queues, handles packet
-//! buffers, and provides a simple interface for sending and receiving
-//! Ethernet frames.
+//! Drives a legacy VirtIO network card through two virtqueues: one the
+//! device fills with received frames, one it sends frames from. The rings
+//! and buffers live in a static the driver takes once at init, so nothing
+//! else can reach memory the device is using.
 
-use super::virtio_mmio::{DESC_F_WRITE, DeviceId, Mmio, Queue};
+use super::virtio_mmio::{DESC_F_WRITE, Desc, DeviceId, Mmio, Queue, Ring, address_of};
 use crate::{kprint, kprintln};
-use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
-use core::sync::atomic::{Ordering, fence};
+use core::cell::UnsafeCell;
+use sec_core::net::PacketSink;
+use sec_core::types::TakeOnce;
 
 /// The virtqueue the device delivers received frames on.
 const RX_QUEUE: u32 = 0;
@@ -29,68 +30,116 @@ const BUF_SIZE: usize = 1536;
 /// before the frame is dropped.
 const TX_RECLAIM_SPINS: u32 = 1_000_000;
 
-/// Receive queue for incoming packets.
-// SAFETY: Queue consists entirely of integer types; zeroing all bytes produces a valid initial state.
-static mut RX_RING: Queue<QUEUE_SIZE> = unsafe { core::mem::zeroed() };
+/// A packet buffer the device reads from or writes into.
+struct Buffer(UnsafeCell<[u8; BUF_SIZE]>);
 
-/// Transmit queue for outgoing packets.
-// SAFETY: Queue consists entirely of integer types; zeroing all bytes produces a valid initial state.
-static mut TX_RING: Queue<QUEUE_SIZE> = unsafe { core::mem::zeroed() };
+// SAFETY: the kernel runs on one hart; a buffer is only touched by the
+// driver while the device does not own it.
+unsafe impl Sync for Buffer {}
 
-/// Packet buffers the RX descriptors point at.
-static mut RX_BUFFERS: [[u8; BUF_SIZE]; QUEUE_SIZE] = [[0; BUF_SIZE]; QUEUE_SIZE];
+impl Buffer {
+    const fn new() -> Self {
+        Self(UnsafeCell::new([0; BUF_SIZE]))
+    }
 
-/// Packet buffers the TX descriptors point at.
-static mut TX_BUFFERS: [[u8; BUF_SIZE]; QUEUE_SIZE] = [[0; BUF_SIZE]; QUEUE_SIZE];
+    fn address(&self) -> u64 {
+        u64::from(address_of(self))
+    }
+}
 
-/// Current index in the receive used ring.
-static mut RX_IDX: u16 = 0;
+/// Everything the device reads or writes.
+struct DeviceMemory {
+    rx_ring: Queue<QUEUE_SIZE>,
+    tx_ring: Queue<QUEUE_SIZE>,
+    rx_buffers: [Buffer; QUEUE_SIZE],
+    tx_buffers: [Buffer; QUEUE_SIZE],
+}
 
-/// The device's registers, once probed.
-static mut DEVICE: Option<Mmio> = None;
+static MEMORY: TakeOnce<DeviceMemory> = TakeOnce::new(DeviceMemory {
+    rx_ring: Queue::new(),
+    tx_ring: Queue::new(),
+    rx_buffers: [const { Buffer::new() }; QUEUE_SIZE],
+    tx_buffers: [const { Buffer::new() }; QUEUE_SIZE],
+});
 
-/// VirtIO network device driver.
-///
-/// Provides methods for initializing the device, receiving packets,
-/// and sending packets through the VirtIO interface.
-pub struct VirtioNet;
+/// Why the network card could not be brought up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitError {
+    /// No legacy VirtIO network device answered the probe.
+    NotFound,
+    /// The driver was already brought up once.
+    AlreadyRunning,
+}
+
+/// The network card, split into its receive and transmit halves so a
+/// received frame can be answered while it is still borrowed.
+pub struct VirtioNet {
+    /// Received frames.
+    pub rx: Receiver,
+    /// Frames to send.
+    pub tx: Transmitter,
+}
 
 impl VirtioNet {
-    /// Initializes the VirtIO network device.
+    /// Probes for the card, offers it every receive buffer and starts it.
     ///
-    /// Probes for a VirtIO network device, configures the queues,
-    /// and sets up the device for operation. This must be called
-    /// once before using the device.
-    pub fn init() {
+    /// # Errors
+    ///
+    /// [`InitError`] if there is no card or the driver already owns it.
+    pub fn init() -> Result<Self, InitError> {
         kprint!("[VirtIO] Probing... ");
-        let Some(mmio) = Mmio::probe(DeviceId::Net) else {
-            panic!("No Legacy Net Device Found");
-        };
-        // SAFETY: DEVICE is only written here, during single-threaded init.
-        unsafe { DEVICE = Some(mmio) };
+        let mmio = Mmio::probe(DeviceId::Net).ok_or(InitError::NotFound)?;
+        let memory: &'static DeviceMemory = MEMORY.take().ok_or(InitError::AlreadyRunning)?;
         kprintln!("Found at {:#x}", mmio.base());
+
         mmio.begin_setup();
-
-        // SAFETY: RX_RING and RX_BUFFERS are statics only accessed from this
-        // single-threaded kernel, so the descriptors' buffer addresses stay
-        // valid; the device reads these fields, so they are written volatile.
-        unsafe {
-            let rx = addr_of_mut!(RX_RING);
-            let buffers = addr_of_mut!(RX_BUFFERS).cast::<[u8; BUF_SIZE]>();
-            for id in 0..QUEUE_SIZE {
-                let desc = addr_of_mut!((*rx).desc[id]);
-                write_volatile(addr_of_mut!((*desc).addr), buffers.add(id) as u64);
-                write_volatile(addr_of_mut!((*desc).len), BUF_SIZE as u32);
-                write_volatile(addr_of_mut!((*desc).flags), DESC_F_WRITE);
-                write_volatile(addr_of_mut!((*rx).avail.ring[id]), id as u16);
-            }
-            write_volatile(addr_of_mut!((*rx).avail.idx), QUEUE_SIZE as u16);
-        }
-
-        mmio.install_queue(RX_QUEUE, addr_of!(RX_RING));
-        mmio.install_queue(TX_QUEUE, addr_of!(TX_RING));
+        let rx = Receiver::new(mmio, memory);
+        mmio.install_queue(RX_QUEUE, &memory.rx_ring);
+        mmio.install_queue(TX_QUEUE, &memory.tx_ring);
         mmio.finish_setup();
         kprintln!("[VirtIO] Driver OK");
+        Ok(Self {
+            rx,
+            tx: Transmitter::new(mmio, memory),
+        })
+    }
+
+    /// Tells the device to look at both queues: for receive buffers given
+    /// back and for frames to send.
+    pub fn flush(&self) {
+        self.rx.mmio.notify(RX_QUEUE);
+        self.tx.mmio.notify(TX_QUEUE);
+    }
+}
+
+/// The receive half: buffers the device fills with incoming frames.
+pub struct Receiver {
+    mmio: Mmio,
+    ring: Ring<QUEUE_SIZE>,
+    buffers: &'static [Buffer; QUEUE_SIZE],
+}
+
+impl Receiver {
+    /// Describes every receive buffer to the device and offers them all.
+    fn new(mmio: Mmio, memory: &'static DeviceMemory) -> Self {
+        let mut ring = Ring::new(&memory.rx_ring);
+        for (id, buffer) in memory.rx_buffers.iter().enumerate() {
+            ring.describe(
+                id,
+                Desc {
+                    addr: buffer.address(),
+                    len: BUF_SIZE as u32,
+                    flags: DESC_F_WRITE,
+                    next: 0,
+                },
+            );
+            ring.offer(id);
+        }
+        Self {
+            mmio,
+            ring,
+            buffers: &memory.rx_buffers,
+        }
     }
 
     /// Lends the next received frame to `handle`, then gives its buffer
@@ -99,110 +148,39 @@ impl VirtioNet {
     /// Returns `None` if no frame is waiting or the device returned one with
     /// no usable frame, which is dropped. The frame cannot outlive `handle`,
     /// so its buffer is never in use while the device owns it again.
-    pub fn receive<R>(handle: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
-        let (id, len) = Self::next_used_rx()?;
+    pub fn receive<R>(&mut self, handle: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
+        let used = self.ring.next_used()?;
+        let id = used.id as usize;
         // An id we never posted has no buffer to hand back.
-        if id >= QUEUE_SIZE {
-            return None;
-        }
+        let buffer = self.buffers.get(id)?;
+        // SAFETY: the device has returned buffer `id`, and it is not offered
+        // again until below, so nothing else touches it while `handle` runs.
+        let bytes = unsafe { &mut *buffer.0.get() };
         // A runt (header only) or a length past the end of our buffer
         // carries no usable frame.
-        let result = (NET_HDR_SIZE < len && len <= BUF_SIZE).then(|| {
-            // SAFETY: the device has returned buffer `id`, and it is not
-            // reposted until `recycle_rx_buffer` below, so nothing else
-            // touches these `len - NET_HDR_SIZE` bytes while `handle` runs.
-            let frame = unsafe {
-                let buf = addr_of_mut!(RX_BUFFERS[id]).cast::<u8>();
-                core::slice::from_raw_parts_mut(buf.add(NET_HDR_SIZE), len - NET_HDR_SIZE)
-            };
-            handle(frame)
-        });
-        Self::recycle_rx_buffer(id);
+        let result = bytes
+            .get_mut(NET_HDR_SIZE..used.len as usize)
+            .filter(|frame| !frame.is_empty())
+            .map(handle);
+        self.ring.offer(id);
         result
     }
+}
 
-    /// The descriptor id and length of the next buffer the device returned,
-    /// consuming that used-ring entry.
-    fn next_used_rx() -> Option<(usize, usize)> {
-        // SAFETY: RX_RING and RX_IDX are statics only accessed from this
-        // single-threaded polling loop; the device writes the used ring, so
-        // it is read volatile, and the ring index is masked to QUEUE_SIZE.
-        unsafe {
-            let rx = addr_of!(RX_RING);
-            if read_volatile(addr_of!((*rx).used.idx)) == RX_IDX {
-                return None;
-            }
-            fence(Ordering::SeqCst);
-            let elem = addr_of!((*rx).used.ring[RX_IDX as usize % QUEUE_SIZE]);
-            let id = read_volatile(addr_of!((*elem).id)) as usize;
-            let len = read_volatile(addr_of!((*elem).len)) as usize;
-            RX_IDX = RX_IDX.wrapping_add(1);
-            Some((id, len))
-        }
-    }
+/// The transmit half, through which the engine's replies, alerts and
+/// telemetry leave.
+pub struct Transmitter {
+    mmio: Mmio,
+    ring: Ring<QUEUE_SIZE>,
+    buffers: &'static [Buffer; QUEUE_SIZE],
+}
 
-    /// Posts receive buffer `id` back to the device.
-    fn recycle_rx_buffer(id: usize) {
-        // SAFETY: RX_RING is a mutable static only accessed from this
-        // single-threaded kernel; the device reads the available ring, so it
-        // is written volatile, and the ring index is masked to QUEUE_SIZE.
-        unsafe {
-            let rx = addr_of_mut!(RX_RING);
-            let idx = read_volatile(addr_of!((*rx).avail.idx));
-            write_volatile(
-                addr_of_mut!((*rx).avail.ring[idx as usize % QUEUE_SIZE]),
-                id as u16,
-            );
-            fence(Ordering::SeqCst);
-            write_volatile(addr_of_mut!((*rx).avail.idx), idx.wrapping_add(1));
-        }
-    }
-
-    /// Sends a packet through the network device.
-    ///
-    /// Copies the packet data into a transmit buffer and notifies
-    /// the device. The packet should be a complete Ethernet frame.
-    pub fn send(packet: &[u8]) {
-        // The packet body has to fit alongside the 10-byte VirtIO net
-        // header in a single `BUF_SIZE` buffer. Current callers all
-        // pass small stack buffers, but silently corrupting adjacent
-        // queue memory on the first oversize caller would be an ugly
-        // bug to hunt.
-        if packet.len() > BUF_SIZE - NET_HDR_SIZE {
-            return;
-        }
-        if !Self::wait_for_free_tx_slot() {
-            return;
-        }
-        // SAFETY: TX_RING is a mutable static only accessed from this single-threaded kernel.
-        // Volatile writes and a fence ensure the device sees the descriptor before the available
-        // index is updated.
-        unsafe {
-            let tx = addr_of_mut!(TX_RING);
-            let avail_idx = read_volatile(addr_of!((*tx).avail.idx));
-            let idx = avail_idx as usize % QUEUE_SIZE;
-
-            let buf_ptr = addr_of_mut!(TX_BUFFERS[idx]).cast::<u8>();
-
-            core::ptr::write_bytes(buf_ptr, 0, NET_HDR_SIZE);
-
-            core::ptr::copy_nonoverlapping(
-                packet.as_ptr(),
-                buf_ptr.add(NET_HDR_SIZE),
-                packet.len(),
-            );
-
-            let desc = addr_of_mut!((*tx).desc[idx]);
-            write_volatile(addr_of_mut!((*desc).addr), buf_ptr as u64);
-            write_volatile(
-                addr_of_mut!((*desc).len),
-                (NET_HDR_SIZE + packet.len()) as u32,
-            );
-            write_volatile(addr_of_mut!((*desc).flags), 0);
-            write_volatile(addr_of_mut!((*tx).avail.ring[idx]), idx as u16);
-
-            fence(Ordering::SeqCst);
-            write_volatile(addr_of_mut!((*tx).avail.idx), avail_idx.wrapping_add(1));
+impl Transmitter {
+    const fn new(mmio: Mmio, memory: &'static DeviceMemory) -> Self {
+        Self {
+            mmio,
+            ring: Ring::new(&memory.tx_ring),
+            buffers: &memory.tx_buffers,
         }
     }
 
@@ -210,42 +188,48 @@ impl VirtioNet {
     /// first if the ring is full. Returns `false` if it never does, in
     /// which case the caller drops the frame rather than overwrite a
     /// buffer the device still owns.
-    fn wait_for_free_tx_slot() -> bool {
-        if Self::tx_in_flight() < QUEUE_SIZE {
+    fn wait_for_free_slot(&self) -> bool {
+        if self.ring.in_flight() < QUEUE_SIZE {
             return true;
         }
-        Self::flush();
+        self.mmio.notify(TX_QUEUE);
         for _ in 0..TX_RECLAIM_SPINS {
-            if Self::tx_in_flight() < QUEUE_SIZE {
+            if self.ring.in_flight() < QUEUE_SIZE {
                 return true;
             }
             core::hint::spin_loop();
         }
         false
     }
+}
 
-    /// Number of TX descriptors handed to the device and not yet returned.
-    fn tx_in_flight() -> usize {
-        // SAFETY: TX_RING is a mutable static only accessed from this
-        // single-threaded kernel; the device updates `used.idx`, so it is
-        // read volatile.
-        unsafe {
-            let tx = addr_of_mut!(TX_RING);
-            let used = read_volatile(addr_of!((*tx).used.idx));
-            read_volatile(addr_of!((*tx).avail.idx)).wrapping_sub(used) as usize
+impl PacketSink for Transmitter {
+    /// Copies `frame` behind a zeroed VirtIO net header into the next free
+    /// buffer and offers it; the device sends it on the next
+    /// [`VirtioNet::flush`]. Frames too big for a buffer, or sent while the
+    /// device holds every buffer, are dropped.
+    fn send(&mut self, frame: &[u8]) {
+        if frame.len() > BUF_SIZE - NET_HDR_SIZE || !self.wait_for_free_slot() {
+            return;
         }
-    }
-
-    /// Flushes the transmit queue by notifying the device.
-    ///
-    /// This triggers the device to process any pending transmit
-    /// descriptors. Should be called after sending packets or
-    /// periodically to ensure timely transmission.
-    pub fn flush() {
-        // SAFETY: DEVICE is only written during single-threaded init.
-        if let Some(mmio) = unsafe { DEVICE } {
-            mmio.notify(RX_QUEUE);
-            mmio.notify(TX_QUEUE);
-        }
+        let id = self.ring.next_slot();
+        let buffer = &self.buffers[id];
+        // SAFETY: fewer than QUEUE_SIZE buffers are in flight and they are
+        // offered in order, so the device has returned buffer `id`.
+        let (header, body) = unsafe { &mut *buffer.0.get() }.split_at_mut(NET_HDR_SIZE);
+        header.fill(0);
+        body.iter_mut()
+            .zip(frame)
+            .for_each(|(dst, &src)| *dst = src);
+        self.ring.describe(
+            id,
+            Desc {
+                addr: buffer.address(),
+                len: (NET_HDR_SIZE + frame.len()) as u32,
+                flags: 0,
+                next: 0,
+            },
+        );
+        self.ring.offer(id);
     }
 }
