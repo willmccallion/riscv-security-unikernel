@@ -524,20 +524,4 @@ mod tests {
 
         assert_eq!(mgmt.next(), None);
     }
-
-    #[test]
-    fn forged_report_is_rejected() {
-        let mut reports = ReportVerifier::new(ReportKey::derive(&TEST_KEY));
-        let mut forged = [0u8; 64];
-        let n = sec_core::security::report_auth::seal_report(
-            &ReportKey::derive(&MgmtKey::new([0xAA; 16])),
-            1,
-            1,
-            &[1],
-            &mut forged,
-        )
-        .unwrap();
-
-        assert!(reports.verify(&forged[..n]).is_none());
-    }
 }

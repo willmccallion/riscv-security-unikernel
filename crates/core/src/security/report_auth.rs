@@ -357,6 +357,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_report_sealed_with_another_key() {
+        let other = ReportKey::derive(&MgmtKey::new([0xAA; 16]));
+        let mut forged = [0u8; 64];
+        let n = seal_report(&other, 5, 1, b"hello", &mut forged).unwrap();
+
+        assert!(ReportVerifier::new(KEY).verify(&forged[..n]).is_none());
+    }
+
+    #[test]
     fn accepts_a_sealed_report() {
         let mut v = ReportVerifier::new(KEY);
         let (packet, n) = sealed(5, 1, b"hello");

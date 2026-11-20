@@ -228,6 +228,37 @@ mod tests {
         (key, auth)
     }
 
+    /// Every mgmt packet is MAC-checked, so one longer than the longest
+    /// command (a full BPF upload) is refused before any hashing.
+    #[test]
+    fn verify_rejects_a_packet_longer_than_the_longest_command() {
+        use crate::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
+        let (key, mut auth) = fixture();
+        let mut packet = [0u8; sealed_len(MAX_PAYLOAD_LEN + 1)];
+        let longest = seal(
+            &key,
+            counter(TEST_EPOCH, 1),
+            &OPERATOR,
+            &[0x03; MAX_PAYLOAD_LEN],
+            &mut packet,
+        )
+        .expect("buffer fits");
+        let accepted = auth.verify(&packet[..longest]).is_some();
+        let too_long = seal(
+            &key,
+            counter(TEST_EPOCH, 2),
+            &OPERATOR,
+            &[0x03; MAX_PAYLOAD_LEN + 1],
+            &mut packet,
+        )
+        .expect("buffer fits");
+
+        let rejected = auth.verify(&packet[..too_long]).is_none();
+
+        assert!(accepted, "a full-length command must still verify");
+        assert!(rejected, "a packet longer than any command was verified");
+    }
+
     #[test]
     fn verify_accepts_well_formed_packet_and_returns_body() {
         let (key, mut auth) = fixture();
