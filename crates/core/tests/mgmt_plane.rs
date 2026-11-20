@@ -5,21 +5,20 @@
 
 mod common;
 
-use common::{CaptureSink, PEER_IP, PEER_MAC, acks, engine, mgmt, tcp, udp};
+use common::{CaptureSink, PEER_IP, PEER_MAC, acks, body, engine, mgmt, tcp, udp};
 use sec_core::config::MANAGEMENT_PORT;
 use sec_core::engine::{Engine, Verdict};
 use sec_core::net::stack::checksum;
 use sec_core::security::alert::AlertReason;
-use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome};
+use sec_core::security::dpi::Pattern;
+use sec_core::security::mgmt::{Command, ManagementMessageType, MgmtOutcome};
 use sec_core::security::vm::{Instruction, Opcode};
 use sec_core::time::Ticks;
 
 const PROBE_PORT: u16 = 7777;
 
 fn block_port(port: u16) -> Vec<u8> {
-    let mut body = vec![ManagementMessageType::BlockPort as u8];
-    body.extend_from_slice(&port.to_be_bytes());
-    body
+    body(&Command::BlockPort(port))
 }
 
 fn single_instruction_upload(op: Opcode, imm: u32) -> Vec<u8> {
@@ -91,8 +90,7 @@ fn bpf_upload_that_can_run_past_its_end_is_rejected_and_keeps_the_active_program
 fn banning_the_operator_ip_does_not_lock_out_the_operator() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
-    let mut ban_self = vec![ManagementMessageType::BanIp as u8];
-    ban_self.extend_from_slice(&PEER_IP);
+    let ban_self = body(&Command::BanIp(PEER_IP.into()));
     let _ = e.process(&mut mgmt(1, &ban_self), Ticks::new(1), &mut sink);
 
     assert!(operator_can_still_manage(&mut e, 2, 2));
@@ -216,7 +214,7 @@ fn operator_commands_take_effect_during_a_mgmt_flood() {
 }
 
 fn ban_ip(ip: [u8; 4]) -> Vec<u8> {
-    command(ManagementMessageType::BanIp, &ip)
+    body(&Command::BanIp(ip.into()))
 }
 
 /// Floods from `src` until the heavy-hitter sketch bans it.
@@ -331,6 +329,7 @@ fn full_firewall_table_is_reported_in_the_ack() {
     assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
 }
 
+/// A body of type `kind` with raw operand bytes, for malformed commands.
 fn command(kind: ManagementMessageType, operand: &[u8]) -> Vec<u8> {
     let mut body = vec![kind as u8];
     body.extend_from_slice(operand);
@@ -346,10 +345,7 @@ fn unblock_port_reopens_a_blocked_port() {
         Ticks::new(1),
         &mut sink,
     );
-    let unblock = command(
-        ManagementMessageType::UnblockPort,
-        &PROBE_PORT.to_be_bytes(),
-    );
+    let unblock = body(&Command::UnblockPort(PROBE_PORT));
     let _ = e.process(&mut mgmt(2, &unblock), Ticks::new(2), &mut sink);
 
     let v = e.process(
@@ -365,17 +361,14 @@ fn unblock_port_reopens_a_blocked_port() {
 fn remove_dpi_pattern_stops_matching_it() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
-    let operand = [&[6u8][..], b"needle"].concat();
+    let needle = Pattern::new(b"needle").unwrap();
     let _ = e.process(
-        &mut mgmt(1, &command(ManagementMessageType::AddDpiPattern, &operand)),
+        &mut mgmt(1, &body(&Command::AddDpiPattern(needle))),
         Ticks::new(1),
         &mut sink,
     );
     let _ = e.process(
-        &mut mgmt(
-            2,
-            &command(ManagementMessageType::RemoveDpiPattern, &operand),
-        ),
+        &mut mgmt(2, &body(&Command::RemoveDpiPattern(needle))),
         Ticks::new(2),
         &mut sink,
     );
@@ -393,20 +386,10 @@ fn remove_dpi_pattern_stops_matching_it() {
 fn unload_bpf_program_stops_filtering() {
     let mut e = engine();
     let mut sink = CaptureSink::default();
-    let drop_all = [
-        ManagementMessageType::UploadBpfProgram as u8,
-        1,
-        Opcode::Ret as u8,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ];
+    let drop_all = single_instruction_upload(Opcode::Ret, 0);
     let _ = e.process(&mut mgmt(1, &drop_all), Ticks::new(1), &mut sink);
     let _ = e.process(
-        &mut mgmt(2, &command(ManagementMessageType::UnloadBpfProgram, &[])),
+        &mut mgmt(2, &body(&Command::UnloadBpf)),
         Ticks::new(2),
         &mut sink,
     );
@@ -426,12 +409,12 @@ fn unban_ip_lets_the_source_back_in() {
     let mut sink = CaptureSink::default();
     let target = [10, 9, 9, 9];
     let _ = e.process(
-        &mut mgmt(1, &command(ManagementMessageType::BanIp, &target)),
+        &mut mgmt(1, &body(&Command::BanIp(target.into()))),
         Ticks::new(1),
         &mut sink,
     );
     let _ = e.process(
-        &mut mgmt(2, &command(ManagementMessageType::UnbanIp, &target)),
+        &mut mgmt(2, &body(&Command::UnbanIp(target.into()))),
         Ticks::new(2),
         &mut sink,
     );

@@ -7,15 +7,17 @@
 
 use crate::live::view::LiveView;
 use crate::types::{
-    CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, MgmtCommand, NetStats, NotSentReason,
-    TrafficMode, UiEvent,
+    CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, NetStats, NotSentReason, TrafficMode,
+    UiEvent,
 };
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
 use sec_core::net::constants::{IpProtocol, ipv4, tcp};
 use sec_core::security::dpi::BUILTIN_SIGNATURES;
+use sec_core::security::dpi::Pattern;
+use sec_core::security::mgmt::Command;
 use sec_core::security::mgmt::MgmtOutcome;
-use sec_core::security::vm::{Instruction, Opcode};
+use sec_core::security::vm::{Instruction, Opcode, Program};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -55,11 +57,11 @@ impl<T> Rule<T> {
         }
     }
 
-    const fn issued(item: T, command: CommandId) -> Self {
+    const fn issued(item: T, command: CommandId, status: CommandStatus) -> Self {
         Self {
             item,
             command: Some(command),
-            status: CommandStatus::Pending,
+            status,
             removal: None,
         }
     }
@@ -177,10 +179,28 @@ impl Dashboard {
     }
 
     /// Sends a mgmt command and returns the id its status will arrive under.
-    fn issue(&mut self, command: MgmtCommand) -> CommandId {
+    fn issue(&mut self, command: &Command) -> CommandId {
+        let id = self.next_command_id();
+        self.send(GuiCommand::Mgmt {
+            id,
+            command: Box::new(*command),
+        });
+        id
+    }
+
+    /// [`Self::issue`] for a command built from user input, which is not
+    /// sent when the input does not make one; returns its id and status.
+    fn issue_if_valid(&mut self, command: Option<&Command>) -> (CommandId, CommandStatus) {
+        if let Some(command) = command {
+            return (self.issue(command), CommandStatus::Pending);
+        }
+        let id = self.next_command_id();
+        (id, CommandStatus::NotSent(NotSentReason::InvalidCommand))
+    }
+
+    const fn next_command_id(&mut self) -> CommandId {
         let id = CommandId(self.next_command);
         self.next_command += 1;
-        self.send(GuiCommand::Mgmt { id, command });
         id
     }
 
@@ -469,10 +489,10 @@ impl Dashboard {
                                     .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
                                     .clicked()
                             {
-                                ban_target = address.parse().ok().map(MgmtCommand::BanIp);
+                                ban_target = address.parse().ok().map(Command::BanIp);
                             }
                             if ui.button("UNBAN").clicked() {
-                                ban_target = address.parse().ok().map(MgmtCommand::UnbanIp);
+                                ban_target = address.parse().ok().map(Command::UnbanIp);
                             }
                         });
                     });
@@ -526,7 +546,7 @@ impl Dashboard {
             }
         }
         if let Some(command) = ban_target {
-            let _ = self.issue(command);
+            let _ = self.issue(&command);
         }
     }
 
@@ -596,9 +616,13 @@ impl Dashboard {
                     if ui.button("BLOCK PORT").clicked()
                         && let Ok(port) = self.sdn_port.trim().parse::<u16>()
                     {
-                        let command = self.issue(MgmtCommand::BlockPort(port));
+                        let command = self.issue(&Command::BlockPort(port));
                         self.blocked_ports.retain(|r| r.item != port);
-                        self.blocked_ports.push(Rule::issued(port, command));
+                        self.blocked_ports.push(Rule::issued(
+                            port,
+                            command,
+                            CommandStatus::Pending,
+                        ));
                         self.sdn_port.clear();
                     }
                 });
@@ -624,7 +648,7 @@ impl Dashboard {
                             });
                         }
                         if let Some(port) = unblock {
-                            let id = self.issue(MgmtCommand::UnblockPort(port));
+                            let id = self.issue(&Command::UnblockPort(port));
                             if let Some(rule) =
                                 self.blocked_ports.iter_mut().find(|r| r.item == port)
                             {
@@ -642,10 +666,12 @@ impl Dashboard {
                     ui.text_edit_singleline(&mut self.sdn_sig);
                     if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
                         let sig = std::mem::take(&mut self.sdn_sig);
-                        let command =
-                            self.issue(MgmtCommand::AddDpiPattern(sig.as_bytes().to_vec()));
+                        let add = Pattern::new(sig.as_bytes())
+                            .ok()
+                            .map(Command::AddDpiPattern);
+                        let (command, status) = self.issue_if_valid(add.as_ref());
                         self.dpi_signatures.retain(|r| r.item != sig);
-                        self.dpi_signatures.push(Rule::issued(sig, command));
+                        self.dpi_signatures.push(Rule::issued(sig, command, status));
                         self.sdn_sig.clear();
                     }
                 });
@@ -674,12 +700,14 @@ impl Dashboard {
                             });
                         }
                         if let Some(sig) = remove {
-                            let id =
-                                self.issue(MgmtCommand::RemoveDpiPattern(sig.as_bytes().to_vec()));
+                            let removal = Pattern::new(sig.as_bytes())
+                                .ok()
+                                .map(Command::RemoveDpiPattern);
+                            let removal = self.issue_if_valid(removal.as_ref());
                             if let Some(rule) =
                                 self.dpi_signatures.iter_mut().find(|r| r.item == sig)
                             {
-                                rule.removal = Some((id, CommandStatus::Pending));
+                                rule.removal = Some(removal);
                             }
                         }
                     });
@@ -717,10 +745,13 @@ impl Dashboard {
                 );
                 ui.add_space(5.0);
                 if ui.button("COMPILE & UPLOAD").clicked() {
-                    if let Some(bytecode) = compile_bpf(&self.bpf_code) {
-                        let command = self.issue(MgmtCommand::UploadBpf(bytecode));
-                        self.bpf_programs
-                            .push(Rule::issued(self.bpf_code.trim().to_string(), command));
+                    if let Some(program) = compile_bpf(&self.bpf_code) {
+                        let command = self.issue(&Command::UploadBpf(program));
+                        self.bpf_programs.push(Rule::issued(
+                            self.bpf_code.trim().to_string(),
+                            command,
+                            CommandStatus::Pending,
+                        ));
                     } else {
                         let entry = LogEntry {
                             timestamp: self.start_time.elapsed().as_secs_f64(),
@@ -744,7 +775,7 @@ impl Dashboard {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Uploaded Programs").strong());
                     if ui.small_button("unload").clicked() {
-                        let id = self.issue(MgmtCommand::UnloadBpf);
+                        let id = self.issue(&Command::UnloadBpf);
                         if let Some(active) = self
                             .bpf_programs
                             .iter_mut()
@@ -941,7 +972,7 @@ fn format_metric(val: u64) -> String {
 /// - `DROP ALL` - Drops all packets
 /// - `BLOCK <TCP|UDP> DST <port>` - Drops packets of that protocol to a
 ///   destination port, wherever IPv4 options place the transport header.
-fn compile_bpf(code: &str) -> Option<Vec<u8>> {
+pub(crate) fn compile_bpf(code: &str) -> Option<Program> {
     const PROTOCOL_OFFSET: u32 = ipv4::PROTOCOL_OFFSET as u32;
     const VERSION_IHL_OFFSET: u32 = ipv4::VERSION_IHL_OFFSET as u32;
     /// The destination port's offset past the IPv4 header; TCP and UDP
@@ -951,7 +982,7 @@ fn compile_bpf(code: &str) -> Option<Vec<u8>> {
     const DROP_INDEX: u32 = 10;
 
     if code.trim() == "DROP ALL" {
-        return Some(Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes().to_vec());
+        return Program::decode(&Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes()).ok();
     }
 
     let parts: Vec<&str> = code.split_whitespace().collect();
@@ -981,13 +1012,13 @@ fn compile_bpf(code: &str) -> Option<Vec<u8>> {
         Instruction::new(Opcode::Ret, 0, 0, 1).to_bytes(),
         Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes(),
     ];
-    Some(program.concat())
+    Program::decode(&program.concat()).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sec_core::security::vm::{Program, VmAction, execute};
+    use sec_core::security::vm::{VmAction, execute};
 
     fn frame(protocol: IpProtocol, dst_port: u16) -> Vec<u8> {
         frame_with_ip_header_words(protocol, dst_port, 5)
@@ -1006,8 +1037,7 @@ mod tests {
     }
 
     fn run(code: &str, packet: &[u8]) -> VmAction {
-        let program = Program::decode(&compile_bpf(code).expect("compiles"))
-            .expect("kernel accepts the program");
+        let program = compile_bpf(code).expect("compiles to a program the kernel accepts");
         execute(&program, packet).expect("program returns")
     }
 

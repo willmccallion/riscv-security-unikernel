@@ -20,7 +20,6 @@ pub mod flow;
 pub mod hash;
 /// Heuristic-based anomaly detection for protocol and payload analysis.
 pub mod heuristic;
-/// Management interface message types and constants.
 pub mod mgmt;
 /// Authenticated wire format for management-plane commands.
 pub mod mgmt_auth;

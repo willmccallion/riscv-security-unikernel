@@ -6,7 +6,7 @@
 
 use eframe::egui;
 use sec_core::config::{IP_ADDR, MANAGEMENT_PORT, TELEMETRY_PORT};
-use sec_core::security::mgmt::MgmtOutcome;
+use sec_core::security::mgmt::{Command, MgmtOutcome};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::AtomicU64;
 
@@ -113,7 +113,7 @@ pub enum GuiCommand {
         /// Identifies the command in the status event.
         id: CommandId,
         /// The command to send.
-        command: MgmtCommand,
+        command: Box<Command>,
     },
 }
 
@@ -159,25 +159,4 @@ pub enum UiEvent {
         /// Its new status.
         status: CommandStatus,
     },
-}
-
-/// A management-plane command. `traffic.rs` seals every one with the
-/// pre-shared MAC key and a monotonic counter before it goes on the wire.
-pub enum MgmtCommand {
-    /// Ban an IP address in the kernel's penalty box.
-    BanIp(std::net::Ipv4Addr),
-    /// Install a firewall rule blocking the given destination port.
-    BlockPort(u16),
-    /// Add a DPI signature pattern (capped to 32 bytes at the kernel).
-    AddDpiPattern(Vec<u8>),
-    /// Upload a compiled BPF program (7 bytes per instruction, 64 max).
-    UploadBpf(Vec<u8>),
-    /// Lift a ban on an IP address.
-    UnbanIp(std::net::Ipv4Addr),
-    /// Remove a firewall rule.
-    UnblockPort(u16),
-    /// Remove a runtime-added DPI signature.
-    RemoveDpiPattern(Vec<u8>),
-    /// Uninstall the BPF program.
-    UnloadBpf,
 }
