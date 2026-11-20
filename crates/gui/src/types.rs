@@ -139,6 +139,8 @@ pub enum NotSentReason {
     /// No local interface address routes to the kernel, so there is
     /// nowhere to ask it to send its reply.
     NoReplyAddress,
+    /// The socket refused the packet.
+    SendFailed(std::io::ErrorKind),
 }
 
 /// What the GUI knows about a mgmt command it issued.

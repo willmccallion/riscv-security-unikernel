@@ -5,6 +5,11 @@
 //! visualization, event logging, packet inspection, and configuration
 //! interfaces for firewall rules, DPI signatures, and BPF programs.
 
+#![allow(
+    unused_results,
+    reason = "every egui widget call returns a Response, and most go unused"
+)]
+
 use crate::live::view::LiveView;
 use crate::log::{Description, LogEntry, LogEvent, Source};
 use crate::types::{
@@ -1016,6 +1021,10 @@ fn status_badge(ui: &mut egui::Ui, status: CommandStatus) {
         }
         CommandStatus::NotSent(NotSentReason::NoReplyAddress) => {
             ("not sent: no local address reaches the kernel", orange)
+        }
+        CommandStatus::NotSent(NotSentReason::SendFailed(kind)) => {
+            ui.colored_label(egui::Color32::RED, format!("not sent: {kind}"));
+            return;
         }
         CommandStatus::NoAck => ("no ack from kernel", orange),
     };
