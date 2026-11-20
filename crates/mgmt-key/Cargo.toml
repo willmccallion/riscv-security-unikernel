@@ -1,0 +1,16 @@
+[package]
+name = "mgmt-key"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Finds the mgmt key the dashboard, daemon and QEMU harness share with the kernel."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sec-core = { workspace = true }

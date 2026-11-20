@@ -2257,6 +2257,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mgmt-key"
+version = "0.1.0"
+dependencies = [
+ "sec-core",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2811,6 +2818,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "mgmt-key",
  "rand 0.8.5",
  "sec-core",
 ]
@@ -3110,6 +3118,7 @@ dependencies = [
  "clap",
  "hkdf",
  "libc",
+ "mgmt-key",
  "monitor-proto",
  "rand 0.8.5",
  "sec-core",
@@ -3128,6 +3137,7 @@ dependencies = [
  "egui",
  "egui_plot",
  "libc",
+ "mgmt-key",
  "monitor-proto",
  "rand 0.8.5",
  "sec-core",

@@ -11,6 +11,7 @@ use crate::types::{
     CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, NotSentReason,
     TrafficMode, UiEvent,
 };
+use anyhow::Context;
 use eframe::egui;
 use rand::Rng;
 use rand::SeedableRng;
@@ -65,50 +66,17 @@ async fn send_sealed(
     Ok(counter as u32)
 }
 
-/// Loads the mgmt MAC key from the first source that resolves:
-///   1. `KERNEL_MGMT_KEY` env var (32 hex chars).
-///   2. `.mgmt-key.local` at the workspace root (same file the kernel
-///      build reads, materialised by `make dev-key`).
-///
-/// Exits the process on failure. There is deliberately no built-in
-/// fallback: a constant key would let any copy of the binary
-/// authenticate to any kernel built without an explicit one.
+/// Loads the mgmt key as [`mgmt_key::load`] finds it from the current
+/// directory, exiting with the reason when there is none: without it the
+/// dashboard can neither command the kernel nor trust its reports.
 fn load_mgmt_key() -> MgmtKey {
-    if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
-        if let Some(key) = MgmtKey::parse_hex(&hex) {
-            return key;
-        }
-        eprintln!("[gui] KERNEL_MGMT_KEY must be 32 hex chars");
-    }
-
-    if let Some(key) = read_dev_key_file() {
-        return key;
-    }
-
-    eprintln!(
-        "[gui] no mgmt key: set KERNEL_MGMT_KEY=<32 hex> or run `make dev-key` \
-         to materialise .mgmt-key.local (shared with the kernel build)"
-    );
-    std::process::exit(1);
-}
-
-fn read_dev_key_file() -> Option<MgmtKey> {
-    // Walk up from cwd looking for `.mgmt-key.local`. `make run` sets
-    // KERNEL_MGMT_KEY directly, so this fallback only fires when the
-    // dev runs `cargo run -p security-dashboard` from somewhere inside
-    // the workspace.
-    let mut dir = std::env::current_dir().ok()?;
-    for _ in 0..5 {
-        let candidate = dir.join(".mgmt-key.local");
-        if candidate.exists() {
-            let raw = std::fs::read_to_string(&candidate).ok()?;
-            return MgmtKey::parse_hex(raw.trim());
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    None
+    let loaded = std::env::current_dir()
+        .context("cannot read the current directory")
+        .and_then(|dir: std::path::PathBuf| Ok(mgmt_key::load(&dir)?));
+    loaded.unwrap_or_else(|error| {
+        eprintln!("[gui] {error:#}");
+        std::process::exit(1);
+    })
 }
 
 /// The mgmt counters this dashboard seals commands with.

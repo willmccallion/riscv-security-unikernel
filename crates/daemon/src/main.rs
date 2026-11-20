@@ -10,7 +10,6 @@
 
 mod bench;
 mod clock;
-mod key;
 mod synth;
 
 /// The daemon's engine: a 65536 x 4 per-source sketch (512 KB), which
@@ -162,7 +161,7 @@ fn run_bench(config: bench::BenchConfig) {
 }
 
 fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
-    let key = key::load()?;
+    let key = mgmt_key::load(&std::env::current_dir()?)?;
     let clock = clock::Monotonic::new();
     let mut rx = RxRing::open(iface, Outgoing::Exclude)?;
     let mut tx = TxSocket::open(iface)?;
