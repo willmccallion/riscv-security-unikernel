@@ -7,7 +7,7 @@ use rand::Rng;
 use rand::seq::SliceRandom;
 use sec_core::config::{MANAGEMENT_PORT, TELEMETRY_PORT};
 use sec_core::security::mgmt::ManagementMessageType;
-use sec_core::security::vm::Opcode;
+use sec_core::security::vm::{Instruction, Opcode};
 
 /// Largest frame the kernel's RX buffers hold (1536 minus the VirtIO header).
 pub const MAX_FRAME: usize = 1526;
@@ -118,15 +118,15 @@ pub fn mgmt_body(rng: &mut impl Rng) -> Vec<u8> {
             let count = rng.gen_range(0..=12u8);
             body.push(count);
             for _ in 0..count {
-                body.push(Opcode::ALL.choose(rng).map_or(0, |&op| op as u8));
-                body.push(rng.gen_range(0..18));
-                body.push(rng.gen_range(0..18));
+                let op = *Opcode::ALL.choose(rng).unwrap_or(&Opcode::Nop);
+                let reg_a = rng.gen_range(0..18);
+                let reg_b = rng.gen_range(0..18);
                 let imm: u32 = if rng.gen_bool(0.7) {
                     rng.gen_range(0..64)
                 } else {
                     rng.r#gen()
                 };
-                body.extend_from_slice(&imm.to_be_bytes());
+                body.extend_from_slice(&Instruction::new(op, reg_a, reg_b, imm).to_bytes());
             }
         }
     }
