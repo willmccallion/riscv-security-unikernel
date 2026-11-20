@@ -12,12 +12,12 @@
 
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
-use sec_core::config::MANAGEMENT_PORT;
+use sec_core::config::{MANAGEMENT_PORT, TELEMETRY_PORT};
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
+use sec_core::net::frame::{self, Frame, Transport};
 use sec_core::net::stack::SynCookieSecret;
-use sec_core::security::mgmt::ack_packet;
-use sec_core::security::mgmt::ManagementMessageType;
+use sec_core::security::mgmt::{Ack, ManagementMessageType};
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
 use sec_core::security::report_auth::ReportVerifier;
@@ -61,19 +61,16 @@ impl PacketSink for CheckedSink {
     fn send(&mut self, frame: &[u8]) {
         assert!((14..=MAX_FRAME).contains(&frame.len()), "emitted {}-byte frame", frame.len());
         // Replies to the fuzzed frames themselves are not reports.
-        let is_report = frame.len() > 42
-            && frame[23] == 17
-            && frame[26..30] == sec_core::config::IP_ADDR.octets()
-            && frame[36..38] == sec_core::config::TELEMETRY_PORT.to_be_bytes();
+        let mut frame = frame.to_vec();
+        let Ok(Frame::Ipv4(packet)) = frame::parse(&mut frame) else { return };
+        let is_report = packet.src == sec_core::config::IP_ADDR
+            && matches!(packet.transport, Transport::Udp(ports) if ports.dst == TELEMETRY_PORT);
         if !is_report {
             return;
         }
-        let report = self.reports.verify(&frame[42..]).expect("report verifies in sequence");
-        if let Some(body) = report.body.get(..ack_packet::ACK_BODY_LEN)
-            && body[0] == ack_packet::ACK_MESSAGE_TYPE
-        {
-            let seq = &body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4];
-            self.acked_seqs.push(u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]));
+        let report = self.reports.verify(packet.payload()).expect("report verifies in sequence");
+        if let Some(ack) = Ack::decode(report.body) {
+            self.acked_seqs.push(ack.seq);
         }
     }
 }

@@ -123,7 +123,7 @@ pub mod alert_packet {
 /// Built by the kernel from already-parsed packet fields and shipped
 /// across the management network in place of any attacker-controlled
 /// payload bytes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlertMeta {
     /// Source IPv4 address.
     pub src_ip: Ipv4Addr,
@@ -157,5 +157,67 @@ impl AlertMeta {
             prefix_len: 32,
             value: 0,
         }
+    }
+}
+
+/// A security alert as its report carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Alert {
+    /// What raised it.
+    pub reason: AlertReason,
+    /// The packet or detector fields behind it.
+    pub meta: AlertMeta,
+}
+
+impl Alert {
+    /// The alert's report body.
+    pub fn encode(&self) -> [u8; alert_packet::ALERT_BODY_LEN] {
+        use alert_packet::{
+            ALERT_BODY_LEN, ALERT_MESSAGE_TYPE, DST_IP_OFFSET, DST_PORT_OFFSET, PACKET_LEN_OFFSET,
+            PREFIX_LEN_OFFSET, PROTOCOL_OFFSET, REASON_OFFSET, SRC_IP_OFFSET, SRC_PORT_OFFSET,
+            VALUE_OFFSET,
+        };
+        let meta = &self.meta;
+        let mut body = [0u8; ALERT_BODY_LEN];
+        body[0] = ALERT_MESSAGE_TYPE;
+        body[REASON_OFFSET] = self.reason.as_u8();
+        body[SRC_IP_OFFSET..][..4].copy_from_slice(&meta.src_ip.octets());
+        body[DST_IP_OFFSET..][..4].copy_from_slice(&meta.dst_ip.octets());
+        body[SRC_PORT_OFFSET..][..2].copy_from_slice(&meta.src_port.to_be_bytes());
+        body[DST_PORT_OFFSET..][..2].copy_from_slice(&meta.dst_port.to_be_bytes());
+        body[PROTOCOL_OFFSET] = meta.protocol;
+        body[PACKET_LEN_OFFSET..][..2].copy_from_slice(&meta.packet_len.to_be_bytes());
+        body[PREFIX_LEN_OFFSET] = meta.prefix_len;
+        body[VALUE_OFFSET..][..4].copy_from_slice(&meta.value.to_be_bytes());
+        body
+    }
+
+    /// The alert in a report body, if it is a whole alert with a known
+    /// reason.
+    pub fn decode(body: &[u8]) -> Option<Self> {
+        use alert_packet::{
+            ALERT_BODY_LEN, ALERT_MESSAGE_TYPE, DST_IP_OFFSET, DST_PORT_OFFSET, PACKET_LEN_OFFSET,
+            PREFIX_LEN_OFFSET, PROTOCOL_OFFSET, REASON_OFFSET, SRC_IP_OFFSET, SRC_PORT_OFFSET,
+            VALUE_OFFSET,
+        };
+        let body = body.first_chunk::<ALERT_BODY_LEN>()?;
+        if body[0] != ALERT_MESSAGE_TYPE {
+            return None;
+        }
+        let u16_at = |at: usize| u16::from_be_bytes([body[at], body[at + 1]]);
+        let quad_at = |at: usize| [body[at], body[at + 1], body[at + 2], body[at + 3]];
+        Some(Self {
+            reason: AlertReason::from_u8(body[REASON_OFFSET])?,
+            meta: AlertMeta {
+                src_ip: Ipv4Addr::from(quad_at(SRC_IP_OFFSET)),
+                dst_ip: Ipv4Addr::from(quad_at(DST_IP_OFFSET)),
+                src_port: u16_at(SRC_PORT_OFFSET),
+                dst_port: u16_at(DST_PORT_OFFSET),
+                protocol: body[PROTOCOL_OFFSET],
+                packet_len: u16_at(PACKET_LEN_OFFSET),
+                prefix_len: body[PREFIX_LEN_OFFSET],
+                value: u32::from_be_bytes(quad_at(VALUE_OFFSET)),
+            },
+        })
     }
 }

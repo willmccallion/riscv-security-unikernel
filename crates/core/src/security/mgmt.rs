@@ -193,6 +193,44 @@ fn parse_upload(body: &[u8]) -> Result<Command, InvalidCommand> {
         .map_err(|_| InvalidCommand)
 }
 
+/// The kernel's answer to an authenticated command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ack {
+    /// The command's sequence number.
+    pub seq: u32,
+    /// The command's type byte as sent, which need not be a known type;
+    /// 0 for an empty body.
+    pub command: u8,
+    /// What the command did.
+    pub outcome: MgmtOutcome,
+}
+
+impl Ack {
+    /// The ack's report body.
+    pub fn encode(&self) -> [u8; ack_packet::ACK_BODY_LEN] {
+        let mut body = [0u8; ack_packet::ACK_BODY_LEN];
+        body[0] = ack_packet::ACK_MESSAGE_TYPE;
+        body[ack_packet::SEQ_OFFSET..][..4].copy_from_slice(&self.seq.to_be_bytes());
+        body[ack_packet::COMMAND_OFFSET] = self.command;
+        body[ack_packet::OUTCOME_OFFSET] = self.outcome as u8;
+        body
+    }
+
+    /// The ack in a report body, if it is a whole ack with a known outcome.
+    pub fn decode(body: &[u8]) -> Option<Self> {
+        let body = body.first_chunk::<{ ack_packet::ACK_BODY_LEN }>()?;
+        if body[0] != ack_packet::ACK_MESSAGE_TYPE {
+            return None;
+        }
+        let seq = &body[ack_packet::SEQ_OFFSET..][..4];
+        Some(Self {
+            seq: u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
+            command: body[ack_packet::COMMAND_OFFSET],
+            outcome: MgmtOutcome::from_u8(body[ack_packet::OUTCOME_OFFSET])?,
+        })
+    }
+}
+
 /// Layout of the ack the kernel sends for every authenticated command.
 pub mod ack_packet {
     /// Message-type byte distinguishing acks from alerts.

@@ -44,9 +44,7 @@ fn telemetry_is_signed_with_the_report_key() {
     let mgmt = qemu_harness::mgmt::MgmtClient::connect(&kernel).unwrap();
 
     let telemetry = kernel
-        .recv_matching(Duration::from_secs(5), |f| {
-            frame::telemetry_slots(f).is_some()
-        })
+        .recv_matching(Duration::from_secs(5), |f| frame::telemetry(f).is_some())
         .unwrap()
         .expect("telemetry frame within 5s");
 

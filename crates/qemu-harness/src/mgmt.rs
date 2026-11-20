@@ -27,12 +27,11 @@ impl MgmtClient {
     pub fn connect(kernel: &Kernel) -> Result<Self> {
         let key = load_key()?;
         let telemetry = kernel
-            .recv_matching(Duration::from_secs(5), |f| {
-                frame::telemetry_slots(f).is_some()
-            })?
+            .recv_matching(Duration::from_secs(5), |f| frame::telemetry(f).is_some())?
             .context("no telemetry frame to learn the epoch from")?;
-        let slots = frame::telemetry_slots(&telemetry).context("telemetry vanished")?;
-        let epoch = u32::try_from(slots[9]).context("epoch exceeds u32")?;
+        let epoch = frame::telemetry(&telemetry)
+            .context("telemetry vanished")?
+            .epoch;
         Ok(Self { key, epoch, seq: 0 })
     }
 
@@ -55,7 +54,7 @@ impl MgmtClient {
             kernel.drain()?;
             let seq = self.send(kernel, &[UNKNOWN_COMMAND])?;
             let acked = kernel.recv_matching(Duration::from_millis(500), |f| {
-                frame::mgmt_ack(f).is_some_and(|(acked, _, _)| acked == seq)
+                frame::mgmt_ack(f).is_some_and(|ack| ack.seq == seq)
             })?;
             if acked.is_some() {
                 return Ok(true);

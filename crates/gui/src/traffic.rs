@@ -16,12 +16,12 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use sec_core::security::alert::{AlertReason, alert_packet};
+use sec_core::security::alert::{Alert, AlertReason, alert_packet};
 use sec_core::security::hash::{MgmtKey, ReportKey};
 use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
-use sec_core::security::mgmt::{Command, ManagementMessageType, MgmtOutcome, ack_packet};
+use sec_core::security::mgmt::{Ack, Command, ManagementMessageType, MgmtOutcome};
 use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, seal};
-use sec_core::security::report_auth::{Report, ReportVerifier, telemetry_packet};
+use sec_core::security::report_auth::{Report, ReportBody, ReportVerifier, Telemetry};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -303,28 +303,6 @@ pub async fn start_background_task(
     }
 }
 
-/// What a verified report from the kernel carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReportKind {
-    /// Interval counters.
-    Telemetry,
-    /// A security alert.
-    Alert,
-    /// A mgmt command ack.
-    Ack,
-    /// Unrecognised; must be ignored.
-    Unknown,
-}
-
-const fn classify_report(body: &[u8]) -> ReportKind {
-    match body.first() {
-        Some(&telemetry_packet::MESSAGE_TYPE) => ReportKind::Telemetry,
-        Some(&alert_packet::ALERT_MESSAGE_TYPE) => ReportKind::Alert,
-        Some(&ack_packet::ACK_MESSAGE_TYPE) => ReportKind::Ack,
-        _ => ReportKind::Unknown,
-    }
-}
-
 /// Applies one verified report from the kernel.
 fn handle_report(
     report: Report<'_>,
@@ -337,71 +315,48 @@ fn handle_report(
         .map_or(0, |d| d.as_secs());
     stats.last_seen.store(now_secs, Ordering::Relaxed);
 
-    match classify_report(report.body) {
-        ReportKind::Telemetry => {
-            if let Some(slots) = parse_telemetry(report.body) {
-                let last_accepted_seq = slots[telemetry_packet::LAST_MGMT_SEQ_SLOT];
-                MGMT_COUNTER.observe(
-                    report.epoch,
-                    u32::try_from(last_accepted_seq).unwrap_or(u32::MAX),
-                );
-                record_telemetry(stats, &slots);
+    match ReportBody::parse(report.body) {
+        Some(ReportBody::Telemetry(telemetry)) => {
+            MGMT_COUNTER.observe(report.epoch, telemetry.last_mgmt_seq);
+            record_telemetry(stats, &telemetry);
+        }
+        Some(ReportBody::Alert(alert)) => {
+            let _ = events.send(UiEvent::Log(alert_entry(&alert)));
+        }
+        Some(ReportBody::Ack(ack)) => {
+            let _ = events.send(UiEvent::Log(ack_entry(ack)));
+            if let Some((id, status)) = pending.acked(ack.seq, ack.outcome) {
+                let _ = events.send(UiEvent::CommandStatus { id, status });
             }
         }
-        ReportKind::Alert => {
-            let _ = events.send(UiEvent::Log(parse_alert(report.body)));
-        }
-        ReportKind::Ack => {
-            if let Some(ack) = parse_ack(report.body) {
-                let _ = events.send(UiEvent::Log(ack_entry(ack)));
-                if let Some((id, status)) = pending.acked(ack.seq, ack.outcome) {
-                    let _ = events.send(UiEvent::CommandStatus { id, status });
-                }
+        None => {
+            if let Some(entry) = unreadable_alert_entry(report.body) {
+                let _ = events.send(UiEvent::Log(entry));
             }
         }
-        ReportKind::Unknown => {}
     }
 }
 
-fn parse_telemetry(body: &[u8]) -> Option<[u64; telemetry_packet::SLOTS]> {
-    let counters = body.get(telemetry_packet::SLOTS_OFFSET..telemetry_packet::BODY_LEN)?;
-    let mut slots = [0u64; telemetry_packet::SLOTS];
-    for (slot, bytes) in slots.iter_mut().zip(counters.as_chunks::<8>().0) {
-        *slot = u64::from_be_bytes(*bytes);
-    }
-    Some(slots)
-}
-
-/// Stores one interval's counters. Slot 9 (the epoch) is taken from the
-/// authenticated envelope instead, and slot 10 feeds the mgmt counter.
-fn record_telemetry(stats: &NetStats, slots: &[u64; telemetry_packet::SLOTS]) {
-    let [
-        passed,
-        ddos,
-        firewall,
-        malware,
-        bpf,
-        heuristic,
-        _memory_used,
-        flows,
-        mgmt,
-        _epoch,
-        _last_mgmt_seq,
-    ] = *slots;
-    stats.passed.store(passed, Ordering::Relaxed);
-    stats.total_passed.fetch_add(passed, Ordering::Relaxed);
+/// Stores one interval's counters. The epoch is taken from the
+/// authenticated envelope instead, and the last sequence feeds the mgmt
+/// counter.
+fn record_telemetry(stats: &NetStats, telemetry: &Telemetry) {
+    stats.passed.store(telemetry.passed, Ordering::Relaxed);
+    stats
+        .total_passed
+        .fetch_add(telemetry.passed, Ordering::Relaxed);
     for (gauge, value) in [
-        (&stats.ddos, ddos),
-        (&stats.firewall, firewall),
-        (&stats.malware, malware),
-        (&stats.bpf, bpf),
-        (&stats.heuristic, heuristic),
+        (&stats.ddos, telemetry.ddos),
+        (&stats.firewall, telemetry.firewall),
+        (&stats.malware, telemetry.malware),
+        (&stats.bpf, telemetry.bpf),
+        (&stats.heuristic, telemetry.heuristic),
     ] {
         gauge.store(value, Ordering::Relaxed);
         stats.total_dropped.fetch_add(value, Ordering::Relaxed);
     }
-    stats.flows.store(flows, Ordering::Relaxed);
-    stats.mgmt.store(mgmt, Ordering::Relaxed);
+    stats.flows.store(telemetry.active_flows, Ordering::Relaxed);
+    stats.mgmt.store(telemetry.mgmt, Ordering::Relaxed);
 }
 
 /// Send a test-traffic UDP packet. Prefers the per-namespace pool so
@@ -422,160 +377,110 @@ async fn send_traffic(
     }
 }
 
-/// Parses a security alert packet received from the kernel.
-///
-/// Alert packets contain a reason code, source IP address, and optional
-/// payload data. This function extracts this information and creates a
-/// `LogEntry` with appropriate formatting and color coding.
-fn parse_alert(data: &[u8]) -> LogEntry {
-    // Verified reports can still be short; check before any fixed offset.
-    if data.len() < alert_packet::ALERT_BODY_LEN {
-        return LogEntry {
-            timestamp: 0.0,
-            src_ip: String::new(),
-            dst_ip: String::new(),
-            src_port: 0,
-            dst_port: 0,
-            protocol: 0,
-            packet_len: data.len().min(u16::MAX as usize) as u16,
-            measured: None,
-            msg: format!("[MALFORMED] short alert packet ({} bytes)", data.len()),
-            color: egui::Color32::from_rgb(255, 80, 0),
-        };
-    }
-    let reason_byte = data[alert_packet::REASON_OFFSET];
-    let src_ip_bytes =
-        &data[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + alert_packet::SRC_IP_SIZE];
-    let prefix_len = data[alert_packet::PREFIX_LEN_OFFSET];
-    let ip = if prefix_len < 32 {
-        format!(
-            "{}.{}.{}.{}/{prefix_len}",
-            src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
-        )
+/// The log entry for an alert: its source (with the prefix for a subnet),
+/// a tagged message and a colour per reason.
+fn alert_entry(alert: &Alert) -> LogEntry {
+    let meta = &alert.meta;
+    let ip = if meta.prefix_len < 32 {
+        format!("{}/{}", meta.src_ip, meta.prefix_len)
     } else {
-        format!(
-            "{}.{}.{}.{}",
-            src_ip_bytes[0], src_ip_bytes[1], src_ip_bytes[2], src_ip_bytes[3],
-        )
+        meta.src_ip.to_string()
     };
-    let dst_ip_bytes =
-        &data[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + alert_packet::SRC_IP_SIZE];
-    let dst_ip = format!(
-        "{}.{}.{}.{}",
-        dst_ip_bytes[0], dst_ip_bytes[1], dst_ip_bytes[2], dst_ip_bytes[3],
-    );
-    let src_port = u16::from_be_bytes([
-        data[alert_packet::SRC_PORT_OFFSET],
-        data[alert_packet::SRC_PORT_OFFSET + 1],
-    ]);
-    let dst_port = u16::from_be_bytes([
-        data[alert_packet::DST_PORT_OFFSET],
-        data[alert_packet::DST_PORT_OFFSET + 1],
-    ]);
-    let protocol = data[alert_packet::PROTOCOL_OFFSET];
-    let packet_len = u16::from_be_bytes([
-        data[alert_packet::PACKET_LEN_OFFSET],
-        data[alert_packet::PACKET_LEN_OFFSET + 1],
-    ]);
-    let value = &data[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4];
-    let measured =
-        Some(u32::from_be_bytes([value[0], value[1], value[2], value[3]])).filter(|&v| v != 0);
+    let measured = Some(meta.value).filter(|&value| value != 0);
 
-    let (msg, color) = match AlertReason::from_u8(reason_byte) {
-        Some(AlertReason::Ddos) => (
+    let (msg, color) = match alert.reason {
+        AlertReason::Ddos => (
             format!("[DDoS] High Volume from {ip}"),
             egui::Color32::YELLOW,
         ),
-        Some(AlertReason::Firewall) => (
+        AlertReason::Firewall => (
             format!("[FIREWALL] Blocked Port access from {ip}"),
             egui::Color32::RED,
         ),
-        Some(AlertReason::Malware) => (
+        AlertReason::Malware => (
             format!("[MALWARE] Signature Match from {ip}"),
             egui::Color32::RED,
         ),
-        Some(AlertReason::Bpf) => (
+        AlertReason::Bpf => (
             format!("[BPF] Custom Filter Drop from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
-        Some(AlertReason::Heuristic) => (
+        AlertReason::Heuristic => (
             format!("[HEURISTIC] Anomaly Detected from {ip}"),
             egui::Color32::from_rgb(255, 0, 255),
         ),
-        Some(AlertReason::Flow) => (
+        AlertReason::Flow => (
             format!("[FLOW] New Connection from {ip}"),
             egui::Color32::LIGHT_BLUE,
         ),
-        Some(AlertReason::Pass) => (
+        AlertReason::Pass => (
             format!("[PASS] Allowed from {ip}"),
             egui::Color32::from_gray(140),
         ),
-        Some(AlertReason::MgmtAuthFail) => (
+        AlertReason::MgmtAuthFail => (
             format!("[MGMT AUTH] Rejected unsigned/replayed mgmt packet from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
         ),
-        Some(AlertReason::BpfTimeout) => (
+        AlertReason::BpfTimeout => (
             format!("[BPF TIMEOUT] Installed program hit cycle budget from {ip}"),
             egui::Color32::from_rgb(255, 80, 0),
         ),
-        Some(AlertReason::SourceSurge) => (
+        AlertReason::SourceSurge => (
             format!(
                 "[SURGE] ~{} distinct sources in one interval (spoofed flood?)",
                 measured.unwrap_or(0)
             ),
             egui::Color32::YELLOW,
         ),
-        Some(AlertReason::SubnetFlood) => (
+        AlertReason::SubnetFlood => (
             format!("[SUBNET] {ip} banned at ~{} pps", measured.unwrap_or(0)),
             egui::Color32::YELLOW,
         ),
-        Some(AlertReason::PortScan) => (
+        AlertReason::PortScan => (
             format!(
                 "[SCAN] {ip} banned after trying {} ports",
                 measured.unwrap_or(0)
             ),
             egui::Color32::YELLOW,
         ),
-        Some(AlertReason::MalformedIp) => (
+        AlertReason::MalformedIp => (
             format!("[MALFORMED] Invalid IPv4 header from {ip}"),
             egui::Color32::from_rgb(255, 0, 255),
         ),
-        Some(AlertReason::IpFragment) => (
+        AlertReason::IpFragment => (
             format!("[FRAGMENT] IPv4 fragment dropped from {ip}"),
             egui::Color32::from_rgb(255, 0, 255),
         ),
-        None => ("Unknown Alert".to_string(), egui::Color32::GRAY),
     };
 
     LogEntry {
         timestamp: 0.0,
         src_ip: ip,
-        dst_ip,
-        src_port,
-        dst_port,
-        protocol,
-        packet_len,
+        dst_ip: meta.dst_ip.to_string(),
+        src_port: meta.src_port,
+        dst_port: meta.dst_port,
+        protocol: meta.protocol,
+        packet_len: meta.packet_len,
         measured,
         msg,
         color,
     }
 }
 
-/// A mgmt ack received from the kernel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Ack {
-    seq: u32,
-    command: u8,
-    outcome: MgmtOutcome,
-}
-
-fn parse_ack(data: &[u8]) -> Option<Ack> {
-    let body = data.get(..ack_packet::ACK_BODY_LEN)?;
-    let seq = &body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4];
-    Some(Ack {
-        seq: u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
-        command: body[ack_packet::COMMAND_OFFSET],
-        outcome: MgmtOutcome::from_u8(body[ack_packet::OUTCOME_OFFSET])?,
+/// A log entry for an alert report this dashboard cannot decode, such as
+/// one from a newer kernel; `None` if `body` is not an alert.
+fn unreadable_alert_entry(body: &[u8]) -> Option<LogEntry> {
+    (body.first() == Some(&alert_packet::ALERT_MESSAGE_TYPE)).then(|| LogEntry {
+        timestamp: 0.0,
+        src_ip: String::new(),
+        dst_ip: String::new(),
+        src_port: 0,
+        dst_port: 0,
+        protocol: 0,
+        packet_len: 0,
+        measured: None,
+        msg: format!("[UNREADABLE] alert report of {} bytes", body.len()),
+        color: egui::Color32::from_rgb(255, 80, 0),
     })
 }
 
@@ -629,7 +534,7 @@ fn manual_ban_entry(ip: std::net::Ipv4Addr) -> LogEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sec_core::security::alert::{AlertReason, alert_packet};
+    use sec_core::security::alert::AlertMeta;
     use sec_core::security::dpi::Pattern;
     use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, seal, sealed_len};
     use std::net::Ipv4Addr;
@@ -681,46 +586,39 @@ mod tests {
         }
     }
 
-    /// Build a well-formed 17-byte alert body with all metadata fields
-    /// set to recognisable canary values.
-    fn make_alert(reason: u8) -> Vec<u8> {
-        let mut data = vec![0u8; alert_packet::ALERT_BODY_LEN];
-        data[0] = alert_packet::ALERT_MESSAGE_TYPE;
-        data[alert_packet::REASON_OFFSET] = reason;
-        data[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4]
-            .copy_from_slice(&[192, 168, 1, 50]);
-        data[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + 4]
-            .copy_from_slice(&[10, 0, 0, 1]);
-        data[alert_packet::SRC_PORT_OFFSET..alert_packet::SRC_PORT_OFFSET + 2]
-            .copy_from_slice(&1234u16.to_be_bytes());
-        data[alert_packet::DST_PORT_OFFSET..alert_packet::DST_PORT_OFFSET + 2]
-            .copy_from_slice(&80u16.to_be_bytes());
-        data[alert_packet::PROTOCOL_OFFSET] = 6;
-        data[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
-            .copy_from_slice(&512u16.to_be_bytes());
-        data[alert_packet::PREFIX_LEN_OFFSET] = 32;
-        data
+    fn alert(reason: AlertReason) -> Alert {
+        Alert {
+            reason,
+            meta: AlertMeta {
+                src_ip: Ipv4Addr::new(192, 168, 1, 50),
+                dst_ip: Ipv4Addr::new(10, 0, 0, 1),
+                src_port: 1234,
+                dst_port: 80,
+                protocol: 6,
+                packet_len: 512,
+                prefix_len: 32,
+                value: 0,
+            },
+        }
     }
 
     #[test]
-    fn alert_parser_shows_subnet_prefixes_and_measurements() {
-        let mut data = make_alert(AlertReason::Ddos.as_u8());
-        data[alert_packet::PREFIX_LEN_OFFSET] = 24;
-        data[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4]
-            .copy_from_slice(&4_200u32.to_be_bytes());
+    fn alert_entries_show_subnet_prefixes_and_measurements() {
+        let mut subnet = alert(AlertReason::SubnetFlood);
+        subnet.meta.prefix_len = 24;
+        subnet.meta.value = 4_200;
 
-        let entry = parse_alert(&data);
+        let entry = alert_entry(&subnet);
 
         assert_eq!(entry.src_ip, "192.168.1.50/24");
         assert_eq!(entry.measured, Some(4_200));
     }
 
     #[test]
-    fn alert_parser_gives_every_reason_its_own_tag() {
+    fn every_alert_reason_has_its_own_tag() {
         let mut tags = std::collections::HashSet::new();
         for reason in AlertReason::ALL {
-            let data = make_alert(reason.as_u8());
-            let entry = parse_alert(&data);
+            let entry = alert_entry(&alert(reason));
             let tag = entry.msg.split(']').next().unwrap_or_default().to_string();
             assert!(
                 entry.msg.starts_with('[') && tags.insert(tag),
@@ -737,18 +635,17 @@ mod tests {
     }
 
     #[test]
-    fn alert_parser_rejects_every_short_packet_length() {
-        // Every length short of a full alert body must be rejected
-        // without indexing past the end.
-        for n in 0..alert_packet::ALERT_BODY_LEN {
-            let data = vec![0x02u8; n];
-            let entry = parse_alert(&data);
-            assert!(
-                entry.msg.starts_with("[MALFORMED]"),
-                "len {n} → expected MALFORMED, got {:?}",
-                entry.msg,
-            );
+    fn an_alert_report_that_does_not_decode_is_logged_as_unreadable() {
+        let mut unknown_reason = alert(AlertReason::Ddos).encode();
+        unknown_reason[alert_packet::REASON_OFFSET] = 99;
+        let whole = alert(AlertReason::Ddos).encode();
+        let truncated = (0..alert_packet::ALERT_BODY_LEN).map(|n| whole[..n].to_vec());
+
+        for body in truncated.chain([unknown_reason.to_vec()]).skip(1) {
+            let entry = unreadable_alert_entry(&body).expect("an alert-typed body");
+            assert!(entry.msg.starts_with("[UNREADABLE]"), "{:?}", entry.msg);
         }
+        assert!(unreadable_alert_entry(&[]).is_none());
     }
 
     const EPOCH: u32 = 0xDEAD_BEEF;
@@ -804,49 +701,6 @@ mod tests {
     }
 
     #[test]
-    fn ack_report_is_classified_and_parsed() {
-        let body = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 1, 2, 0x01, 1];
-
-        assert_eq!(classify_report(&body), ReportKind::Ack);
-        assert_eq!(
-            parse_ack(&body),
-            Some(Ack {
-                seq: 0x0102,
-                command: 0x01,
-                outcome: MgmtOutcome::TableFull
-            })
-        );
-    }
-
-    #[test]
-    fn ack_with_unknown_outcome_is_rejected() {
-        let data = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 0, 1, 0x01, 99];
-
-        assert_eq!(parse_ack(&data), None);
-    }
-
-    #[test]
-    fn empty_report_is_ignored() {
-        assert_eq!(classify_report(&[]), ReportKind::Unknown);
-    }
-
-    #[test]
-    fn truncated_telemetry_is_not_parsed() {
-        let body = [telemetry_packet::MESSAGE_TYPE; telemetry_packet::BODY_LEN - 1];
-
-        assert_eq!(parse_telemetry(&body), None);
-    }
-
-    #[test]
-    fn report_classification_matches_kernel_formats() {
-        let mut telemetry = [0u8; telemetry_packet::BODY_LEN];
-        telemetry[0] = telemetry_packet::MESSAGE_TYPE;
-
-        assert_eq!(classify_report(&telemetry), ReportKind::Telemetry);
-        assert_eq!(classify_report(&make_alert(1)), ReportKind::Alert);
-    }
-
-    #[test]
     fn forged_report_is_rejected() {
         let mut reports = ReportVerifier::new(ReportKey::derive(&TEST_KEY));
         let mut forged = [0u8; 64];
@@ -860,12 +714,5 @@ mod tests {
         .unwrap();
 
         assert!(reports.verify(&forged[..n]).is_none());
-    }
-
-    #[test]
-    fn alert_parser_handles_unknown_reason_byte() {
-        let data = make_alert(99);
-        let entry = parse_alert(&data);
-        assert_eq!(entry.msg, "Unknown Alert");
     }
 }

@@ -2,6 +2,9 @@
 
 use sec_core::config::{IP_ADDR, MAC_ADDR};
 use sec_core::net::constants::{ArpOpcode, EthernetType, IpProtocol, arp, ethernet, ipv4, udp};
+use sec_core::security::alert::AlertReason;
+use sec_core::security::mgmt::Ack;
+use sec_core::security::report_auth::{ReportBody, Telemetry};
 
 /// The kernel's IPv4 address.
 pub const KERNEL_IP: [u8; 4] = IP_ADDR.octets();
@@ -100,45 +103,27 @@ pub fn report_body(frame: &[u8]) -> Option<&[u8]> {
     frame.get(UDP_PAYLOAD_OFFSET + HEADER_LEN..frame.len().checked_sub(MAC_LEN)?)
 }
 
-/// Returns the alert reason code if `frame` is a security alert from the
+/// The reason of the security alert in `frame`, if it is one from the
 /// kernel.
-pub fn alert_reason(frame: &[u8]) -> Option<u8> {
-    use sec_core::security::alert::alert_packet::{ALERT_MESSAGE_TYPE, REASON_OFFSET};
-    let body = report_body(frame)?;
-    (body.first() == Some(&ALERT_MESSAGE_TYPE)).then(|| body.get(REASON_OFFSET).copied())?
+pub fn alert_reason(frame: &[u8]) -> Option<AlertReason> {
+    match ReportBody::parse(report_body(frame)?)? {
+        ReportBody::Alert(alert) => Some(alert.reason),
+        _ => None,
+    }
 }
 
-/// Returns `(seq, command, outcome)` if `frame` is a mgmt ack from the
-/// kernel.
-pub fn mgmt_ack(frame: &[u8]) -> Option<(u32, u8, u8)> {
-    use sec_core::security::mgmt::ack_packet::{
-        ACK_BODY_LEN, ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
-    };
-    let body = report_body(frame)?.get(..ACK_BODY_LEN)?;
-    if body[0] != ACK_MESSAGE_TYPE {
-        return None;
+/// The mgmt ack in `frame`, if it is one from the kernel.
+pub fn mgmt_ack(frame: &[u8]) -> Option<Ack> {
+    match ReportBody::parse(report_body(frame)?)? {
+        ReportBody::Ack(ack) => Some(ack),
+        _ => None,
     }
-    let seq = &body[SEQ_OFFSET..SEQ_OFFSET + 4];
-    Some((
-        u32::from_be_bytes([seq[0], seq[1], seq[2], seq[3]]),
-        body[COMMAND_OFFSET],
-        body[OUTCOME_OFFSET],
-    ))
 }
 
-/// Returns the telemetry counters if `frame` is a telemetry report.
-pub fn telemetry_slots(frame: &[u8]) -> Option<[u64; 10]> {
-    use sec_core::security::report_auth::telemetry_packet::{BODY_LEN, MESSAGE_TYPE, SLOTS_OFFSET};
-    let body = report_body(frame)?.get(..BODY_LEN)?;
-    if body[0] != MESSAGE_TYPE {
-        return None;
+/// The telemetry in `frame`, if it is a report from the kernel.
+pub fn telemetry(frame: &[u8]) -> Option<Telemetry> {
+    match ReportBody::parse(report_body(frame)?)? {
+        ReportBody::Telemetry(telemetry) => Some(telemetry),
+        _ => None,
     }
-    let mut slots = [0u64; 10];
-    for (slot, bytes) in slots
-        .iter_mut()
-        .zip(body[SLOTS_OFFSET..].as_chunks::<8>().0)
-    {
-        *slot = u64::from_be_bytes(*bytes);
-    }
-    Some(slots)
 }

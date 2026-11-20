@@ -10,9 +10,7 @@ use core::net::Ipv4Addr;
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::constants::{BROADCAST_MAC, EthernetType, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
-use crate::security::alert::{AlertMeta, AlertReason, alert_packet};
 use crate::security::hash::ReportKey;
-use crate::security::mgmt::{MgmtOutcome, ack_packet};
 use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::report_auth::{self, telemetry_packet};
 
@@ -41,49 +39,6 @@ pub struct ReportHeader<'a> {
     pub epoch: u32,
     /// Position in this boot's report stream.
     pub seq: u64,
-}
-
-/// Body of an alert report.
-pub fn alert_body(meta: &AlertMeta, reason: AlertReason) -> [u8; alert_packet::ALERT_BODY_LEN] {
-    let mut body = [0u8; alert_packet::ALERT_BODY_LEN];
-    body[0] = alert_packet::ALERT_MESSAGE_TYPE;
-    body[alert_packet::REASON_OFFSET] = reason.as_u8();
-    body[alert_packet::SRC_IP_OFFSET..alert_packet::SRC_IP_OFFSET + 4]
-        .copy_from_slice(&meta.src_ip.octets());
-    body[alert_packet::DST_IP_OFFSET..alert_packet::DST_IP_OFFSET + 4]
-        .copy_from_slice(&meta.dst_ip.octets());
-    body[alert_packet::SRC_PORT_OFFSET..alert_packet::SRC_PORT_OFFSET + 2]
-        .copy_from_slice(&meta.src_port.to_be_bytes());
-    body[alert_packet::DST_PORT_OFFSET..alert_packet::DST_PORT_OFFSET + 2]
-        .copy_from_slice(&meta.dst_port.to_be_bytes());
-    body[alert_packet::PROTOCOL_OFFSET] = meta.protocol;
-    body[alert_packet::PACKET_LEN_OFFSET..alert_packet::PACKET_LEN_OFFSET + 2]
-        .copy_from_slice(&meta.packet_len.to_be_bytes());
-    body[alert_packet::PREFIX_LEN_OFFSET] = meta.prefix_len;
-    body[alert_packet::VALUE_OFFSET..alert_packet::VALUE_OFFSET + 4]
-        .copy_from_slice(&meta.value.to_be_bytes());
-    body
-}
-
-/// Body of an ack for the command `seq` of type `command`.
-pub fn ack_body(seq: u32, command: u8, outcome: MgmtOutcome) -> [u8; ack_packet::ACK_BODY_LEN] {
-    let mut body = [0u8; ack_packet::ACK_BODY_LEN];
-    body[0] = ack_packet::ACK_MESSAGE_TYPE;
-    body[ack_packet::SEQ_OFFSET..ack_packet::SEQ_OFFSET + 4].copy_from_slice(&seq.to_be_bytes());
-    body[ack_packet::COMMAND_OFFSET] = command;
-    body[ack_packet::OUTCOME_OFFSET] = outcome as u8;
-    body
-}
-
-/// Body of a telemetry report carrying `slots`.
-pub fn telemetry_body(slots: &[u64; telemetry_packet::SLOTS]) -> [u8; telemetry_packet::BODY_LEN] {
-    let mut body = [0u8; telemetry_packet::BODY_LEN];
-    body[0] = telemetry_packet::MESSAGE_TYPE;
-    let (chunks, _) = body[telemetry_packet::SLOTS_OFFSET..].as_chunks_mut::<8>();
-    for (chunk, value) in chunks.iter_mut().zip(slots) {
-        chunk.copy_from_slice(&value.to_be_bytes());
-    }
-    body
 }
 
 /// Writes `body` as a signed report frame into `buf` and returns the

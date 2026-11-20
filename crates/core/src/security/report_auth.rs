@@ -11,7 +11,9 @@
 //! never be replayed to the kernel as a command, and the 64-bit sequence
 //! cannot wrap under any realistic alert rate.
 
+use crate::security::alert::{Alert, alert_packet};
 use crate::security::hash::{ReportKey, ct_eq};
+use crate::security::mgmt::{Ack, ack_packet};
 
 /// Bytes before the body: epoch and sequence.
 pub const HEADER_LEN: usize = 4 + 8;
@@ -26,12 +28,127 @@ pub mod telemetry_packet {
     pub const MESSAGE_TYPE: u8 = 0x01;
     /// Number of big-endian u64 counters after the type byte.
     pub const SLOTS: usize = 11;
-    /// Slot holding the last mgmt sequence the kernel accepted this boot.
-    pub const LAST_MGMT_SEQ_SLOT: usize = 10;
     /// Offset of the first counter.
     pub const SLOTS_OFFSET: usize = 1;
     /// Total bytes of telemetry body.
     pub const BODY_LEN: usize = SLOTS_OFFSET + SLOTS * 8;
+}
+
+/// One telemetry interval's counters, in their order on the wire.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Telemetry {
+    /// User packets that cleared every check.
+    pub passed: u64,
+    /// Drops from the penalty box, heavy-hitter sketch or rate limiter.
+    pub ddos: u64,
+    /// Drops from the port firewall.
+    pub firewall: u64,
+    /// DPI signature matches.
+    pub malware: u64,
+    /// Drops by the installed BPF program.
+    pub bpf: u64,
+    /// Heuristic anomalies.
+    pub heuristic: u64,
+    /// Bytes of RAM the kernel uses.
+    pub memory_used: u64,
+    /// Flows being tracked.
+    pub active_flows: u64,
+    /// Mgmt-plane packets, authenticated or not.
+    pub mgmt: u64,
+    /// The boot epoch.
+    pub epoch: u32,
+    /// The last mgmt sequence accepted this boot.
+    pub last_mgmt_seq: u32,
+}
+
+impl Telemetry {
+    /// The report body carrying these counters.
+    pub fn encode(&self) -> [u8; telemetry_packet::BODY_LEN] {
+        let slots = [
+            self.passed,
+            self.ddos,
+            self.firewall,
+            self.malware,
+            self.bpf,
+            self.heuristic,
+            self.memory_used,
+            self.active_flows,
+            self.mgmt,
+            u64::from(self.epoch),
+            u64::from(self.last_mgmt_seq),
+        ];
+        let mut body = [0u8; telemetry_packet::BODY_LEN];
+        body[0] = telemetry_packet::MESSAGE_TYPE;
+        let (chunks, _) = body[telemetry_packet::SLOTS_OFFSET..].as_chunks_mut::<8>();
+        for (chunk, slot) in chunks.iter_mut().zip(slots) {
+            chunk.copy_from_slice(&slot.to_be_bytes());
+        }
+        body
+    }
+
+    /// The counters in a report body, if it is a whole telemetry report
+    /// whose epoch and sequence fit in 32 bits.
+    pub fn decode(body: &[u8]) -> Option<Self> {
+        let body = body.first_chunk::<{ telemetry_packet::BODY_LEN }>()?;
+        if body[0] != telemetry_packet::MESSAGE_TYPE {
+            return None;
+        }
+        let (chunks, _) = body[telemetry_packet::SLOTS_OFFSET..].as_chunks::<8>();
+        let mut slots = [0u64; telemetry_packet::SLOTS];
+        for (slot, chunk) in slots.iter_mut().zip(chunks) {
+            *slot = u64::from_be_bytes(*chunk);
+        }
+        let [
+            passed,
+            ddos,
+            firewall,
+            malware,
+            bpf,
+            heuristic,
+            memory_used,
+            active_flows,
+            mgmt,
+            epoch,
+            last_mgmt_seq,
+        ] = slots;
+        Some(Self {
+            passed,
+            ddos,
+            firewall,
+            malware,
+            bpf,
+            heuristic,
+            memory_used,
+            active_flows,
+            mgmt,
+            epoch: u32::try_from(epoch).ok()?,
+            last_mgmt_seq: u32::try_from(last_mgmt_seq).ok()?,
+        })
+    }
+}
+
+/// What a report carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportBody {
+    /// One interval's counters.
+    Telemetry(Telemetry),
+    /// A security alert.
+    Alert(Alert),
+    /// The answer to a mgmt command.
+    Ack(Ack),
+}
+
+impl ReportBody {
+    /// The report in `body`, or `None` for an unknown type or a body
+    /// its type's decoder refuses.
+    pub fn parse(body: &[u8]) -> Option<Self> {
+        match *body.first()? {
+            telemetry_packet::MESSAGE_TYPE => Telemetry::decode(body).map(Self::Telemetry),
+            alert_packet::ALERT_MESSAGE_TYPE => Alert::decode(body).map(Self::Alert),
+            ack_packet::ACK_MESSAGE_TYPE => Ack::decode(body).map(Self::Ack),
+            _ => None,
+        }
+    }
 }
 
 /// Epochs a verifier remembers so replays from earlier boots stay rejected.
@@ -137,7 +254,99 @@ impl ReportVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::alert::{AlertMeta, AlertReason};
     use crate::security::hash::MgmtKey;
+    use crate::security::mgmt::MgmtOutcome;
+    use core::net::Ipv4Addr;
+
+    const TELEMETRY: Telemetry = Telemetry {
+        passed: 1,
+        ddos: 2,
+        firewall: 3,
+        malware: 4,
+        bpf: 5,
+        heuristic: 6,
+        memory_used: 7,
+        active_flows: 8,
+        mgmt: 9,
+        epoch: 10,
+        last_mgmt_seq: 11,
+    };
+
+    const ALERT: Alert = Alert {
+        reason: AlertReason::SubnetFlood,
+        meta: AlertMeta {
+            src_ip: Ipv4Addr::new(10, 1, 2, 0),
+            dst_ip: Ipv4Addr::new(192, 168, 100, 2),
+            src_port: 1234,
+            dst_port: 80,
+            protocol: 17,
+            packet_len: 512,
+            prefix_len: 24,
+            value: 4200,
+        },
+    };
+
+    const ACK: Ack = Ack {
+        seq: 0xDEAD_BEEF,
+        command: 0xEE,
+        outcome: MgmtOutcome::Refused,
+    };
+
+    #[test]
+    fn telemetry_counters_sit_in_wire_order() {
+        let body = TELEMETRY.encode();
+
+        for (slot, expected) in body[telemetry_packet::SLOTS_OFFSET..].chunks(8).zip(1u64..) {
+            assert_eq!(slot, expected.to_be_bytes());
+        }
+    }
+
+    #[test]
+    fn each_report_body_parses_back_to_what_was_encoded() {
+        assert_eq!(
+            ReportBody::parse(&TELEMETRY.encode()),
+            Some(ReportBody::Telemetry(TELEMETRY))
+        );
+        assert_eq!(
+            ReportBody::parse(&ALERT.encode()),
+            Some(ReportBody::Alert(ALERT))
+        );
+        assert_eq!(ReportBody::parse(&ACK.encode()), Some(ReportBody::Ack(ACK)));
+    }
+
+    #[test]
+    fn a_truncated_body_of_each_type_is_refused() {
+        let telemetry = TELEMETRY.encode();
+        let alert = ALERT.encode();
+        let ack = ACK.encode();
+
+        assert_eq!(ReportBody::parse(&telemetry[..telemetry.len() - 1]), None);
+        assert_eq!(ReportBody::parse(&alert[..alert.len() - 1]), None);
+        assert_eq!(ReportBody::parse(&ack[..ack.len() - 1]), None);
+    }
+
+    #[test]
+    fn unknown_types_reasons_and_outcomes_are_refused() {
+        let mut alert = ALERT.encode();
+        alert[alert_packet::REASON_OFFSET] = 0xFF;
+        let mut ack = ACK.encode();
+        ack[ack_packet::OUTCOME_OFFSET] = 0xFF;
+
+        assert_eq!(ReportBody::parse(&[]), None);
+        assert_eq!(ReportBody::parse(&[0xEE; 32]), None);
+        assert_eq!(ReportBody::parse(&alert), None);
+        assert_eq!(ReportBody::parse(&ack), None);
+    }
+
+    #[test]
+    fn telemetry_whose_epoch_overflows_32_bits_is_refused() {
+        let mut body = TELEMETRY.encode();
+        let epoch_slot = telemetry_packet::SLOTS_OFFSET + 9 * 8;
+        body[epoch_slot..epoch_slot + 8].copy_from_slice(&(1u64 << 32).to_be_bytes());
+
+        assert_eq!(Telemetry::decode(&body), None);
+    }
 
     const KEY: ReportKey = ReportKey::derive(&MgmtKey::new([7; 16]));
 
