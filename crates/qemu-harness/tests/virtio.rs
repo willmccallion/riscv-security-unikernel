@@ -5,6 +5,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qemu_harness::{Kernel, default_kernel_elf, frame};
+use sec_core::config::IP_ADDR;
+use sec_core::net::frame::{self as sec_frame, Frame, Transport};
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -18,8 +20,16 @@ fn syn(src_ip: [u8; 4], src_port: u16) -> Vec<u8> {
 }
 
 fn synack_dst_port(f: &[u8]) -> Option<u16> {
-    let is_synack = f.len() >= 54 && f[23] == 6 && f[26..30] == frame::KERNEL_IP;
-    is_synack.then(|| u16::from_be_bytes([f[36], f[37]]))
+    let mut f = f.to_vec();
+    let Ok(Frame::Ipv4(packet)) = sec_frame::parse(&mut f) else {
+        return None;
+    };
+    match packet.transport {
+        Transport::Tcp(tcp) if packet.src == IP_ADDR && tcp.flags.is_syn_ack() => {
+            Some(tcp.ports.dst)
+        }
+        _ => None,
+    }
 }
 
 /// Records the source port of every SYN-ACK the kernel sends before

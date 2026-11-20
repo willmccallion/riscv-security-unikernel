@@ -12,7 +12,7 @@ use crate::types::{
 };
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
-use sec_core::net::constants::IpProtocol;
+use sec_core::net::constants::{IpProtocol, ipv4, tcp};
 use sec_core::security::dpi::BUILTIN_SIGNATURES;
 use sec_core::security::mgmt::MgmtOutcome;
 use sec_core::security::vm::{Instruction, Opcode};
@@ -942,10 +942,11 @@ fn format_metric(val: u64) -> String {
 /// - `BLOCK <TCP|UDP> DST <port>` - Drops packets of that protocol to a
 ///   destination port, wherever IPv4 options place the transport header.
 fn compile_bpf(code: &str) -> Option<Vec<u8>> {
-    const PROTOCOL_OFFSET: u32 = 23;
-    const VERSION_IHL_OFFSET: u32 = 14;
-    /// The destination port's offset past the IPv4 header.
-    const DST_PORT_AFTER_IP_HEADER: u32 = 14 + 2;
+    const PROTOCOL_OFFSET: u32 = ipv4::PROTOCOL_OFFSET as u32;
+    const VERSION_IHL_OFFSET: u32 = ipv4::VERSION_IHL_OFFSET as u32;
+    /// The destination port's offset past the IPv4 header; TCP and UDP
+    /// share it.
+    const DST_PORT_AFTER_IP_HEADER: u32 = (ipv4::HEADER_OFFSET + tcp::DST_PORT_OFFSET) as u32;
     const PASS_INDEX: u32 = 9;
     const DROP_INDEX: u32 = 10;
 

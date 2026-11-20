@@ -120,8 +120,11 @@ pub mod ipv4 {
     pub const IP_ADDR_SIZE: usize = 4;
     /// Mask for extracting IHL (Internet Header Length) from version/IHL byte.
     pub const IHL_MASK: u8 = 0x0F;
-    /// IP version 4 identifier.
+    /// The version/IHL byte of an IPv4 header without options.
     pub const VERSION: u8 = 0x45;
+    /// The flags and fragment offset of an unfragmented datagram that must
+    /// not be fragmented.
+    pub const DONT_FRAGMENT: u16 = 0x4000;
     /// Default TTL value.
     pub const DEFAULT_TTL: u8 = 0x40;
 
@@ -206,6 +209,10 @@ pub mod icmp {
 pub mod udp {
     /// UDP header size in bytes.
     pub const HEADER_SIZE: usize = 8;
+    /// Offset of the source port.
+    pub const SRC_PORT_OFFSET: usize = 0;
+    /// Offset of the destination port.
+    pub const DST_PORT_OFFSET: usize = 2;
     /// Offset of the length field within the UDP header.
     pub const LENGTH_OFFSET: usize = 4;
 }

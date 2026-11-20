@@ -8,7 +8,7 @@
 use core::net::Ipv4Addr;
 
 use crate::config::{IP_ADDR, MAC_ADDR};
-use crate::net::constants::{BROADCAST_MAC, IpProtocol, ethernet, ipv4, udp};
+use crate::net::constants::{BROADCAST_MAC, EthernetType, IpProtocol, ethernet, ipv4, udp};
 use crate::net::stack::checksum;
 use crate::security::alert::{AlertMeta, AlertReason, alert_packet};
 use crate::security::hash::ReportKey;
@@ -21,7 +21,6 @@ const BROADCAST_IP: Ipv4Addr = Ipv4Addr::new(192, 168, 100, 255);
 
 const UDP_OFFSET: usize = ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE;
 const UDP_PAYLOAD_OFFSET: usize = UDP_OFFSET + udp::HEADER_SIZE;
-const IP_CHECKSUM_OFFSET: usize = ipv4::HEADER_OFFSET + 10;
 
 /// Length of the largest report frame, a telemetry report.
 pub const MAX_REPORT_FRAME_LEN: usize =
@@ -120,28 +119,35 @@ fn write_udp_headers(
     let udp_len = (frame.len() - UDP_OFFSET) as u16;
 
     frame[..ethernet::MAC_ADDR_SIZE].copy_from_slice(&dst_mac);
-    frame[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
-        .copy_from_slice(&MAC_ADDR);
-    frame[ethernet::TYPE_OFFSET..ethernet::TYPE_OFFSET + 2].copy_from_slice(&[0x08, 0x00]);
+    frame[ethernet::SRC_MAC_OFFSET..][..ethernet::MAC_ADDR_SIZE].copy_from_slice(&MAC_ADDR);
+    frame[ethernet::TYPE_OFFSET..][..ethernet::TYPE_SIZE]
+        .copy_from_slice(&(EthernetType::Ipv4 as u16).to_be_bytes());
+    frame[ipv4::HEADER_OFFSET..UDP_OFFSET].copy_from_slice(&ipv4_header(dst_ip, ip_len));
+    frame[UDP_OFFSET..UDP_PAYLOAD_OFFSET].copy_from_slice(&udp_header(src_port, dst_port, udp_len));
+}
 
-    let ip = &mut frame[ipv4::HEADER_OFFSET..UDP_OFFSET];
-    ip[0] = ipv4::VERSION;
-    ip[1] = 0;
-    ip[2..4].copy_from_slice(&ip_len.to_be_bytes());
-    ip[4..6].copy_from_slice(&[0, 0]);
-    // Don't Fragment.
-    ip[6..8].copy_from_slice(&[0x40, 0x00]);
-    ip[8] = ipv4::DEFAULT_TTL;
-    ip[9] = IpProtocol::Udp as u8;
-    ip[10..12].copy_from_slice(&[0, 0]);
-    ip[12..16].copy_from_slice(&IP_ADDR.octets());
-    ip[16..20].copy_from_slice(&dst_ip.octets());
-    let csum = checksum(&frame[ipv4::HEADER_OFFSET..UDP_OFFSET]);
-    frame[IP_CHECKSUM_OFFSET..IP_CHECKSUM_OFFSET + 2].copy_from_slice(&csum.to_be_bytes());
+/// The header of an unfragmented UDP datagram of `total_len` bytes from
+/// this host to `dst`, checksummed.
+fn ipv4_header(dst: Ipv4Addr, total_len: u16) -> [u8; ipv4::MIN_HEADER_SIZE] {
+    use ipv4::field;
+    let mut header = [0u8; ipv4::MIN_HEADER_SIZE];
+    header[field::VERSION_IHL] = ipv4::VERSION;
+    header[field::TOTAL_LEN..][..2].copy_from_slice(&total_len.to_be_bytes());
+    header[field::FLAGS_FRAGMENT..][..2].copy_from_slice(&ipv4::DONT_FRAGMENT.to_be_bytes());
+    header[field::TTL] = ipv4::DEFAULT_TTL;
+    header[field::PROTOCOL] = IpProtocol::Udp as u8;
+    header[field::SRC..][..ipv4::IP_ADDR_SIZE].copy_from_slice(&IP_ADDR.octets());
+    header[field::DST..][..ipv4::IP_ADDR_SIZE].copy_from_slice(&dst.octets());
+    let csum = checksum(&header);
+    header[field::CHECKSUM..][..2].copy_from_slice(&csum.to_be_bytes());
+    header
+}
 
-    let udp = &mut frame[UDP_OFFSET..UDP_PAYLOAD_OFFSET];
-    udp[0..2].copy_from_slice(&src_port.to_be_bytes());
-    udp[2..4].copy_from_slice(&dst_port.to_be_bytes());
-    udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
-    udp[6..8].copy_from_slice(&[0, 0]);
+/// A UDP header for a datagram of `len` bytes, with no checksum.
+fn udp_header(src_port: u16, dst_port: u16, len: u16) -> [u8; udp::HEADER_SIZE] {
+    let mut header = [0u8; udp::HEADER_SIZE];
+    header[udp::SRC_PORT_OFFSET..][..2].copy_from_slice(&src_port.to_be_bytes());
+    header[udp::DST_PORT_OFFSET..][..2].copy_from_slice(&dst_port.to_be_bytes());
+    header[udp::LENGTH_OFFSET..][..2].copy_from_slice(&len.to_be_bytes());
+    header
 }
