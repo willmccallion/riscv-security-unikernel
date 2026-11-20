@@ -3,7 +3,7 @@
 //! Nanoseconds tick at 1 GHz, the rate the engine's cycle-based
 //! thresholds are documented against.
 
-use sec_core::time::TimeSource;
+use sec_core::time::{Ticks, TimeSource};
 use std::time::Instant;
 
 /// Nanoseconds since the clock was created.
@@ -22,7 +22,7 @@ impl Monotonic {
 }
 
 impl TimeSource for Monotonic {
-    fn now(&self) -> u64 {
-        u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    fn now(&self) -> Ticks {
+        Ticks::new(u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX))
     }
 }

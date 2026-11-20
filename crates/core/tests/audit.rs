@@ -31,6 +31,7 @@ use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, REPLY_ADDR_LEN, seal
 use sec_core::security::vm::{
     Instruction, Opcode, VM, VmAction, VmError, VmRuntimeError, validate as validate_vm,
 };
+use sec_core::time::{TickSpan, Ticks};
 use std::net::Ipv4Addr;
 
 const OPERATOR: OperatorAddr = OperatorAddr {
@@ -482,21 +483,25 @@ fn penalty_box_dedups_duplicate_bans() {
     let target = Ipv4Addr::new(10, 0, 0, 1);
 
     for _ in 0..16 {
-        pbox.ban(target, dur, now);
+        pbox.ban(target, TickSpan::new(dur), Ticks::new(now));
     }
-    assert!(pbox.is_banned(target, now));
+    assert!(pbox.is_banned(target, Ticks::new(now)));
 
     // With dedup, 15 slots are still free — 15 further distinct bans
     // must all land without evicting `target`.
     for i in 2..17u8 {
-        pbox.ban(Ipv4Addr::new(10, 0, 0, i), dur, now);
+        pbox.ban(
+            Ipv4Addr::new(10, 0, 0, i),
+            TickSpan::new(dur),
+            Ticks::new(now),
+        );
     }
     assert!(
-        pbox.is_banned(target, now),
+        pbox.is_banned(target, Ticks::new(now)),
         "duplicate-ban dedup must not have evicted the first IP"
     );
     for i in 2..17u8 {
-        assert!(pbox.is_banned(Ipv4Addr::new(10, 0, 0, i), now));
+        assert!(pbox.is_banned(Ipv4Addr::new(10, 0, 0, i), Ticks::new(now)));
     }
 }
 
@@ -718,20 +723,20 @@ fn penalty_box_does_not_clobber_a_single_slot_when_full() {
 
     for i in 0..16u8 {
         let ip = Ipv4Addr::new(10, 0, 0, i);
-        pbox.ban(ip, dur, now);
-        assert!(pbox.is_banned(ip, now));
+        pbox.ban(ip, TickSpan::new(dur), Ticks::new(now));
+        assert!(pbox.is_banned(ip, Ticks::new(now)));
     }
 
     let first = Ipv4Addr::new(10, 0, 0, 0);
-    assert!(pbox.is_banned(first, now));
+    assert!(pbox.is_banned(first, Ticks::new(now)));
 
     for i in 16..20u8 {
         let ip = Ipv4Addr::new(10, 0, 0, i);
-        pbox.ban(ip, dur, now);
+        pbox.ban(ip, TickSpan::new(dur), Ticks::new(now));
     }
 
     let surviving = (16..20u8)
-        .filter(|i| pbox.is_banned(Ipv4Addr::new(10, 0, 0, *i), now))
+        .filter(|i| pbox.is_banned(Ipv4Addr::new(10, 0, 0, *i), Ticks::new(now)))
         .count();
 
     assert!(
@@ -810,7 +815,7 @@ fn flow_table_protects_existing_flow_from_unique_tuple_flood() {
         dst_port: 80,
         protocol: 6,
     };
-    let real_seen = ft.update(&real, 100, now);
+    let real_seen = ft.update(&real, 100, Ticks::new(now));
     assert!(real_seen, "real flow should be created on first sighting");
 
     for i in 0..100u16 {
@@ -821,10 +826,10 @@ fn flow_table_protects_existing_flow_from_unique_tuple_flood() {
             dst_port: 12_345,
             protocol: 6,
         };
-        let _ = ft.update(&flood, 100, now + i as u64 + 1);
+        let _ = ft.update(&flood, 100, Ticks::new(now + i as u64 + 1));
     }
 
-    let still_known = !ft.update(&real, 100, now + 200);
+    let still_known = !ft.update(&real, 100, Ticks::new(now + 200));
     assert!(
         still_known,
         "the original flow was evicted by a unique-5-tuple flood"
@@ -996,11 +1001,15 @@ fn dynamic_rules_remove_deletes_only_that_pattern() {
 #[test]
 fn penalty_box_unban_lifts_an_active_ban() {
     let mut pbox = PenaltyBox::new();
-    pbox.ban(Ipv4Addr::new(10, 0, 0, 1), 1_000, 0);
+    pbox.ban(
+        Ipv4Addr::new(10, 0, 0, 1),
+        TickSpan::new(1_000),
+        Ticks::new(0),
+    );
 
     pbox.unban(Ipv4Addr::new(10, 0, 0, 1));
 
-    assert!(!pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), 1));
+    assert!(!pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), Ticks::new(1)));
 }
 
 #[test]
@@ -1042,9 +1051,13 @@ fn vm_out_of_bounds_loads_all_clear_the_register() {
 fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
     let mut pbox = PenaltyBox::new();
 
-    pbox.ban(Ipv4Addr::new(10, 0, 0, 1), u64::MAX, u64::MAX - 5);
+    pbox.ban(
+        Ipv4Addr::new(10, 0, 0, 1),
+        TickSpan::new(u64::MAX),
+        Ticks::new(u64::MAX - 5),
+    );
 
-    assert!(pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), u64::MAX - 1));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 0, 0, 1), Ticks::new(u64::MAX - 1)));
 }
 
 /// Detector bans rotate through the full table, but must never push out
@@ -1052,41 +1065,65 @@ fn penalty_box_ban_near_the_end_of_time_does_not_overflow() {
 #[test]
 fn penalty_box_detector_bans_never_evict_an_operator_ban() {
     let mut pbox = PenaltyBox::new();
-    pbox.ban_by_operator(Ipv4Addr::new(10, 9, 9, 9), 1_000, 0)
-        .unwrap();
+    pbox.ban_by_operator(
+        Ipv4Addr::new(10, 9, 9, 9),
+        TickSpan::new(1_000),
+        Ticks::new(0),
+    )
+    .unwrap();
 
     for i in 0..32u8 {
-        pbox.ban(Ipv4Addr::new(20, 0, 0, i), 1_000, 0);
+        pbox.ban(
+            Ipv4Addr::new(20, 0, 0, i),
+            TickSpan::new(1_000),
+            Ticks::new(0),
+        );
     }
 
-    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), 1));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), Ticks::new(1)));
 }
 
 #[test]
 fn penalty_box_operator_ban_evicts_a_detector_ban_when_full() {
     let mut pbox = PenaltyBox::new();
     for i in 0..16u8 {
-        pbox.ban(Ipv4Addr::new(20, 0, 0, i), 1_000, 0);
+        pbox.ban(
+            Ipv4Addr::new(20, 0, 0, i),
+            TickSpan::new(1_000),
+            Ticks::new(0),
+        );
     }
 
-    let result = pbox.ban_by_operator(Ipv4Addr::new(10, 9, 9, 9), 1_000, 0);
+    let result = pbox.ban_by_operator(
+        Ipv4Addr::new(10, 9, 9, 9),
+        TickSpan::new(1_000),
+        Ticks::new(0),
+    );
 
     assert_eq!(result, Ok(()));
-    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), 1));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), Ticks::new(1)));
 }
 
 #[test]
 fn penalty_box_refuses_an_operator_ban_when_every_slot_holds_one() {
     let mut pbox = PenaltyBox::new();
     for i in 0..16u8 {
-        pbox.ban_by_operator(Ipv4Addr::new(10, 0, 0, i), 1_000, 0)
-            .unwrap();
+        pbox.ban_by_operator(
+            Ipv4Addr::new(10, 0, 0, i),
+            TickSpan::new(1_000),
+            Ticks::new(0),
+        )
+        .unwrap();
     }
 
-    let result = pbox.ban_by_operator(Ipv4Addr::new(10, 0, 1, 1), 1_000, 0);
+    let result = pbox.ban_by_operator(
+        Ipv4Addr::new(10, 0, 1, 1),
+        TickSpan::new(1_000),
+        Ticks::new(0),
+    );
 
     assert_eq!(result, Err(PenaltyBoxFull));
-    assert!((0..16u8).all(|i| pbox.is_banned(Ipv4Addr::new(10, 0, 0, i), 1)));
+    assert!((0..16u8).all(|i| pbox.is_banned(Ipv4Addr::new(10, 0, 0, i), Ticks::new(1))));
 }
 
 /// A detector re-banning an address the operator banned must not shorten
@@ -1094,29 +1131,53 @@ fn penalty_box_refuses_an_operator_ban_when_every_slot_holds_one() {
 #[test]
 fn penalty_box_detector_reban_keeps_the_operator_ban() {
     let mut pbox = PenaltyBox::new();
-    pbox.ban_by_operator(Ipv4Addr::new(10, 9, 9, 9), 10_000, 0)
-        .unwrap();
-    pbox.ban(Ipv4Addr::new(10, 9, 9, 9), 100, 0);
+    pbox.ban_by_operator(
+        Ipv4Addr::new(10, 9, 9, 9),
+        TickSpan::new(10_000),
+        Ticks::new(0),
+    )
+    .unwrap();
+    pbox.ban(
+        Ipv4Addr::new(10, 9, 9, 9),
+        TickSpan::new(100),
+        Ticks::new(0),
+    );
 
     for i in 0..32u8 {
-        pbox.ban(Ipv4Addr::new(20, 0, 0, i), 1_000, 200);
+        pbox.ban(
+            Ipv4Addr::new(20, 0, 0, i),
+            TickSpan::new(1_000),
+            Ticks::new(200),
+        );
     }
 
-    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), 5_000));
+    assert!(pbox.is_banned(Ipv4Addr::new(10, 9, 9, 9), Ticks::new(5_000)));
 }
 
 #[test]
 fn penalty_box_reuses_a_ban_ending_now_before_evicting_an_active_one() {
     let mut pbox = PenaltyBox::new();
     for i in 0..15u8 {
-        pbox.ban(Ipv4Addr::new(10, 0, 0, i), 1_000, 0);
+        pbox.ban(
+            Ipv4Addr::new(10, 0, 0, i),
+            TickSpan::new(1_000),
+            Ticks::new(0),
+        );
     }
-    pbox.ban(Ipv4Addr::new(10, 0, 0, 15), 100, 0);
+    pbox.ban(
+        Ipv4Addr::new(10, 0, 0, 15),
+        TickSpan::new(100),
+        Ticks::new(0),
+    );
 
-    pbox.ban(Ipv4Addr::new(10, 0, 1, 1), 100, 100);
+    pbox.ban(
+        Ipv4Addr::new(10, 0, 1, 1),
+        TickSpan::new(100),
+        Ticks::new(100),
+    );
 
     assert!(
-        pbox.is_banned(Ipv4Addr::new(10, 0, 0, 0), 100),
+        pbox.is_banned(Ipv4Addr::new(10, 0, 0, 0), Ticks::new(100)),
         "an active ban was evicted"
     );
 }

@@ -6,9 +6,10 @@
 mod common;
 
 use common::{CaptureSink, engine, udp};
-use sec_core::config::CMS_DECAY_INTERVAL_CYCLES;
+use sec_core::config::CMS_DECAY_INTERVAL;
 use sec_core::engine::{Engine, Verdict};
 use sec_core::security::alert::AlertReason;
+use sec_core::time::Ticks;
 
 /// Sends `seconds` of traffic: every host in `hosts` at `pps`, interleaved,
 /// ending a detection interval every half second.
@@ -20,7 +21,7 @@ fn run(
     seconds: u64,
     now: &mut u64,
 ) {
-    let interval = CMS_DECAY_INTERVAL_CYCLES as u64;
+    let interval = CMS_DECAY_INTERVAL.get();
     let per_interval = pps * interval / 1_000_000_000;
     for _ in 0..seconds * 1_000_000_000 / interval {
         let packets = per_interval * hosts.len() as u64;
@@ -28,7 +29,7 @@ fn run(
         for k in 0..packets {
             *now += step;
             let host = hosts[(k % hosts.len() as u64) as usize];
-            let _ = e.process(&mut udp(host, 5000, 80, b"x"), *now, sink);
+            let _ = e.process(&mut udp(host, 5000, 80, b"x"), Ticks::new(*now), sink);
         }
         e.end_detection_interval(sink);
     }
@@ -50,10 +51,14 @@ fn many_moderate_hosts_get_their_slash_24_banned() {
 
     let newcomer = e.process(
         &mut udp([10, 5, 5, 200], 5000, 80, b"x"),
-        now + 1,
+        Ticks::new(now + 1),
         &mut sink,
     );
-    let neighbour = e.process(&mut udp([10, 5, 6, 1], 5000, 80, b"x"), now + 2, &mut sink);
+    let neighbour = e.process(
+        &mut udp([10, 5, 6, 1], 5000, 80, b"x"),
+        Ticks::new(now + 2),
+        &mut sink,
+    );
     assert_eq!(
         newcomer,
         Verdict::Dropped(AlertReason::Ddos),
@@ -71,7 +76,11 @@ fn one_loud_host_is_banned_alone_not_its_subnet() {
 
     run(&mut e, &mut sink, &[[10, 7, 7, 7]], 3_000, 2, &mut now);
 
-    let sibling = e.process(&mut udp([10, 7, 7, 8], 5000, 80, b"x"), now + 1, &mut sink);
+    let sibling = e.process(
+        &mut udp([10, 7, 7, 8], 5000, 80, b"x"),
+        Ticks::new(now + 1),
+        &mut sink,
+    );
     assert_eq!(sibling, Verdict::Passed);
     assert!(!sink.alert_reasons().contains(&AlertReason::SubnetFlood));
 }
@@ -87,10 +96,14 @@ fn moderate_slash_24s_add_up_to_a_banned_slash_16() {
 
     let elsewhere_in_16 = e.process(
         &mut udp([10, 9, 200, 1], 5000, 80, b"x"),
-        now + 1,
+        Ticks::new(now + 1),
         &mut sink,
     );
-    let outside = e.process(&mut udp([10, 10, 0, 1], 5000, 80, b"x"), now + 2, &mut sink);
+    let outside = e.process(
+        &mut udp([10, 10, 0, 1], 5000, 80, b"x"),
+        Ticks::new(now + 2),
+        &mut sink,
+    );
     assert_eq!(
         elsewhere_in_16,
         Verdict::Dropped(AlertReason::Ddos),
@@ -129,7 +142,7 @@ fn the_appliances_own_subnets_are_never_banned() {
 
     let neighbour = e.process(
         &mut udp([own[0], own[1], own[2], 200], 5000, 80, b"x"),
-        now + 1,
+        Ticks::new(now + 1),
         &mut sink,
     );
     assert_eq!(neighbour, Verdict::Passed);

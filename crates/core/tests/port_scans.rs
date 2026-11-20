@@ -8,6 +8,7 @@ use common::{CaptureSink, engine, tcp};
 use sec_core::config::{PORT_SCAN_CONFIRM_PORTS, PORT_SCAN_WINDOW_INTERVALS};
 use sec_core::engine::Verdict;
 use sec_core::security::alert::AlertReason;
+use sec_core::time::Ticks;
 
 const SYN: u8 = 0x02;
 const SYN_ACK: u8 = 0x12;
@@ -26,7 +27,7 @@ fn probe_ports(flags: u8, ports: std::ops::Range<u16>) -> (Vec<Verdict>, Capture
         let now = i as u64 * 1_000_000;
         verdicts.push(e.process(
             &mut tcp([10, 3, 3, 3], 40_000, port, flags, b""),
-            now,
+            Ticks::new(now),
             &mut sink,
         ));
         if (i + 1) % PROBES_PER_INTERVAL == 0 {
@@ -82,7 +83,7 @@ fn a_scan_slower_than_the_window_is_not_caught() {
             let now = u64::from(port) * 1_000_000;
             let _ = e.process(
                 &mut tcp([10, 3, 3, 3], 40_000, port, SYN, b""),
-                now,
+                Ticks::new(now),
                 &mut sink,
             );
         }

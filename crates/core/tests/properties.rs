@@ -26,6 +26,7 @@ use sec_core::security::dpi::AhoCorasick;
 use sec_core::security::flow::{FlowKey, FlowTable};
 use sec_core::security::hash::SketchKey;
 use sec_core::security::sketch::CountMinSketch;
+use sec_core::time::{TickSpan, Ticks};
 use std::net::Ipv4Addr;
 
 proptest! {
@@ -41,10 +42,10 @@ proptest! {
         offset_pct in 0u64..100,
     ) {
         let mut pbox = PenaltyBox::new();
-        pbox.ban(ip, dur, now);
+        pbox.ban(ip, TickSpan::new(dur), Ticks::new(now));
         // Sample any time t' strictly inside the ban window.
         let probe = now + (dur - 1) * offset_pct / 100;
-        prop_assert!(pbox.is_banned(ip, probe), "ban should cover {probe}");
+        prop_assert!(pbox.is_banned(ip, Ticks::new(probe)), "ban should cover {probe}");
     }
 
     /// The same ban must read as inactive at `now + dur` and beyond.
@@ -58,9 +59,9 @@ proptest! {
         extra in 0u64..1_000_000,
     ) {
         let mut pbox = PenaltyBox::new();
-        pbox.ban(ip, dur, now);
+        pbox.ban(ip, TickSpan::new(dur), Ticks::new(now));
         let probe = now + dur + extra;
-        prop_assert!(!pbox.is_banned(ip, probe), "ban should have expired by {probe}");
+        prop_assert!(!pbox.is_banned(ip, Ticks::new(probe)), "ban should have expired by {probe}");
     }
 
     /// Querying an IP that was never banned must always return false,
@@ -80,9 +81,9 @@ proptest! {
             if b == query_ip {
                 b = Ipv4Addr::from_bits(b.to_bits() ^ 0x8000_0000);
             }
-            pbox.ban(b, 1_000, now);
+            pbox.ban(b, TickSpan::new(1_000), Ticks::new(now));
         }
-        prop_assert!(!pbox.is_banned(query_ip, now), "unrelated IP must not read as banned");
+        prop_assert!(!pbox.is_banned(query_ip, Ticks::new(now)), "unrelated IP must not read as banned");
     }
 }
 
@@ -132,8 +133,8 @@ proptest! {
     ) {
         let mut ft = FlowTable::new();
         let key = FlowKey { src_ip, dst_ip, src_port, dst_port, protocol: proto };
-        let new1 = ft.update(&key, len, now);
-        let new2 = ft.update(&key, len, now);
+        let new1 = ft.update(&key, len, Ticks::new(now));
+        let new2 = ft.update(&key, len, Ticks::new(now));
         prop_assert!(new1, "first insert of a fresh tuple must be a new flow");
         prop_assert!(!new2, "second insert of the same tuple must reuse the slot");
     }
@@ -153,7 +154,7 @@ proptest! {
         let mut ft = FlowTable::new();
         for src_port in 0..n {
             let key = FlowKey { src_ip, dst_ip, src_port, dst_port, protocol: proto };
-            let new = ft.update(&key, 0, 0);
+            let new = ft.update(&key, 0, Ticks::new(0));
             prop_assert!(new, "tuple #{src_port} should be a new flow under capacity");
         }
     }
@@ -206,11 +207,11 @@ proptest! {
         step_size in 0u64..=2_000,
         steps in 1u64..=256,
     ) {
-        let mut b = TokenBucket::new(capacity, cost);
+        let mut b = TokenBucket::new(capacity, TickSpan::new(cost));
         let mut passed: u64 = 0;
         for i in 0..steps {
             let now = i.saturating_mul(step_size);
-            if b.allow(now) {
+            if b.allow(Ticks::new(now)) {
                 passed += 1;
             }
         }

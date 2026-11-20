@@ -23,11 +23,11 @@ use bench::VerdictCounts;
 use clap::{Parser, Subcommand};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES};
+use sec_core::config::{CMS_DECAY_INTERVAL, FLOW_TIMEOUT};
 use sec_core::engine::BootSecrets;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::hash::{MgmtKey, SketchKey};
-use sec_core::time::TimeSource;
+use sec_core::time::{TickSpan, TimeSource};
 use security_daemon::af_packet::{Outgoing, RxRing, TxSocket};
 use security_daemon::{monitor, sandbox};
 use std::sync::Arc;
@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use synth::Mix;
 
 /// How often `run` prints stats and sends telemetry, in nanoseconds.
-const REPORT_INTERVAL: u64 = 1_000_000_000;
+const REPORT_INTERVAL: TickSpan = TickSpan::new(1_000_000_000);
 
 #[derive(Parser, Debug)]
 #[command(about = "Run the sec-core security pipeline on Linux")]
@@ -186,12 +186,12 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
         frames += seen as u64;
 
         let now = clock.now();
-        if now.saturating_sub(last_cms_decay) >= CMS_DECAY_INTERVAL_CYCLES as u64 {
+        if now.since(last_cms_decay) >= CMS_DECAY_INTERVAL {
             engine.end_detection_interval(&mut tx);
             last_cms_decay = now;
         }
-        if now.saturating_sub(last_report) >= REPORT_INTERVAL {
-            let secs = (now - last_report) as f64 / 1e9;
+        if now.since(last_report) >= REPORT_INTERVAL {
+            let secs = now.since(last_report).get() as f64 / 1e9;
             let ring = rx.stats()?;
             let (sent, refused) = tx.counts();
             println!(
@@ -202,7 +202,7 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
                 sent,
                 refused
             );
-            engine.prune_flows(now, FLOW_TIMEOUT_CYCLES as u64);
+            engine.prune_flows(now, FLOW_TIMEOUT);
             engine.send_telemetry(resident_bytes().unwrap_or(0), &mut tx);
             engine.start_interval();
             counts = VerdictCounts::default();

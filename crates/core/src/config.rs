@@ -3,6 +3,7 @@
 //! This module defines system-wide configuration values including
 //! network identity, security thresholds, and memory layout parameters.
 
+use crate::time::TickSpan;
 use core::net::Ipv4Addr;
 
 /// Kernel version string displayed at boot.
@@ -16,7 +17,7 @@ pub const IP_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 100, 2);
 
 /// Time-source units per data-plane token in the global rate limiter:
 /// 100k packets per second on a 1 GHz cycle counter.
-pub const RATE_LIMIT_TOKEN_COST_CYCLES: u64 = 10_000;
+pub const RATE_LIMIT_TOKEN_COST: TickSpan = TickSpan::new(10_000);
 
 /// Columns per row of the kernel's heavy-hitter Count-Min Sketch.
 ///
@@ -79,7 +80,7 @@ pub const SOURCE_SURGE_FACTOR: f64 = 4.0;
 pub const SOURCE_SURGE_MINIMUM: f64 = 1000.0;
 
 /// Estimated rate, in packets per second, above which a source is
-/// banned as a heavy hitter. See [`CMS_DECAY_INTERVAL_CYCLES`].
+/// banned as a heavy hitter. See [`CMS_DECAY_INTERVAL`].
 pub const HEAVY_HITTER_THRESHOLD: u16 = 100;
 
 /// UDP port number for management interface commands.
@@ -91,7 +92,7 @@ pub const MGMT_BUCKET_CAPACITY: u64 = 16;
 /// Time-source units per mgmt token: about 100 auth-failure alerts per
 /// second at 1 GHz, so an unauthenticated flood to the mgmt port cannot
 /// crowd other alerts out of the alert budget.
-pub const MGMT_TOKEN_COST_CYCLES: u64 = 10_000_000;
+pub const MGMT_TOKEN_COST: TickSpan = TickSpan::new(10_000_000);
 
 /// Alerts that may go out in one burst before the alert rate limit applies.
 pub const ALERT_BUCKET_CAPACITY: u64 = 32;
@@ -100,7 +101,7 @@ pub const ALERT_BUCKET_CAPACITY: u64 = 32;
 ///
 /// Keeps a flood of dropped traffic from becoming an equal flood of alerts
 /// on the mgmt network; drop counters in telemetry still count every packet.
-pub const ALERT_TOKEN_COST_CYCLES: u64 = 1_000_000;
+pub const ALERT_TOKEN_COST: TickSpan = TickSpan::new(1_000_000);
 
 /// UDP port number for telemetry broadcasts.
 pub const TELEMETRY_PORT: u16 = 8888;
@@ -110,36 +111,36 @@ pub const TELEMETRY_PORT: u16 = 8888;
 /// Used for memory usage calculations and reporting.
 pub const TOTAL_MEMORY_SIZE: usize = 64 * 1024;
 
-/// Telemetry report interval in CPU cycles.
+/// Telemetry report interval.
 ///
-/// Statistics are reported to the control plane after this many
-/// cycles have elapsed since the last report.
-pub const TELEMETRY_INTERVAL_CYCLES: usize = 1_000_000_000;
+/// Statistics are reported to the control plane this long after the
+/// last report.
+pub const TELEMETRY_INTERVAL: TickSpan = TickSpan::new(1_000_000_000);
 
-/// How often the heavy-hitter sketch halves its counters, in CPU cycles.
+/// How often the heavy-hitter sketch halves its counters.
 ///
 /// Half a second at 1 GHz. A source sending steadily at `r` packets per
 /// second peaks at about `r` just before each halving (`c = c/2 + r/2`),
 /// so [`HEAVY_HITTER_THRESHOLD`] reads as packets per second, and a
 /// burst is not forgotten just because it straddles a boundary.
-pub const CMS_DECAY_INTERVAL_CYCLES: usize = 500_000_000;
+pub const CMS_DECAY_INTERVAL: TickSpan = TickSpan::new(500_000_000);
 
-/// Flow expiration timeout in CPU cycles.
+/// Flow expiration timeout.
 ///
 /// Flows that have not been seen within this period are pruned
 /// from the flow table.
-pub const FLOW_TIMEOUT_CYCLES: usize = 10_000_000;
+pub const FLOW_TIMEOUT: TickSpan = TickSpan::new(10_000_000);
 
-/// IP ban duration in CPU cycles.
+/// IP ban duration.
 ///
 /// Default duration for automatic IP bans when heavy hitter
 /// threshold is exceeded.
-pub const IP_BAN_DURATION_CYCLES: usize = 10_000_000_000;
+pub const IP_BAN_DURATION: TickSpan = TickSpan::new(10_000_000_000);
 
 /// Token bucket initial capacity.
 ///
 /// Number of tokens available at startup for the rate limiter.
-pub const TOKEN_BUCKET_CAPACITY: usize = 50;
+pub const TOKEN_BUCKET_CAPACITY: u64 = 50;
 
 /// Default blocked port (Telnet).
 ///
@@ -153,7 +154,7 @@ pub const MAX_BPF_PROGRAM_SIZE: usize = 64;
 ///
 /// Only log new flows when (`cycle_count` & `FLOW_LOG_SAMPLE_MASK`) == 0
 /// to prevent log flooding.
-pub const FLOW_LOG_SAMPLE_MASK: usize = 0x0F;
+pub const FLOW_LOG_SAMPLE_MASK: u64 = 0x0F;
 
 /// Alert sampling rate for DDoS alerts.
 ///

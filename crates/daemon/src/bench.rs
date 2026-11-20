@@ -13,12 +13,13 @@ use crate::DaemonEngine;
 use crate::synth::{self, Mix};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sec_core::config::{CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, TELEMETRY_INTERVAL_CYCLES};
+use sec_core::config::{CMS_DECAY_INTERVAL, FLOW_TIMEOUT, TELEMETRY_INTERVAL};
 use sec_core::engine::{BootSecrets, Verdict};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::hash::{MgmtKey, SketchKey};
+use sec_core::time::{TickSpan, Ticks};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -136,7 +137,7 @@ pub fn run(config: BenchConfig) -> Vec<ThreadResult> {
 fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     let mut rng = StdRng::seed_from_u64(id);
     let corpus = synth::frames(config.mix, CORPUS_SIZE, &mut rng);
-    let step = 1_000_000_000 / config.offered_pps.max(1);
+    let step = TickSpan::new(1_000_000_000 / config.offered_pps.max(1));
     let mut engine = Box::new(DaemonEngine::new(BENCH_KEY));
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
@@ -146,22 +147,22 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
 
     let mut result = ThreadResult::default();
     let mut scratch = [0u8; 2048];
-    let mut now: u64 = 0;
-    let mut next_telemetry = TELEMETRY_INTERVAL_CYCLES as u64;
-    let mut next_cms_decay = CMS_DECAY_INTERVAL_CYCLES as u64;
+    let mut now = Ticks::ZERO;
+    let mut next_telemetry = now + TELEMETRY_INTERVAL;
+    let mut next_cms_decay = now + CMS_DECAY_INTERVAL;
 
     let started = Instant::now();
     let packets = usize::try_from(config.packets_per_thread).unwrap_or(usize::MAX);
     for frame in corpus.iter().cycle().take(packets) {
         now += step;
         if now >= next_telemetry {
-            engine.prune_flows(now, FLOW_TIMEOUT_CYCLES as u64);
+            engine.prune_flows(now, FLOW_TIMEOUT);
             engine.start_interval();
-            next_telemetry += TELEMETRY_INTERVAL_CYCLES as u64;
+            next_telemetry += TELEMETRY_INTERVAL;
         }
         if now >= next_cms_decay {
             engine.end_detection_interval(&mut NullSink);
-            next_cms_decay += CMS_DECAY_INTERVAL_CYCLES as u64;
+            next_cms_decay += CMS_DECAY_INTERVAL;
         }
         let buf = &mut scratch[..frame.len()];
         buf.copy_from_slice(frame);

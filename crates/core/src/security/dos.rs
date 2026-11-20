@@ -8,10 +8,11 @@
 //!
 //! [`PenaltyBox`](crate::security::dos::PenaltyBox) and
 //! [`TokenBucket`](crate::security::dos::TokenBucket) are time-source
-//! agnostic: callers pass a `now` value (cycles on the RISC-V unikernel,
-//! nanoseconds on the Linux daemon) alongside the duration/cost constants,
-//! which must share the same unit.
+//! agnostic: callers pass `now` as [`Ticks`](crate::time::Ticks) (cycles
+//! on the RISC-V unikernel, nanoseconds on the Linux daemon) with durations
+//! and costs as [`TickSpan`](crate::time::TickSpan)s in the same unit.
 
+use crate::time::{TickSpan, Ticks};
 use core::net::Ipv4Addr;
 
 /// An IPv4 network: an address with only its first `len` bits kept.
@@ -80,13 +81,13 @@ struct BanEntry {
     /// Banned network; a single address is a /32.
     prefix: Ipv4Prefix,
     /// Time-source value at which the ban expires.
-    expiry: u64,
+    expiry: Ticks,
     source: BanSource,
 }
 
 impl BanEntry {
     /// A ban is active until, but not including, its expiry time.
-    const fn is_active(&self, now: u64) -> bool {
+    fn is_active(&self, now: Ticks) -> bool {
         self.expiry > now
     }
 }
@@ -127,7 +128,7 @@ impl PenaltyBox {
         Self {
             entries: [BanEntry {
                 prefix: Ipv4Prefix::host(Ipv4Addr::UNSPECIFIED),
-                expiry: 0,
+                expiry: Ticks::ZERO,
                 source: BanSource::Detector,
             }; Self::SLOTS],
             next_evict: 0,
@@ -135,14 +136,14 @@ impl PenaltyBox {
     }
 
     /// Bans a single address until `now + duration` on a detector's behalf.
-    pub fn ban(&mut self, ip: Ipv4Addr, duration: u64, now: u64) {
+    pub fn ban(&mut self, ip: Ipv4Addr, duration: TickSpan, now: Ticks) {
         self.ban_prefix(Ipv4Prefix::host(ip), duration, now);
     }
 
     /// Bans every address in `prefix` until `now + duration` on a
     /// detector's behalf. If every slot holds an operator ban, the ban is
     /// not recorded.
-    pub fn ban_prefix(&mut self, prefix: Ipv4Prefix, duration: u64, now: u64) {
+    pub fn ban_prefix(&mut self, prefix: Ipv4Prefix, duration: TickSpan, now: Ticks) {
         let _ = self.store(prefix, BanSource::Detector, duration, now);
     }
 
@@ -154,8 +155,8 @@ impl PenaltyBox {
     pub fn ban_by_operator(
         &mut self,
         ip: Ipv4Addr,
-        duration: u64,
-        now: u64,
+        duration: TickSpan,
+        now: Ticks,
     ) -> Result<(), PenaltyBoxFull> {
         let prefix = Ipv4Prefix::host(ip);
         self.store(prefix, BanSource::Operator, duration, now)
@@ -168,7 +169,13 @@ impl PenaltyBox {
     /// Refreshes the prefix's existing ban, keeping the later expiry and the
     /// operator's claim; otherwise takes a slot whose ban has ended, and only
     /// when every slot is active evicts a detector ban in round-robin order.
-    fn store(&mut self, prefix: Ipv4Prefix, source: BanSource, duration: u64, now: u64) -> bool {
+    fn store(
+        &mut self,
+        prefix: Ipv4Prefix,
+        source: BanSource,
+        duration: TickSpan,
+        now: Ticks,
+    ) -> bool {
         let expiry = now.saturating_add(duration);
         if let Some(entry) = self
             .entries
@@ -207,14 +214,14 @@ impl PenaltyBox {
     pub fn unban(&mut self, ip: Ipv4Addr) {
         for entry in &mut self.entries {
             if entry.prefix.contains(ip) {
-                entry.expiry = 0;
+                entry.expiry = Ticks::ZERO;
             }
         }
     }
 
     /// Whether an active ban covers `ip`: one whose expiry is later
     /// than `now`.
-    pub fn is_banned(&self, ip: Ipv4Addr, now: u64) -> bool {
+    pub fn is_banned(&self, ip: Ipv4Addr, now: Ticks) -> bool {
         self.entries
             .iter()
             .any(|e| e.is_active(now) && e.prefix.contains(ip))
@@ -233,18 +240,18 @@ pub struct TokenBucket {
     /// Maximum number of tokens (bucket capacity).
     capacity: u64,
     /// Time-source value at the last refill.
-    last_time: u64,
-    /// Cost (in time-source units) per token refilled.
-    cost: u64,
+    last_time: Ticks,
+    /// Time per token refilled.
+    cost: TickSpan,
 }
 
 impl TokenBucket {
     /// Creates a new token bucket with the specified capacity and refill cost.
-    pub const fn new(capacity: u64, cost: u64) -> Self {
+    pub const fn new(capacity: u64, cost: TickSpan) -> Self {
         Self {
             tokens: capacity,
             capacity,
-            last_time: 0,
+            last_time: Ticks::ZERO,
             cost,
         }
     }
@@ -253,9 +260,9 @@ impl TokenBucket {
     ///
     /// Refills tokens based on time-source units elapsed since the last
     /// call, then consumes one token if available.
-    pub fn allow(&mut self, now: u64) -> bool {
-        let delta = now.wrapping_sub(self.last_time);
-        if self.cost > 0 && delta >= self.cost {
+    pub fn allow(&mut self, now: Ticks) -> bool {
+        let delta = now.since(self.last_time);
+        if self.cost > TickSpan::ZERO && delta >= self.cost {
             let refill = delta / self.cost;
             self.tokens = self.tokens.saturating_add(refill).min(self.capacity);
             // Carry the time already spent toward the next token, unless the
@@ -263,7 +270,7 @@ impl TokenBucket {
             self.last_time = if self.tokens == self.capacity {
                 now
             } else {
-                self.last_time.wrapping_add(refill * self.cost)
+                self.last_time.wrapping_add(self.cost * refill)
             };
         }
         if self.tokens > 0 {
@@ -277,7 +284,7 @@ impl TokenBucket {
 
 #[cfg(test)]
 mod prefix_tests {
-    use super::{Ipv4Addr, Ipv4Prefix, PenaltyBox};
+    use super::{Ipv4Addr, Ipv4Prefix, PenaltyBox, TickSpan, Ticks};
 
     #[test]
     fn prefix_keeps_only_the_network_bits() {
@@ -304,12 +311,12 @@ mod prefix_tests {
 
         pbox.ban_prefix(
             Ipv4Prefix::new(Ipv4Addr::new(10, 1, 2, 0), 24).unwrap(),
-            1_000,
-            0,
+            TickSpan::new(1_000),
+            Ticks::new(0),
         );
 
-        assert!(pbox.is_banned(Ipv4Addr::new(10, 1, 2, 77), 1));
-        assert!(!pbox.is_banned(Ipv4Addr::new(10, 1, 3, 77), 1));
+        assert!(pbox.is_banned(Ipv4Addr::new(10, 1, 2, 77), Ticks::new(1)));
+        assert!(!pbox.is_banned(Ipv4Addr::new(10, 1, 3, 77), Ticks::new(1)));
     }
 
     #[test]
@@ -317,65 +324,68 @@ mod prefix_tests {
         let mut pbox = PenaltyBox::new();
         pbox.ban_prefix(
             Ipv4Prefix::new(Ipv4Addr::new(10, 1, 0, 0), 16).unwrap(),
-            1_000,
-            0,
+            TickSpan::new(1_000),
+            Ticks::new(0),
         );
 
         pbox.unban(Ipv4Addr::new(10, 1, 200, 3));
 
-        assert!(!pbox.is_banned(Ipv4Addr::new(10, 1, 9, 9), 1));
+        assert!(!pbox.is_banned(Ipv4Addr::new(10, 1, 9, 9), Ticks::new(1)));
     }
 }
 
 #[cfg(test)]
 mod token_bucket_tests {
-    use super::TokenBucket;
+    use super::{TickSpan, Ticks, TokenBucket};
 
     #[test]
     fn starts_full() {
-        let mut b = TokenBucket::new(5, 10);
+        let mut b = TokenBucket::new(5, TickSpan::new(10));
         for _ in 0..5 {
-            assert!(b.allow(0));
+            assert!(b.allow(Ticks::new(0)));
         }
-        assert!(!b.allow(0), "6th packet at same tick must be denied");
+        assert!(
+            !b.allow(Ticks::new(0)),
+            "6th packet at same tick must be denied"
+        );
     }
 
     #[test]
     fn refills_over_time() {
-        let mut b = TokenBucket::new(5, 10);
+        let mut b = TokenBucket::new(5, TickSpan::new(10));
         for _ in 0..5 {
-            assert!(b.allow(0));
+            assert!(b.allow(Ticks::new(0)));
         }
         // 30 ticks elapsed → delta 30, cost 10 → 3 new tokens.
-        assert!(b.allow(30));
-        assert!(b.allow(30));
-        assert!(b.allow(30));
-        assert!(!b.allow(30));
+        assert!(b.allow(Ticks::new(30)));
+        assert!(b.allow(Ticks::new(30)));
+        assert!(b.allow(Ticks::new(30)));
+        assert!(!b.allow(Ticks::new(30)));
     }
 
     #[test]
     fn refill_saturates_at_capacity() {
-        let mut b = TokenBucket::new(5, 10);
+        let mut b = TokenBucket::new(5, TickSpan::new(10));
         for _ in 0..5 {
-            assert!(b.allow(0));
+            assert!(b.allow(Ticks::new(0)));
         }
         // Huge elapsed time — refill would be billions, must clamp to capacity.
-        assert!(b.allow(u64::MAX / 2));
+        assert!(b.allow(Ticks::new(u64::MAX / 2)));
         for _ in 0..4 {
-            assert!(b.allow(u64::MAX / 2));
+            assert!(b.allow(Ticks::new(u64::MAX / 2)));
         }
-        assert!(!b.allow(u64::MAX / 2));
+        assert!(!b.allow(Ticks::new(u64::MAX / 2)));
     }
 
     #[test]
     fn cost_zero_never_refills() {
         // Guard against division by zero. The bucket is usable up to
         // its starting capacity and then permanently empty.
-        let mut b = TokenBucket::new(3, 0);
-        assert!(b.allow(0));
-        assert!(b.allow(100));
-        assert!(b.allow(u64::MAX));
-        assert!(!b.allow(u64::MAX));
+        let mut b = TokenBucket::new(3, TickSpan::new(0));
+        assert!(b.allow(Ticks::new(0)));
+        assert!(b.allow(Ticks::new(100)));
+        assert!(b.allow(Ticks::new(u64::MAX)));
+        assert!(!b.allow(Ticks::new(u64::MAX)));
     }
 
     #[test]
@@ -383,22 +393,22 @@ mod token_bucket_tests {
         // `now.wrapping_sub(last_time)` must tolerate the clock source
         // rolling. Seed last_time near u64::MAX, then call with a small
         // `now` — delta wraps to a positive refill amount, not to zero.
-        let mut b = TokenBucket::new(1, 10);
-        assert!(b.allow(u64::MAX - 5));
-        assert!(!b.allow(u64::MAX - 5));
+        let mut b = TokenBucket::new(1, TickSpan::new(10));
+        assert!(b.allow(Ticks::new(u64::MAX - 5)));
+        assert!(!b.allow(Ticks::new(u64::MAX - 5)));
         // 10 ticks after u64::MAX - 5 = wraps to 4.
-        assert!(b.allow(4));
+        assert!(b.allow(Ticks::new(4)));
     }
 
     #[test]
     fn refill_keeps_progress_toward_the_next_token() {
         // Polled every 15 ticks at cost 10, the bucket earns 1.5 tokens
         // per poll; over 3000 ticks that is 300 tokens plus capacity.
-        let mut b = TokenBucket::new(10, 10);
+        let mut b = TokenBucket::new(10, TickSpan::new(10));
         let mut allowed = 0;
         for poll in 0..200u64 {
             for _ in 0..3 {
-                if b.allow(poll * 15) {
+                if b.allow(Ticks::new(poll * 15)) {
                     allowed += 1;
                 }
             }
@@ -411,11 +421,11 @@ mod token_bucket_tests {
 
     #[test]
     fn denies_when_drained_without_elapsed_time() {
-        let mut b = TokenBucket::new(2, 100);
-        assert!(b.allow(50));
-        assert!(b.allow(50));
+        let mut b = TokenBucket::new(2, TickSpan::new(100));
+        assert!(b.allow(Ticks::new(50)));
+        assert!(b.allow(Ticks::new(50)));
         // 50 ticks later — delta 0 from last_time (which is still 0
         // because refill never ran), cost 100, so no refill yet.
-        assert!(!b.allow(50));
+        assert!(!b.allow(Ticks::new(50)));
     }
 }

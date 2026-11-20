@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sec_core::config::{
-    CMS_DECAY_INTERVAL_CYCLES, HEAVY_HITTER_THRESHOLD, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
+    CMS_DECAY_INTERVAL, HEAVY_HITTER_THRESHOLD, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
 };
 use sec_core::security::dos::Ipv4Prefix;
 use sec_core::security::hash::SketchKey;
@@ -139,7 +139,7 @@ fn cms_detector_vs_load(path: &Path) -> Result<()> {
     const LOADS: [f64; 9] = [
         1_000.0, 2_000.0, 5_000.0, 10_000.0, 20_000.0, 50_000.0, 100_000.0, 200_000.0, 500_000.0,
     ];
-    let interval_s = CMS_DECAY_INTERVAL_CYCLES as f64 / 1e9;
+    let interval_s = CMS_DECAY_INTERVAL.get() as f64 / 1e9;
     let intervals = (f64::from(SECONDS) / interval_s).round() as u32;
 
     let mut rows = Vec::new();
@@ -416,7 +416,7 @@ fn subnet_floods_vs_load(path: &Path) -> Result<()> {
     const LOADS: [f64; 8] = [
         1_000.0, 5_000.0, 10_000.0, 20_000.0, 50_000.0, 100_000.0, 200_000.0, 500_000.0,
     ];
-    let interval_s = CMS_DECAY_INTERVAL_CYCLES as f64 / 1e9;
+    let interval_s = CMS_DECAY_INTERVAL.get() as f64 / 1e9;
     let intervals = (f64::from(SECONDS) / interval_s).round() as u32;
 
     let configs: Vec<(&str, MakeSketch, MakeSketch)> = vec![

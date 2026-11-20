@@ -11,6 +11,7 @@ use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::hash::{MgmtKey, SketchKey};
+use sec_core::time::Ticks;
 
 /// Largest Ethernet frame (without FCS) the VirtIO TX path accepts.
 const MAX_FRAME: usize = 1526;
@@ -59,7 +60,7 @@ fuzz_target!(|data: &[u8]| {
     let before = counters(engine.interval_stats());
     let mut frame = data.to_vec();
 
-    let verdict = engine.process(&mut frame, 1, &mut CheckedSink);
+    let verdict = engine.process(&mut frame, Ticks::new(1), &mut CheckedSink);
 
     let after = counters(engine.interval_stats());
     let changed: Vec<usize> = (0..before.len()).filter(|&i| after[i] != before[i]).collect();
