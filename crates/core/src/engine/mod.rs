@@ -69,6 +69,33 @@ impl IntervalStats {
     pub const fn drops(&self) -> u64 {
         self.ddos + self.firewall + self.malware + self.bpf + self.heuristic
     }
+
+    /// Counts a drop under the counter its reason reports to. Detector
+    /// alerts and unreadable packets have no counter of their own.
+    const fn count_drop(&mut self, reason: AlertReason) {
+        match reason {
+            AlertReason::Ddos => self.ddos += 1,
+            AlertReason::Firewall => self.firewall += 1,
+            AlertReason::Malware => self.malware += 1,
+            AlertReason::Bpf | AlertReason::BpfTimeout => self.bpf += 1,
+            AlertReason::Heuristic => self.heuristic += 1,
+            AlertReason::Flow
+            | AlertReason::Pass
+            | AlertReason::MgmtAuthFail
+            | AlertReason::SourceSurge
+            | AlertReason::SubnetFlood
+            | AlertReason::PortScan
+            | AlertReason::MalformedIp
+            | AlertReason::IpFragment => {}
+        }
+    }
+}
+
+/// Whether a packet's source may go on through the pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screening {
+    Admit,
+    Drop,
 }
 
 /// What the engine did with one frame.
@@ -270,100 +297,136 @@ impl<
             Err(rejected) => return self.drop_rejected_ipv4(&rejected, packet_len, now, sink),
         };
         let meta = alert_meta(&frame, packet_len);
-        let mut drop = false;
         if let Frame::Ipv4(ip) = &frame {
             if let Some(envelope) = mgmt_envelope(ip) {
                 return self.handle_mgmt(envelope, &meta, now, sink);
             }
-
-            let source_hash = self.source_key.hash(&meta.src_ip.octets());
-            let _ = self.sources.insert_hash(source_hash);
-            if self.penalty_box.is_banned(meta.src_ip, now) {
-                drop = true;
-            } else if self.source_rates.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
-                self.penalty_box.ban(meta.src_ip, IP_BAN_DURATION, now);
-                drop = true;
-            } else if let Some(subnet) = self.count_subnets(meta.src_ip) {
-                self.penalty_box
-                    .ban_prefix(subnet.prefix, IP_BAN_DURATION, now);
-                let alert = AlertMeta {
-                    src_ip: subnet.prefix.network(),
-                    prefix_len: subnet.prefix.prefix_len(),
-                    value: u32::from(subnet.rate),
-                    ..meta
-                };
-                self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
-                drop = true;
-            } else if let Some(scan) = self.count_connection_attempt(ip) {
-                self.penalty_box.ban(scan.source, IP_BAN_DURATION, now);
-                let alert = AlertMeta {
-                    value: scan.distinct_ports,
-                    ..meta
-                };
-                self.detector_alert(&alert, AlertReason::PortScan, sink);
-                drop = true;
+            if self.screen_source(ip, &meta, now, sink) == Screening::Drop {
+                return self.drop_for_ddos(&meta, now, sink);
             }
         }
-        let dst_port = meta.dst_port;
-
-        if drop || !self.limiter.allow(now) {
-            self.stats.ddos += 1;
-            if should_emit_ddos_alert(self.stats.ddos, DDOS_ALERT_SAMPLE_RATE) {
-                self.alert(&meta, AlertReason::Ddos, now, sink);
-            }
-            return Verdict::Dropped(AlertReason::Ddos);
+        if !self.limiter.allow(now) {
+            return self.drop_for_ddos(&meta, now, sink);
         }
-
         if let Frame::Ipv4(ip) = &frame {
             self.track_flow(&meta, ip.bytes().len(), now, sink);
         }
+        if let Some(reason) = self.filter(&frame, meta.dst_port) {
+            return self.drop_counted(&meta, reason, now, sink);
+        }
+        match stack::respond(frame, sink, &self.syn_secret) {
+            Some(payload) => self.inspect_payload(payload, &meta, now, sink),
+            None => Verdict::Consumed,
+        }
+    }
 
-        if let Frame::Ipv4(ip) = &frame
+    /// Feeds the source to the per-source and per-subnet detectors and the
+    /// port-scan detector, banning it or its subnet if one trips, and says
+    /// whether the packet goes on.
+    fn screen_source<S: PacketSink>(
+        &mut self,
+        ip: &Ipv4Packet<'_>,
+        meta: &AlertMeta,
+        now: Ticks,
+        sink: &mut S,
+    ) -> Screening {
+        let source_hash = self.source_key.hash(&ip.src.octets());
+        let _ = self.sources.insert_hash(source_hash);
+        if self.penalty_box.is_banned(ip.src, now) {
+            return Screening::Drop;
+        }
+        if self.source_rates.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
+            self.penalty_box.ban(ip.src, IP_BAN_DURATION, now);
+            return Screening::Drop;
+        }
+        if let Some(subnet) = self.count_subnets(ip.src) {
+            self.ban_subnet(subnet, meta, now, sink);
+            return Screening::Drop;
+        }
+        if let Some(scan) = self.count_connection_attempt(ip) {
+            self.ban_scanner(scan, meta, now, sink);
+            return Screening::Drop;
+        }
+        Screening::Admit
+    }
+
+    fn ban_subnet<S: PacketSink>(
+        &mut self,
+        subnet: HeavySubnet,
+        meta: &AlertMeta,
+        now: Ticks,
+        sink: &mut S,
+    ) {
+        self.penalty_box
+            .ban_prefix(subnet.prefix, IP_BAN_DURATION, now);
+        let alert = AlertMeta {
+            src_ip: subnet.prefix.network(),
+            prefix_len: subnet.prefix.prefix_len(),
+            value: u32::from(subnet.rate),
+            ..*meta
+        };
+        self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
+    }
+
+    fn ban_scanner<S: PacketSink>(
+        &mut self,
+        scan: scan::ConfirmedScan,
+        meta: &AlertMeta,
+        now: Ticks,
+        sink: &mut S,
+    ) {
+        self.penalty_box.ban(scan.source, IP_BAN_DURATION, now);
+        let alert = AlertMeta {
+            value: scan.distinct_ports,
+            ..*meta
+        };
+        self.detector_alert(&alert, AlertReason::PortScan, sink);
+    }
+
+    /// Why the header checks drop the frame, if they do: a TCP scan probe,
+    /// the BPF program, or a blocked destination port.
+    fn filter(&self, frame: &Frame<'_>, dst_port: u16) -> Option<AlertReason> {
+        if let Frame::Ipv4(ip) = frame
             && let Transport::Tcp(tcp) = ip.transport
             && heuristic::is_scan_probe(tcp.flags)
         {
-            self.stats.heuristic += 1;
-            return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
+            return Some(AlertReason::Heuristic);
         }
-
-        if let Some(program) = &self.bpf {
-            let drop_reason = match vm::execute(program, frame.bytes()) {
-                Ok(VmAction::Pass) => None,
-                Ok(VmAction::Drop) => Some(AlertReason::Bpf),
-                Err(vm::Timeout) => Some(AlertReason::BpfTimeout),
-            };
-            if let Some(reason) = drop_reason {
-                self.stats.bpf += 1;
-                return self.drop_with_alert(&meta, reason, now, sink);
-            }
+        if let Some(reason) = self.run_bpf(frame.bytes()) {
+            return Some(reason);
         }
+        (dst_port != 0 && self.firewall.is_blocked(dst_port)).then_some(AlertReason::Firewall)
+    }
 
-        if dst_port != 0 && self.firewall.is_blocked(dst_port) {
-            self.stats.firewall += 1;
-            return self.drop_with_alert(&meta, AlertReason::Firewall, now, sink);
+    /// Why the installed BPF program drops `frame`, if one is installed and
+    /// does.
+    fn run_bpf(&self, frame: &[u8]) -> Option<AlertReason> {
+        match vm::execute(self.bpf.as_ref()?, frame) {
+            Ok(VmAction::Pass) => None,
+            Ok(VmAction::Drop) => Some(AlertReason::Bpf),
+            Err(vm::Timeout) => Some(AlertReason::BpfTimeout),
         }
+    }
 
-        let Some(payload) = stack::respond(frame, sink, &self.syn_secret) else {
-            return Verdict::Consumed;
-        };
-
+    /// Checks the payload the stack handed on for NOP sleds and signatures.
+    fn inspect_payload<S: PacketSink>(
+        &mut self,
+        payload: &[u8],
+        meta: &AlertMeta,
+        now: Ticks,
+        sink: &mut S,
+    ) -> Verdict {
         if heuristic::has_nop_sled(payload) {
-            self.stats.heuristic += 1;
-            return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
+            return self.drop_counted(meta, AlertReason::Heuristic, now, sink);
         }
-
         if payload.is_empty() {
             return Verdict::Consumed;
         }
-
         if self.signatures.scan(payload) || self.runtime_signatures.check(payload) {
-            self.stats.malware += 1;
-            self.alert(&meta, AlertReason::Malware, now, sink);
-            Verdict::Dropped(AlertReason::Malware)
-        } else {
-            self.stats.passed += 1;
-            Verdict::Passed
+            return self.drop_counted(meta, AlertReason::Malware, now, sink);
         }
+        self.stats.passed += 1;
+        Verdict::Passed
     }
 
     /// Authenticates and applies a datagram addressed to the mgmt port.
@@ -472,6 +535,33 @@ impl<
             Rejection::Fragment => AlertReason::IpFragment,
         };
         self.drop_with_alert(&alert, reason, now, sink)
+    }
+
+    /// Drops for the denial-of-service defences, alerting on a sample of such
+    /// drops.
+    fn drop_for_ddos<S: PacketSink>(
+        &mut self,
+        meta: &AlertMeta,
+        now: Ticks,
+        sink: &mut S,
+    ) -> Verdict {
+        self.stats.count_drop(AlertReason::Ddos);
+        if should_emit_ddos_alert(self.stats.ddos, DDOS_ALERT_SAMPLE_RATE) {
+            self.alert(meta, AlertReason::Ddos, now, sink);
+        }
+        Verdict::Dropped(AlertReason::Ddos)
+    }
+
+    /// Drops with an alert and counts the drop under `reason`'s counter.
+    fn drop_counted<S: PacketSink>(
+        &mut self,
+        meta: &AlertMeta,
+        reason: AlertReason,
+        now: Ticks,
+        sink: &mut S,
+    ) -> Verdict {
+        self.stats.count_drop(reason);
+        self.drop_with_alert(meta, reason, now, sink)
     }
 
     fn drop_with_alert<S: PacketSink>(
