@@ -1,16 +1,14 @@
-//! Network protocol stack for packet processing.
+//! The host's replies to ARP, ICMP echo and TCP connection requests.
 //!
-//! Handles Ethernet, IPv4, ARP, ICMP, and TCP protocols. Processes
-//! incoming packets, generates responses where appropriate, and
-//! extracts payload data for security inspection.
+//! Each reply is built in place from its request. Anything not answered
+//! has its payload handed on for inspection.
 
 use core::net::Ipv4Addr;
 
 use crate::config::{IP_ADDR, MAC_ADDR};
 use crate::net::PacketSink;
-use crate::net::constants::{
-    ArpOpcode, EthernetType, IcmpType, IpProtocol, arp, ethernet, ipv4, tcp, udp,
-};
+use crate::net::constants::{ArpOpcode, IcmpType, IpProtocol, arp, ethernet, icmp, ipv4, tcp};
+use crate::net::frame::{self, Frame, Ipv4Packet, Layout, Ports, TcpHeader, Transport};
 use crate::net::tcp::TcpFlags;
 use crate::security::hash::secret_key;
 
@@ -40,293 +38,147 @@ impl SynCookieSecret {
     }
 }
 
-// A frame long enough to have a header holds its EtherType.
-const _: () = assert!(ethernet::MIN_FRAME_SIZE >= ethernet::TYPE_OFFSET + ethernet::TYPE_SIZE);
-
-/// Processes an incoming network packet.
+/// Answers what `packet` asks of this host and returns the payload to
+/// inspect, or `None` when the stack answered it or it carries none.
 ///
-/// Handles various protocol types:
-/// - ARP: Generates ARP replies for address resolution
-/// - ICMP: Responds to ping requests
-/// - TCP SYN: Handles with SYN cookies (no payload returned)
-/// - TCP data: Returns the TCP application payload for inspection
-/// - Other IPv4: Extracts payload for security inspection
-///
-/// The packet buffer may be modified in-place for generating responses,
-/// which go out through `sink`: the kernel's NIC or the daemon's
-/// `AF_PACKET` socket. Returns the payload to inspect, or `None` when the
-/// packet was answered (ARP, echo, SYN-ACK) or is invalid.
+/// ARP requests, ICMP echo requests and TCP connection requests (answered
+/// with a SYN cookie) are turned into replies in place and sent through
+/// `sink`: the kernel's NIC or the daemon's `AF_PACKET` socket.
 pub fn process_packet<'a, S: PacketSink>(
     packet: &'a mut [u8],
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) -> Option<&'a [u8]> {
-    if packet.len() < ethernet::MIN_FRAME_SIZE {
-        return None;
-    }
-    let eth_type = u16::from_be_bytes([
-        packet[ethernet::TYPE_OFFSET],
-        packet[ethernet::TYPE_OFFSET + 1],
-    ]);
-    match EthernetType::from_u16(eth_type) {
-        Some(EthernetType::Arp) => {
-            handle_arp(packet, sink);
-            None
-        }
-        Some(EthernetType::Ipv4) => handle_ipv4(packet, sink, syn_secret),
-        _ => None,
-    }
+    respond(frame::parse(packet).ok()?, sink, syn_secret)
 }
 
-/// Handles ARP (Address Resolution Protocol) packets.
-///
-/// Responds to ARP requests for the kernel's IP address by generating
-/// an ARP reply. The reply is constructed in-place by modifying the
-/// original packet buffer and then sending it.
-fn handle_arp<S: PacketSink>(packet: &mut [u8], sink: &mut S) {
-    if packet.len() < arp::MIN_PACKET_SIZE {
-        return;
-    }
-    // Both fields are 2 bytes; checking only the high bytes would also
-    // answer non-Ethernet ARP.
-    let hw_type =
-        u16::from_be_bytes([packet[arp::HW_TYPE_OFFSET], packet[arp::HW_TYPE_OFFSET + 1]]);
-    let opcode = u16::from_be_bytes([packet[arp::OPCODE_OFFSET], packet[arp::OPCODE_OFFSET + 1]]);
-    if hw_type != 1 || ArpOpcode::from_u16(opcode) != Some(ArpOpcode::Request) {
-        return;
-    }
-    if packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR.octets()
-    {
-        return;
-    }
-
-    let old_src_mac = [
-        packet[ethernet::SRC_MAC_OFFSET],
-        packet[ethernet::SRC_MAC_OFFSET + 1],
-        packet[ethernet::SRC_MAC_OFFSET + 2],
-        packet[ethernet::SRC_MAC_OFFSET + 3],
-        packet[ethernet::SRC_MAC_OFFSET + 4],
-        packet[ethernet::SRC_MAC_OFFSET + 5],
-    ];
-    packet[0..ethernet::MAC_ADDR_SIZE].copy_from_slice(&old_src_mac);
-    packet[ethernet::SRC_MAC_OFFSET..ethernet::SRC_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
-        .copy_from_slice(&MAC_ADDR);
-
-    // Opcode is big-endian 2 bytes; Reply = 0x0002.
-    packet[arp::OPCODE_OFFSET] = 0;
-    packet[arp::OPCODE_OFFSET + 1] = ArpOpcode::Reply as u8;
-
-    let old_sender_ip = [
-        packet[arp::SENDER_IP_OFFSET],
-        packet[arp::SENDER_IP_OFFSET + 1],
-        packet[arp::SENDER_IP_OFFSET + 2],
-        packet[arp::SENDER_IP_OFFSET + 3],
-    ];
-
-    packet[arp::TARGET_MAC_OFFSET..arp::TARGET_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
-        .copy_from_slice(&old_src_mac);
-    packet[arp::TARGET_IP_OFFSET..arp::TARGET_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-        .copy_from_slice(&old_sender_ip);
-
-    packet[arp::SENDER_MAC_OFFSET..arp::SENDER_MAC_OFFSET + ethernet::MAC_ADDR_SIZE]
-        .copy_from_slice(&MAC_ADDR);
-    packet[arp::SENDER_IP_OFFSET..arp::SENDER_IP_OFFSET + ipv4::IP_ADDR_SIZE]
-        .copy_from_slice(&IP_ADDR.octets());
-
-    sink.send(&packet[0..arp::MIN_PACKET_SIZE]);
-}
-
-/// Handles IPv4 packets.
-///
-/// Processes ICMP echo requests (ping) and TCP SYN packets, generating
-/// appropriate responses. For other protocols, returns the payload for
-/// security inspection; `None` when the packet was answered or is invalid.
-fn handle_ipv4<'a, S: PacketSink>(
-    packet: &'a mut [u8],
+/// [`process_packet`] for a frame already parsed.
+pub fn respond<'a, S: PacketSink>(
+    frame: Frame<'a>,
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) -> Option<&'a [u8]> {
-    if packet.len() < ipv4::HEADER_OFFSET + ipv4::MIN_HEADER_SIZE {
-        return None;
+    match frame {
+        Frame::Arp(frame) => {
+            answer_arp(frame, sink);
+            None
+        }
+        Frame::Ipv4(packet) => respond_ipv4(packet, sink, syn_secret),
+        Frame::Other(_) => None,
     }
-    // IHL < 5 would place the L4 header inside the IP header and let the
-    // firewall read ports from the wrong bytes.
-    let version_ihl = packet[ipv4::VERSION_IHL_OFFSET];
-    if (version_ihl >> 4) != 4 {
-        return None;
-    }
-    let ihl_words = version_ihl & ipv4::IHL_MASK;
-    if ihl_words < 5 {
-        return None;
-    }
-    let ihl = ihl_words * 4;
-    let protocol = packet[ipv4::PROTOCOL_OFFSET];
+}
 
-    if packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE] != IP_ADDR.octets() {
+fn respond_ipv4<'a, S: PacketSink>(
+    packet: Ipv4Packet<'a>,
+    sink: &mut S,
+    syn_secret: &SynCookieSecret,
+) -> Option<&'a [u8]> {
+    if packet.dst != IP_ADDR {
         return None;
     }
-    let ip_end = ipv4_end(packet, usize::from(ihl))?;
-
-    if IpProtocol::from_u8(protocol) == Some(IpProtocol::Icmp) {
-        // Type, code and checksum are rewritten in place.
-        const ICMP_HEADER_MIN: usize = 4;
-        let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        if offset + ICMP_HEADER_MIN <= ip_end
-            && IcmpType::from_u8(packet[offset]) == Some(IcmpType::EchoRequest)
+    match packet.transport {
+        Transport::Icmp { message_type }
+            if IcmpType::from_u8(message_type) == Some(IcmpType::EchoRequest) =>
         {
-            swap_addresses(packet);
-            packet[offset] = IcmpType::EchoReply as u8;
-            packet[offset + 2..offset + 4].copy_from_slice(&[0, 0]);
-            let csum = checksum(&packet[offset..ip_end]);
-            packet[offset + 2..offset + 4].copy_from_slice(&csum.to_be_bytes());
-            finish_ipv4_header(packet, usize::from(ihl), ip_end - ipv4::HEADER_OFFSET);
-            sink.send(&packet[..ip_end]);
-            return None;
+            answer_echo_request(packet, sink);
+            None
         }
+        Transport::Tcp(tcp) if tcp.flags.is_connection_request() => {
+            answer_connection_request(packet, tcp, sink, syn_secret);
+            None
+        }
+        _ => Some(packet.into_payload()),
     }
-
-    if IpProtocol::from_u8(protocol) == Some(IpProtocol::Tcp) {
-        let offset = ipv4::HEADER_OFFSET + ihl as usize;
-        if offset + tcp::MIN_HEADER_SIZE > ip_end {
-            return None;
-        }
-
-        // Parse flags and the TCP header length *before* any mutation
-        // so we can decide whether to emit a SYN-ACK (which rewrites
-        // `packet` in place) or hand the TCP application payload back
-        // to the caller for DPI / firewall inspection.
-        let flags = TcpFlags::new(packet[offset + tcp::FLAGS_OFFSET]);
-        let tcp_header_len = usize::from(packet[offset + tcp::DATA_OFFSET_OFFSET] >> 4) * 4;
-        // Same shape as the IHL check above: a data-offset under 5
-        // (= 20 bytes) lets the "payload" returned to DPI / firewall
-        // start inside the TCP header, which makes port-based rules
-        // trivially evadable.
-        if tcp_header_len < tcp::MIN_HEADER_SIZE {
-            return None;
-        }
-
-        if flags.is_connection_request() {
-            let src_ip = address_at(packet, ipv4::SRC_IP_OFFSET);
-            let dst_ip = address_at(packet, ipv4::DST_IP_OFFSET);
-            answer_connection_request(packet, offset, src_ip, dst_ip, sink, syn_secret);
-            return None;
-        }
-
-        return packet.get(offset + tcp_header_len..ip_end);
-    }
-
-    let offset = ipv4::HEADER_OFFSET + ihl as usize;
-    if IpProtocol::from_u8(protocol) == Some(IpProtocol::Udp) {
-        return udp_payload(packet, offset, ip_end);
-    }
-    packet.get(offset..ip_end)
 }
 
-/// The payload of the UDP datagram whose header is at `offset`, bounded by
-/// both its length field and the end of the IP datagram.
-fn udp_payload(packet: &[u8], offset: usize, ip_end: usize) -> Option<&[u8]> {
-    let length = packet.get(offset + udp::LENGTH_OFFSET..offset + udp::LENGTH_OFFSET + 2)?;
-    let udp_end = offset + usize::from(u16::from_be_bytes([length[0], length[1]]));
-    packet.get(offset + udp::HEADER_SIZE..udp_end.min(ip_end))
+/// Replies to an ARP request for this host's address.
+fn answer_arp<S: PacketSink>(frame: &mut [u8], sink: &mut S) {
+    const MAC: usize = ethernet::MAC_ADDR_SIZE;
+    const IP: usize = ipv4::IP_ADDR_SIZE;
+    let Some(packet) = frame.first_chunk_mut::<{ arp::MIN_PACKET_SIZE }>() else {
+        return;
+    };
+    if !is_request_for_us(packet) {
+        return;
+    }
+    let mut peer_mac = [0u8; MAC];
+    peer_mac.copy_from_slice(&packet[ethernet::SRC_MAC_OFFSET..][..MAC]);
+    let mut peer_ip = [0u8; IP];
+    peer_ip.copy_from_slice(&packet[arp::SENDER_IP_OFFSET..][..IP]);
+
+    packet[..MAC].copy_from_slice(&peer_mac);
+    packet[ethernet::SRC_MAC_OFFSET..][..MAC].copy_from_slice(&MAC_ADDR);
+    packet[arp::OPCODE_OFFSET..][..2].copy_from_slice(&(ArpOpcode::Reply as u16).to_be_bytes());
+    packet[arp::SENDER_MAC_OFFSET..][..MAC].copy_from_slice(&MAC_ADDR);
+    packet[arp::SENDER_IP_OFFSET..][..IP].copy_from_slice(&IP_ADDR.octets());
+    packet[arp::TARGET_MAC_OFFSET..][..MAC].copy_from_slice(&peer_mac);
+    packet[arp::TARGET_IP_OFFSET..][..IP].copy_from_slice(&peer_ip);
+    sink.send(packet);
 }
 
-/// Answers a connection request with a SYN-ACK.
-///
-/// Implements SYN cookies to protect against SYN flood attacks: the
-/// SYN-ACK is generated without maintaining connection state.
+/// Whether `packet` is an Ethernet ARP request for this host's address.
+fn is_request_for_us(packet: &[u8; arp::MIN_PACKET_SIZE]) -> bool {
+    let u16_at = |offset: usize| u16::from_be_bytes([packet[offset], packet[offset + 1]]);
+    u16_at(arp::HW_TYPE_OFFSET) == arp::HW_TYPE_ETHERNET
+        && ArpOpcode::from_u16(u16_at(arp::OPCODE_OFFSET)) == Some(ArpOpcode::Request)
+        && packet[arp::TARGET_IP_OFFSET..][..ipv4::IP_ADDR_SIZE] == IP_ADDR.octets()
+}
+
+/// Turns an echo request into its reply in place and sends it.
+fn answer_echo_request<S: PacketSink>(packet: Ipv4Packet<'_>, sink: &mut S) {
+    let Layout { transport, end, .. } = packet.layout;
+    let frame = packet.frame;
+    let checksum_at = transport + icmp::CHECKSUM_OFFSET;
+    swap_addresses(frame);
+    frame[transport] = IcmpType::EchoReply as u8;
+    frame[checksum_at..checksum_at + 2].copy_from_slice(&[0, 0]);
+    let csum = checksum(&frame[transport..end]);
+    frame[checksum_at..checksum_at + 2].copy_from_slice(&csum.to_be_bytes());
+    finish_ipv4_header(frame, transport, end);
+    sink.send(&frame[..end]);
+}
+
+/// Answers a connection request with a SYN-ACK whose sequence number is a
+/// SYN cookie, so no connection state is kept until the peer acknowledges.
 fn answer_connection_request<S: PacketSink>(
-    packet: &mut [u8],
-    offset: usize,
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
+    packet: Ipv4Packet<'_>,
+    tcp: TcpHeader,
     sink: &mut S,
     syn_secret: &SynCookieSecret,
 ) {
-    // The header sits at `14 + IHL`, which need not be aligned; byte-wise
-    // reads avoid misaligned-access traps on RV64GC parts that lack it.
-    let tcp = &packet[offset..offset + tcp::MIN_HEADER_SIZE];
-    let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
-    let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
-    let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
-    let cookie = syn_secret.cookie(src_ip, dst_ip, src_port, dst_port);
-
+    let cookie = syn_secret.cookie(packet.src, packet.dst, tcp.ports.src, tcp.ports.dst);
+    let start = packet.layout.transport;
+    let reply_end = start + tcp::MIN_HEADER_SIZE;
+    let frame = packet.frame;
+    swap_addresses(frame);
     // Sequence numbers wrap (RFC 793 §3.3): seq 0xFFFFFFFF acks as 0.
-    send_tcp_reply_inplace(
-        packet,
-        offset,
-        cookie,
-        seq.wrapping_add(1),
-        TcpFlags::SYN_ACK,
-        sink,
-    );
+    let header = syn_ack_header(tcp.ports, cookie, tcp.seq.wrapping_add(1));
+    frame[start..reply_end].copy_from_slice(&header);
+    let csum = tcp_checksum(frame, start..reply_end);
+    frame[start + tcp::CHECKSUM_OFFSET..start + tcp::CHECKSUM_OFFSET + 2]
+        .copy_from_slice(&csum.to_be_bytes());
+    finish_ipv4_header(frame, start, reply_end);
+    sink.send(&frame[..reply_end]);
 }
 
-/// The IPv4 address in the four bytes at `offset`, which the caller has
-/// checked lie inside `packet`.
-const fn address_at(packet: &[u8], offset: usize) -> Ipv4Addr {
-    Ipv4Addr::new(
-        packet[offset],
-        packet[offset + 1],
-        packet[offset + 2],
-        packet[offset + 3],
-    )
-}
-
-/// Constructs and sends a TCP reply packet in-place.
-///
-/// Modifies the original packet buffer to create a TCP response by
-/// swapping MAC and IP addresses, constructing a new TCP header,
-/// and sending the result. Used for SYN-ACK responses.
-fn send_tcp_reply_inplace<S: PacketSink>(
-    packet: &mut [u8],
-    tcp_offset: usize,
-    seq: u32,
-    ack: u32,
-    flags: TcpFlags,
-    sink: &mut S,
-) {
-    /// Default TCP receive-window size advertised in SYN-ACK replies.
-    /// The SYN-cookie path keeps no per-flow state, so this is fixed.
+/// The 20-byte SYN-ACK header answering a segment between `ports`, with
+/// its checksum left zero.
+fn syn_ack_header(ports: Ports, seq: u32, ack: u32) -> [u8; tcp::MIN_HEADER_SIZE] {
+    /// The receive window advertised; the SYN-cookie path keeps no
+    /// per-flow state, so it is fixed.
     const REPLY_WINDOW: u16 = 64240;
     /// Header length encoded in the data-offset nibble (5 × 4 = 20 bytes).
     const DATA_OFFSET_5: u16 = 5 << 12;
 
-    let (reply_dst_port, reply_src_port) = {
-        let orig = &packet[tcp_offset..tcp_offset + tcp::MIN_HEADER_SIZE];
-        (
-            u16::from_be_bytes([orig[0], orig[1]]),
-            u16::from_be_bytes([orig[2], orig[3]]),
-        )
-    };
-    swap_addresses(packet);
-
-    let reply_end = tcp_offset + tcp::MIN_HEADER_SIZE;
-    let reply = &mut packet[tcp_offset..reply_end];
-    reply[0..2].copy_from_slice(&reply_src_port.to_be_bytes());
-    reply[2..4].copy_from_slice(&reply_dst_port.to_be_bytes());
-    reply[4..8].copy_from_slice(&seq.to_be_bytes());
-    reply[8..12].copy_from_slice(&ack.to_be_bytes());
-    reply[12..14].copy_from_slice(&(DATA_OFFSET_5 | u16::from(flags.bits())).to_be_bytes());
-    reply[14..16].copy_from_slice(&REPLY_WINDOW.to_be_bytes());
-    reply[16..20].copy_from_slice(&[0, 0, 0, 0]);
-    let csum = tcp_checksum(packet, tcp_offset..reply_end);
-    packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&csum.to_be_bytes());
-
-    let ihl = tcp_offset - ipv4::HEADER_OFFSET;
-    finish_ipv4_header(packet, ihl, reply_end - ipv4::HEADER_OFFSET);
-    sink.send(&packet[..reply_end]);
-}
-
-/// End of the IPv4 datagram within the frame, from its total-length field,
-/// or `None` if that length is shorter than the header or longer than the
-/// frame.
-fn ipv4_end(packet: &[u8], ihl: usize) -> Option<usize> {
-    let total = usize::from(u16::from_be_bytes([
-        packet[ipv4::TOTAL_LENGTH_OFFSET],
-        packet[ipv4::TOTAL_LENGTH_OFFSET + 1],
-    ]));
-    let end = ipv4::HEADER_OFFSET + total;
-    (total >= ihl && end <= packet.len()).then_some(end)
+    let data_offset_and_flags = DATA_OFFSET_5 | u16::from(TcpFlags::SYN_ACK.bits());
+    let mut header = [0u8; tcp::MIN_HEADER_SIZE];
+    header[tcp::SRC_PORT_OFFSET..][..2].copy_from_slice(&ports.dst.to_be_bytes());
+    header[tcp::DST_PORT_OFFSET..][..2].copy_from_slice(&ports.src.to_be_bytes());
+    header[tcp::SEQ_OFFSET..][..4].copy_from_slice(&seq.to_be_bytes());
+    header[tcp::ACK_OFFSET..][..4].copy_from_slice(&ack.to_be_bytes());
+    header[tcp::DATA_OFFSET_OFFSET..][..2].copy_from_slice(&data_offset_and_flags.to_be_bytes());
+    header[tcp::WINDOW_OFFSET..][..2].copy_from_slice(&REPLY_WINDOW.to_be_bytes());
+    header
 }
 
 /// Turns a received frame around: the sender's MAC and IP become the
@@ -347,18 +199,19 @@ fn swap_addresses(packet: &mut [u8]) {
     packet[ipv4::DST_IP_OFFSET..ipv4::DST_IP_OFFSET + ipv4::IP_ADDR_SIZE].copy_from_slice(&peer_ip);
 }
 
-/// Sets the total length and a fresh TTL on an outgoing IPv4 header of
-/// `ihl` bytes, then recomputes its checksum.
-fn finish_ipv4_header(packet: &mut [u8], ihl: usize, total_len: usize) {
-    const TOTAL_LEN_OFFSET: usize = ipv4::HEADER_OFFSET + 2;
-    const TTL_OFFSET: usize = ipv4::HEADER_OFFSET + 8;
-    const CHECKSUM_OFFSET: usize = ipv4::HEADER_OFFSET + 10;
-    packet[TOTAL_LEN_OFFSET..TOTAL_LEN_OFFSET + 2]
-        .copy_from_slice(&(total_len as u16).to_be_bytes());
-    packet[TTL_OFFSET] = ipv4::DEFAULT_TTL;
-    packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&[0, 0]);
-    let csum = checksum(&packet[ipv4::HEADER_OFFSET..ipv4::HEADER_OFFSET + ihl]);
-    packet[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 2].copy_from_slice(&csum.to_be_bytes());
+/// Sets the total length and a fresh TTL on an outgoing IPv4 datagram
+/// whose transport header starts at frame offset `transport` and which ends
+/// at `end`, then recomputes its header checksum.
+fn finish_ipv4_header(frame: &mut [u8], transport: usize, end: usize) {
+    const TOTAL_LEN: usize = ipv4::HEADER_OFFSET + ipv4::field::TOTAL_LEN;
+    const TTL: usize = ipv4::HEADER_OFFSET + ipv4::field::TTL;
+    const CHECKSUM: usize = ipv4::HEADER_OFFSET + ipv4::field::CHECKSUM;
+    let total_len = (end - ipv4::HEADER_OFFSET) as u16;
+    frame[TOTAL_LEN..][..2].copy_from_slice(&total_len.to_be_bytes());
+    frame[TTL] = ipv4::DEFAULT_TTL;
+    frame[CHECKSUM..][..2].copy_from_slice(&[0, 0]);
+    let csum = checksum(&frame[ipv4::HEADER_OFFSET..transport]);
+    frame[CHECKSUM..][..2].copy_from_slice(&csum.to_be_bytes());
 }
 
 /// TCP checksum of the segment at `segment`, over the IPv4 pseudo-header

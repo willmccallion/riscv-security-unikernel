@@ -6,9 +6,10 @@
 
 /// Network protocol constants and packet layout definitions.
 pub mod constants;
+pub mod frame;
 /// Network protocol stack for packet processing and protocol handling.
 pub mod stack;
-/// TCP header flags and port extraction.
+/// TCP header flags.
 pub mod tcp;
 
 /// Egress side for frames emitted by the network stack.
