@@ -170,47 +170,63 @@ impl Monitor {
     /// Learns names from DNS and mDNS responses, and from the server name
     /// in a TLS client's hello, over TCP or QUIC.
     fn learn_names(&mut self, packet: &Packet<'_>, role: Option<&PacketRole>, at: UnixNanos) {
+        let from_client = role.filter(|r| r.from_client);
         match packet.transport {
             Transport::Udp(udp) => {
-                if let Some(role) = role.filter(|r| r.from_client) {
-                    let crypto = quic::client_initial_crypto(udp.payload);
-                    if !crypto.is_empty() {
-                        self.diagnostics.quic_initials += 1;
-                    }
-                    if let Some(hello) =
-                        self.hellos
-                            .observe_quic(role.client, role.server, &crypto, at)
-                    {
-                        self.diagnostics.quic_names += 1;
-                        self.learn_server_name(role.server.addr, &hello, at);
-                    }
+                if let Some(role) = from_client {
+                    self.learn_from_quic(udp.payload, role, at);
                 }
-                let (source, counter) = match udp.src_port {
-                    DNS_PORT => (NameSource::Dns, &mut self.diagnostics.dns_responses),
-                    MDNS_PORT => (NameSource::Mdns, &mut self.diagnostics.mdns_responses),
-                    _ => return,
-                };
-                if let Some(response) = dns::parse_response(udp.payload) {
-                    *counter += 1;
-                    self.names.learn_from_dns(&response, source, at);
-                }
+                self.learn_from_dns(udp.src_port, udp.payload, at);
             }
             Transport::Tcp(tcp) => {
-                let Some(role) = role.filter(|r| r.from_client) else {
-                    return;
-                };
-                if tls::is_handshake_record(tcp.payload) {
-                    self.diagnostics.tls_hellos_seen += 1;
-                }
-                if let Some(hello) =
-                    self.hellos
-                        .observe_tcp(role.client, role.server, tcp.sequence, tcp.payload, at)
-                {
-                    self.diagnostics.tls_names += 1;
-                    self.learn_server_name(role.server.addr, &hello, at);
+                if let Some(role) = from_client {
+                    self.learn_from_tls(tcp.sequence, tcp.payload, role, at);
                 }
             }
             Transport::Icmp | Transport::Fragment | Transport::Other(_) => {}
+        }
+    }
+
+    /// Learns the server's name from a client's QUIC Initial.
+    fn learn_from_quic(&mut self, payload: &[u8], role: &PacketRole, at: UnixNanos) {
+        let crypto = quic::client_initial_crypto(payload);
+        if !crypto.is_empty() {
+            self.diagnostics.quic_initials += 1;
+        }
+        if let Some(hello) = self
+            .hellos
+            .observe_quic(role.client, role.server, &crypto, at)
+        {
+            self.diagnostics.quic_names += 1;
+            self.learn_server_name(role.server.addr, &hello, at);
+        }
+    }
+
+    /// Learns names from a DNS or mDNS answer sent from `src_port`.
+    fn learn_from_dns(&mut self, src_port: u16, payload: &[u8], at: UnixNanos) {
+        let (source, counter) = match src_port {
+            DNS_PORT => (NameSource::Dns, &mut self.diagnostics.dns_responses),
+            MDNS_PORT => (NameSource::Mdns, &mut self.diagnostics.mdns_responses),
+            _ => return,
+        };
+        if let Some(response) = dns::parse_response(payload) {
+            *counter += 1;
+            self.names.learn_from_dns(&response, source, at);
+        }
+    }
+
+    /// Learns the server's name from a client's TLS ClientHello, which may
+    /// span segments.
+    fn learn_from_tls(&mut self, sequence: u32, payload: &[u8], role: &PacketRole, at: UnixNanos) {
+        if tls::is_handshake_record(payload) {
+            self.diagnostics.tls_hellos_seen += 1;
+        }
+        if let Some(hello) =
+            self.hellos
+                .observe_tcp(role.client, role.server, sequence, payload, at)
+        {
+            self.diagnostics.tls_names += 1;
+            self.learn_server_name(role.server.addr, &hello, at);
         }
     }
 

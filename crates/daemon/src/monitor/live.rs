@@ -28,7 +28,35 @@ pub fn run(
     duration: Option<Duration>,
     options: &MonitorOptions,
 ) -> Result<()> {
-    let mut rings = interfaces
+    let mut capture = open_capture(interfaces, options)?;
+    let started = Instant::now();
+    while duration.is_none_or(|d| started.elapsed() < d) {
+        let mut closed = capture.poll_rings()?;
+        closed.extend(capture.monitor.tick(UnixNanos::now()));
+        if let Some(viewers) = &mut capture.viewers {
+            viewers.accept_viewers()?;
+            for summary in &closed {
+                viewers.send(summary)?;
+            }
+        }
+        if !closed.is_empty() {
+            report_closed(&closed, interfaces, &capture.rings, options.detail)?;
+        }
+    }
+    Ok(())
+}
+
+/// The open capture sockets and what consumes their frames.
+struct Capture {
+    rings: Vec<RxRing>,
+    monitor: Monitor,
+    viewers: Option<ViewerServer>,
+}
+
+/// Opens a capture socket on every interface, then drops privileges,
+/// starts serving viewers if asked, and confines the process.
+fn open_capture(interfaces: &[String], options: &MonitorOptions) -> Result<Capture> {
+    let rings = interfaces
         .iter()
         .map(|name| RxRing::open(name, Outgoing::Include))
         .collect::<Result<Vec<_>>>()?;
@@ -39,8 +67,8 @@ pub fn run(
     }
     prefixes.extend_from_slice(&options.extra_local_networks);
     let local = LocalNetworks::new(prefixes);
-    let mut viewers = start_serving(&options.serving, interfaces, &local)?;
-    let mut monitor = Monitor::new(local, report::INTERVAL);
+    let viewers = start_serving(&options.serving, interfaces, &local)?;
+    let monitor = Monitor::new(local, report::INTERVAL);
     for (name, ring) in interfaces.iter().zip(&rings) {
         println!(
             "monitor: capturing on {name} ({:?}), receive-only, no privileges",
@@ -51,33 +79,31 @@ pub fn run(
     options
         .sandboxing
         .apply(write_access(&rings, viewers.is_some())?)?;
+    Ok(Capture {
+        rings,
+        monitor,
+        viewers,
+    })
+}
 
-    let started = Instant::now();
-    while duration.is_none_or(|d| started.elapsed() < d) {
-        let mut closed: Vec<Summary> = Vec::new();
+impl Capture {
+    /// Feeds every waiting frame to the monitor, waiting a little if no
+    /// interface had any; the flows that closed.
+    fn poll_rings(&mut self) -> Result<Vec<Summary>> {
+        let mut closed = Vec::new();
         let mut seen = 0;
-        for ring in &mut rings {
+        for ring in &mut self.rings {
             let link = ring.link_type();
             seen += ring.poll(0, |frame| {
                 let at = UnixNanos::new(frame.captured_at_unix_ns);
-                closed.extend(monitor.observe(link, frame.data, frame.wire_len, at));
+                closed.extend(self.monitor.observe(link, frame.data, frame.wire_len, at));
             })?;
         }
         if seen == 0 {
-            af_packet::wait_for_any(&rings, IDLE_WAIT_MS)?;
+            af_packet::wait_for_any(&self.rings, IDLE_WAIT_MS)?;
         }
-        closed.extend(monitor.tick(UnixNanos::now()));
-        if let Some(viewers) = &mut viewers {
-            viewers.accept_viewers()?;
-            for summary in &closed {
-                viewers.send(summary)?;
-            }
-        }
-        if !closed.is_empty() {
-            report_closed(&closed, interfaces, &rings, options.detail)?;
-        }
+        Ok(closed)
     }
-    Ok(())
 }
 
 /// Opens the viewers' socket if serving, and says where to find it.
