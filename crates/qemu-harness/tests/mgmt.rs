@@ -37,9 +37,7 @@ fn drop_udp_port(port: u16) -> Vec<u8> {
 #[track_caller]
 fn expect_alert(kernel: &Kernel, reason: AlertReason) {
     let got = kernel
-        .recv_matching(ALERT_WAIT, |f| {
-            frame::alert_reason(f) == Some(reason.as_u8())
-        })
+        .recv_matching(ALERT_WAIT, |f| frame::alert_reason(f) == Some(reason))
         .unwrap();
     assert!(
         got.is_some(),
@@ -67,10 +65,7 @@ fn rejected_bpf_upload_leaves_the_active_program_intact() {
         .recv_matching(ALERT_WAIT, |f| frame::mgmt_ack(f).is_some())
         .unwrap()
         .and_then(|f| frame::mgmt_ack(&f));
-    assert_eq!(
-        ack.map(|(_, _, outcome)| outcome),
-        Some(MgmtOutcome::Invalid as u8)
-    );
+    assert_eq!(ack.map(|ack| ack.outcome), Some(MgmtOutcome::Invalid));
     kernel.drain().unwrap();
     kernel.send(&probe).unwrap();
 

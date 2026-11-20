@@ -11,7 +11,8 @@ use sec_core::engine::{Engine, Verdict};
 use sec_core::net::stack::checksum;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::dpi::Pattern;
-use sec_core::security::mgmt::{Command, ManagementMessageType, MgmtOutcome};
+use sec_core::security::mgmt::{Ack, Command, ManagementMessageType, MgmtOutcome};
+use sec_core::security::report_auth::Telemetry;
 use sec_core::security::vm::{Instruction, Opcode};
 use sec_core::time::Ticks;
 
@@ -81,8 +82,8 @@ fn bpf_upload_that_can_run_past_its_end_is_rejected_and_keeps_the_active_program
         &mut sink,
     );
 
-    let outcome = acks(&sink).last().map(|&(_, _, outcome)| outcome);
-    assert_eq!(outcome, Some(MgmtOutcome::Invalid as u8));
+    let outcome = acks(&sink).last().map(|ack| ack.outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::Invalid));
     assert_eq!(verdict, Verdict::Dropped(AlertReason::Bpf));
 }
 
@@ -262,15 +263,14 @@ fn operator_ban_beyond_a_table_full_of_operator_bans_is_acked_as_table_full() {
         &mut sink,
     );
 
-    let outcome = acks(&sink).last().map(|&(_, _, outcome)| outcome);
-    assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
+    let outcome = acks(&sink).last().map(|ack| ack.outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::TableFull));
 }
 
 /// A dashboard that restarts within one kernel boot learns from telemetry
 /// where to resume its sequence.
 #[test]
 fn telemetry_reports_the_last_accepted_mgmt_sequence() {
-    use sec_core::security::report_auth::telemetry_packet::{LAST_MGMT_SEQ_SLOT, SLOTS_OFFSET};
     let mut e = engine();
     let mut sink = CaptureSink::default();
     let _ = e.process(&mut mgmt(41, &block_port(8080)), Ticks::new(1), &mut sink);
@@ -278,9 +278,8 @@ fn telemetry_reports_the_last_accepted_mgmt_sequence() {
     e.send_telemetry(0, &mut sink);
 
     let telemetry = sink.report_bodies().pop().expect("telemetry was sent");
-    let at = SLOTS_OFFSET + LAST_MGMT_SEQ_SLOT * 8;
-    let last_seq = u64::from_be_bytes(telemetry[at..at + 8].try_into().unwrap());
-    assert_eq!(last_seq, 41);
+    let telemetry = Telemetry::decode(&telemetry).expect("a telemetry report");
+    assert_eq!(telemetry.last_mgmt_seq, 41);
 }
 
 #[test]
@@ -301,11 +300,16 @@ fn every_authenticated_command_is_acknowledged_with_its_outcome() {
     assert_eq!(
         common::acks(&sink),
         [
-            (1, block, MgmtOutcome::Applied as u8),
-            (2, block, MgmtOutcome::Refused as u8),
-            (3, block, MgmtOutcome::Invalid as u8),
-            (4, 0xEE, MgmtOutcome::Invalid as u8),
+            (1, block, MgmtOutcome::Applied),
+            (2, block, MgmtOutcome::Refused),
+            (3, block, MgmtOutcome::Invalid),
+            (4, 0xEE, MgmtOutcome::Invalid),
         ]
+        .map(|(seq, command, outcome)| Ack {
+            seq,
+            command,
+            outcome
+        })
     );
 }
 
@@ -325,8 +329,8 @@ fn full_firewall_table_is_reported_in_the_ack() {
 
     let _ = e.process(&mut mgmt(100, &block_port(9999)), Ticks::new(2), &mut sink);
 
-    let outcome = common::acks(&sink).last().map(|&(_, _, o)| o);
-    assert_eq!(outcome, Some(MgmtOutcome::TableFull as u8));
+    let outcome = common::acks(&sink).last().map(|ack| ack.outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::TableFull));
 }
 
 /// A body of type `kind` with raw operand bytes, for malformed commands.
@@ -485,8 +489,8 @@ fn an_empty_too_long_or_truncated_pattern_is_invalid_to_add_or_remove() {
         );
     }
 
-    let outcomes: Vec<u8> = common::acks(&sink).iter().map(|&(_, _, o)| o).collect();
-    assert_eq!(outcomes, [MgmtOutcome::Invalid as u8; 6]);
+    let outcomes: Vec<MgmtOutcome> = common::acks(&sink).iter().map(|ack| ack.outcome).collect();
+    assert_eq!(outcomes, [MgmtOutcome::Invalid; 6]);
 }
 
 #[test]
@@ -517,8 +521,8 @@ fn a_bpf_return_other_than_drop_or_pass_is_refused_at_upload() {
         &mut sink,
     );
 
-    let outcome = acks(&sink).last().map(|&(_, _, outcome)| outcome);
-    assert_eq!(outcome, Some(MgmtOutcome::Invalid as u8));
+    let outcome = acks(&sink).last().map(|ack| ack.outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::Invalid));
 }
 
 #[test]

@@ -23,10 +23,11 @@ use crate::net::PacketSink;
 use crate::net::constants::{EthernetType, arp, ethernet, ipv4};
 use crate::net::frame::{self, Frame, Ipv4Packet, Ports, Rejected, Rejection, Transport};
 use crate::net::stack::{self, SynCookieSecret};
-use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
+use crate::security::alert::{Alert, AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::hash::{MgmtKey, ReportKey, SketchKey};
-use crate::security::mgmt::{Command, InvalidCommand, MgmtOutcome, mgmt_packet};
+use crate::security::mgmt::{Ack, Command, InvalidCommand, MgmtOutcome, mgmt_packet};
 use crate::security::mgmt_auth::OperatorAddr;
+use crate::security::report_auth::Telemetry;
 use crate::security::vm::{Program, VmAction};
 use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, scan, sketch, vm};
 
@@ -259,26 +260,23 @@ impl<
         }
     }
 
-    /// Sends the signed telemetry report for the current interval: eleven
-    /// big-endian u64 slots holding passed, ddos, firewall, malware, bpf
-    /// and heuristic counts, `memory_used`, active flows, mgmt packets, the
-    /// boot epoch and the last mgmt sequence accepted this boot.
+    /// Sends the signed telemetry report for the current interval.
     pub fn send_telemetry<S: PacketSink>(&mut self, memory_used: u64, sink: &mut S) {
         let s = &self.stats;
-        let slots = [
-            s.passed,
-            s.ddos,
-            s.firewall,
-            s.malware,
-            s.bpf,
-            s.heuristic,
+        let telemetry = Telemetry {
+            passed: s.passed,
+            ddos: s.ddos,
+            firewall: s.firewall,
+            malware: s.malware,
+            bpf: s.bpf,
+            heuristic: s.heuristic,
             memory_used,
-            self.flows.active_count() as u64,
-            s.mgmt,
-            u64::from(self.mgmt_auth.epoch()),
-            u64::from(self.mgmt_auth.last_seq()),
-        ];
-        self.send_report(TELEMETRY_PORT, &report::telemetry_body(&slots), sink);
+            active_flows: self.flows.active_count() as u64,
+            mgmt: s.mgmt,
+            epoch: self.mgmt_auth.epoch(),
+            last_mgmt_seq: self.mgmt_auth.last_seq(),
+        };
+        self.send_report(TELEMETRY_PORT, &telemetry.encode(), sink);
     }
 
     /// Runs one received frame through the pipeline.
@@ -584,7 +582,15 @@ impl<
         reason: AlertReason,
         sink: &mut S,
     ) {
-        self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
+        self.send_report(
+            MANAGEMENT_PORT,
+            &Alert {
+                reason,
+                meta: *meta,
+            }
+            .encode(),
+            sink,
+        );
     }
 
     fn alert<S: PacketSink>(
@@ -595,7 +601,15 @@ impl<
         sink: &mut S,
     ) {
         if self.alert_limiter.allow(now) {
-            self.send_report(MANAGEMENT_PORT, &report::alert_body(meta, reason), sink);
+            self.send_report(
+                MANAGEMENT_PORT,
+                &Alert {
+                    reason,
+                    meta: *meta,
+                }
+                .encode(),
+                sink,
+            );
         }
     }
 
@@ -606,12 +620,12 @@ impl<
         outcome: MgmtOutcome,
         sink: &mut S,
     ) {
-        let command = body.get(mgmt_packet::MSG_TYPE_OFFSET).copied().unwrap_or(0);
-        self.send_report(
-            MANAGEMENT_PORT,
-            &report::ack_body(seq, command, outcome),
-            sink,
-        );
+        let ack = Ack {
+            seq,
+            command: body.get(mgmt_packet::MSG_TYPE_OFFSET).copied().unwrap_or(0),
+            outcome,
+        };
+        self.send_report(MANAGEMENT_PORT, &ack.encode(), sink);
     }
 
     /// Signs `body` as the next report of this boot and sends it to the

@@ -181,18 +181,16 @@ fn banned_source_does_not_create_flows() {
 }
 
 #[test]
-fn telemetry_is_a_signed_report_carrying_the_epoch() {
-    use sec_core::security::report_auth::telemetry_packet;
+fn telemetry_is_a_signed_report_carrying_the_epoch_and_memory_use() {
+    use sec_core::security::report_auth::Telemetry;
     let mut e = engine();
     let mut sink = CaptureSink::default();
 
     e.send_telemetry(1234, &mut sink);
 
-    let body = &sink.report_bodies()[0];
-    assert_eq!(body[0], telemetry_packet::MESSAGE_TYPE);
-    let epoch_slot = telemetry_packet::SLOTS_OFFSET + 9 * 8;
-    let epoch = u64::from_be_bytes(body[epoch_slot..epoch_slot + 8].try_into().unwrap());
-    assert_eq!(epoch, u64::from(common::EPOCH));
+    let telemetry = Telemetry::decode(&sink.report_bodies()[0]).expect("a telemetry report");
+    assert_eq!(telemetry.epoch, common::EPOCH);
+    assert_eq!(telemetry.memory_used, 1234);
 }
 
 #[test]

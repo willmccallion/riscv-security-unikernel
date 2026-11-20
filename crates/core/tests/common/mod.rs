@@ -5,13 +5,14 @@
 use sec_core::config::{IP_ADDR, MAC_ADDR};
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
+use sec_core::net::frame::{self, Frame, Transport};
 use sec_core::net::stack::{SynCookieSecret, checksum};
-use sec_core::security::alert::{AlertReason, alert_packet};
+use sec_core::security::alert::AlertReason;
 use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
-use sec_core::security::mgmt::Command;
 use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
+use sec_core::security::mgmt::{Ack, Command};
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
-use sec_core::security::report_auth::ReportVerifier;
+use sec_core::security::report_auth::{ReportBody, ReportVerifier};
 use std::net::Ipv4Addr;
 
 pub const KEY: MgmtKey = MgmtKey::new(*b"engine-test-key!");
@@ -38,23 +39,45 @@ impl CaptureSink {
         let mut verifier = ReportVerifier::new(ReportKey::derive(&KEY));
         self.sent
             .iter()
-            .filter(|f| f.len() > 42 && f[23] == 17)
-            .map(|f| {
-                let report = verifier.verify(&f[42..]).expect("report verifies");
-                report.body.to_vec()
+            .filter_map(|f| udp_payload(f))
+            .map(|payload| {
+                verifier
+                    .verify(&payload)
+                    .expect("report verifies")
+                    .body
+                    .to_vec()
             })
+            .collect()
+    }
+
+    /// Every report emitted, in order.
+    pub fn reports(&self) -> Vec<ReportBody> {
+        self.report_bodies()
+            .iter()
+            .map(|body| ReportBody::parse(body).expect("a known report"))
             .collect()
     }
 
     /// Reasons of every alert emitted, in order.
     pub fn alert_reasons(&self) -> Vec<AlertReason> {
-        self.report_bodies()
-            .iter()
-            .filter(|body| body[0] == alert_packet::ALERT_MESSAGE_TYPE)
-            .map(|body| {
-                AlertReason::from_u8(body[alert_packet::REASON_OFFSET]).expect("known reason")
+        self.reports()
+            .into_iter()
+            .filter_map(|report| match report {
+                ReportBody::Alert(alert) => Some(alert.reason),
+                _ => None,
             })
             .collect()
+    }
+}
+
+/// The payload of a UDP datagram in `frame`.
+fn udp_payload(frame: &[u8]) -> Option<Vec<u8>> {
+    let mut frame = frame.to_vec();
+    match frame::parse(&mut frame) {
+        Ok(Frame::Ipv4(packet)) if matches!(packet.transport, Transport::Udp(_)) => {
+            Some(packet.payload().to_vec())
+        }
+        _ => None,
     }
 }
 
@@ -144,17 +167,13 @@ pub fn mgmt(seq: u32, body: &[u8]) -> Vec<u8> {
     )
 }
 
-/// `(seq, command, outcome)` of every mgmt ack emitted, in order.
-pub fn acks(sink: &CaptureSink) -> Vec<(u32, u8, u8)> {
-    use sec_core::security::mgmt::ack_packet::{
-        ACK_MESSAGE_TYPE, COMMAND_OFFSET, OUTCOME_OFFSET, SEQ_OFFSET,
-    };
-    sink.report_bodies()
+/// Every mgmt ack emitted, in order.
+pub fn acks(sink: &CaptureSink) -> Vec<Ack> {
+    sink.reports()
         .into_iter()
-        .filter(|body| body[0] == ACK_MESSAGE_TYPE)
-        .map(|body| {
-            let seq = u32::from_be_bytes(body[SEQ_OFFSET..SEQ_OFFSET + 4].try_into().unwrap());
-            (seq, body[COMMAND_OFFSET], body[OUTCOME_OFFSET])
+        .filter_map(|report| match report {
+            ReportBody::Ack(ack) => Some(ack),
+            _ => None,
         })
         .collect()
 }
