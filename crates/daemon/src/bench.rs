@@ -13,8 +13,8 @@ use crate::DaemonEngine;
 use crate::synth::{self, Mix};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sec_core::config::{CMS_DECAY_INTERVAL, FLOW_TIMEOUT, TELEMETRY_INTERVAL};
-use sec_core::engine::{BootSecrets, Verdict};
+use sec_core::config::FLOW_TIMEOUT;
+use sec_core::engine::{BootSecrets, Schedule, Verdict};
 use sec_core::net::PacketSink;
 use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::alert::AlertReason;
@@ -149,21 +149,19 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     let mut result = ThreadResult::default();
     let mut scratch = [0u8; 2048];
     let mut now = Ticks::ZERO;
-    let mut next_telemetry = now + TELEMETRY_INTERVAL;
-    let mut next_cms_decay = now + CMS_DECAY_INTERVAL;
+    let mut schedule = Schedule::new(now);
 
     let started = Instant::now();
     let packets = usize::try_from(config.packets_per_thread).unwrap_or(usize::MAX);
     for frame in corpus.iter().cycle().take(packets) {
         now += step;
-        if now >= next_telemetry {
+        let due = schedule.due(now);
+        if due.telemetry.is_some() {
             engine.prune_flows(now, FLOW_TIMEOUT);
             engine.start_interval();
-            next_telemetry += TELEMETRY_INTERVAL;
         }
-        if now >= next_cms_decay {
+        if due.detection.is_some() {
             engine.end_detection_interval(&mut NullSink);
-            next_cms_decay += CMS_DECAY_INTERVAL;
         }
         let buf = &mut scratch[..frame.len()];
         buf.copy_from_slice(frame);

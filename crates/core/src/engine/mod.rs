@@ -11,6 +11,9 @@ use core::net::Ipv4Addr;
 use core::num::NonZeroU32;
 
 mod report;
+mod schedule;
+
+pub use schedule::{Due, Schedule};
 
 use crate::config::{
     ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST, CMS_DEPTH, CMS_WIDTH, DDOS_ALERT_SAMPLE_RATE,
