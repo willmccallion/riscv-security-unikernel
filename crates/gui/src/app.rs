@@ -6,9 +6,9 @@
 //! interfaces for firewall rules, DPI signatures, and BPF programs.
 
 use crate::live::view::LiveView;
+use crate::log::{Description, LogEntry, LogEvent, Source};
 use crate::types::{
-    CommandId, CommandStatus, GuiCommand, LogEntry, LogMode, NetStats, NotSentReason, TrafficMode,
-    UiEvent,
+    CommandId, CommandStatus, GuiCommand, LogMode, NetStats, NotSentReason, TrafficMode, UiEvent,
 };
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
@@ -94,8 +94,10 @@ pub struct Dashboard {
     stats: Arc<NetStats>,
     /// Receiver for log entries and command status updates.
     events: std::sync::mpsc::Receiver<UiEvent>,
-    /// Log entries received while the log is paused.
-    held_logs: Vec<LogEntry>,
+    /// Log events received while the log is paused.
+    held_logs: Vec<LogEvent>,
+    /// Id for the next log row.
+    next_log_id: u64,
     /// Next id to give a mgmt command.
     next_command: u64,
     /// Sender for commands to the background network task.
@@ -149,6 +151,7 @@ impl Dashboard {
             stats,
             events,
             held_logs: Vec::new(),
+            next_log_id: 0,
             next_command: 0,
             cmd_tx,
             logs: VecDeque::with_capacity(1000),
@@ -220,14 +223,24 @@ impl Dashboard {
         if self.log_paused {
             return;
         }
-        for mut entry in self.held_logs.drain(..) {
-            entry.timestamp = self.start_time.elapsed().as_secs_f64();
-            if self.logs.len() >= 1000 {
-                self.logs.pop_back();
-            }
-            self.logs.push_front(entry);
-            self.log_new_entry = true;
+        for event in std::mem::take(&mut self.held_logs) {
+            self.record(event);
         }
+    }
+
+    /// Adds `event` to the log as its newest row.
+    fn record(&mut self, event: LogEvent) {
+        let entry = LogEntry {
+            id: self.next_log_id,
+            timestamp: self.start_time.elapsed().as_secs_f64(),
+            event,
+        };
+        self.next_log_id += 1;
+        if self.logs.len() >= 1000 {
+            self.logs.pop_back();
+        }
+        self.logs.push_front(entry);
+        self.log_new_entry = true;
     }
 
     /// Renders the main dashboard tab.
@@ -367,186 +380,25 @@ impl Dashboard {
             .min_scrolled_height(150.0)
             .show(ui, |ui| {
                 for entry in self.logs.iter().rev() {
-                    if self.log_mode == LogMode::Alerts && entry.msg.starts_with("[PASS]") {
+                    if self.log_mode == LogMode::Alerts && entry.event.is_pass() {
                         continue;
                     }
-
-                    // Parse the tag and description from the message e.g. "[FIREWALL] Blocked..."
-                    let (tag, detail) = if let Some(end) = entry.msg.find(']') {
-                        (&entry.msg[1..end], entry.msg[end + 2..].trim())
-                    } else {
-                        ("INFO", entry.msg.as_str())
-                    };
-
-                    let is_selected = self.selected_log.as_ref().is_some_and(|s| {
-                        s.timestamp.to_bits() == entry.timestamp.to_bits() && s.msg == entry.msg
-                    });
-
-                    let bg = if is_selected {
-                        egui::Color32::from_gray(40)
-                    } else {
-                        egui::Color32::from_gray(20)
-                    };
-
-                    let clicked = egui::Frame::none()
-                        .fill(bg)
-                        .rounding(4.0)
-                        .inner_margin(egui::Margin {
-                            left: 0.0,
-                            right: 8.0,
-                            top: 4.0,
-                            bottom: 4.0,
-                        })
-                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(35)))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // Colored left accent bar
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(4.0, 24.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter().rect_filled(rect, 2.0, entry.color);
-                                ui.add_space(6.0);
-
-                                // Tag badge
-                                egui::Frame::none()
-                                    .fill(entry.color.gamma_multiply(0.2))
-                                    .rounding(3.0)
-                                    .inner_margin(egui::Margin::symmetric(5.0, 1.0))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(tag)
-                                                .color(entry.color)
-                                                .strong()
-                                                .size(10.0),
-                                        );
-                                    });
-
-                                ui.add_space(6.0);
-
-                                // Detail text
-                                ui.label(
-                                    egui::RichText::new(detail)
-                                        .color(egui::Color32::from_gray(210))
-                                        .size(12.0),
-                                );
-
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        // Timestamp
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "T+{:.1}s",
-                                                entry.timestamp
-                                            ))
-                                            .color(egui::Color32::from_gray(100))
-                                            .size(11.0),
-                                        );
-                                        // Port if nonzero
-                                        if entry.dst_port > 0 {
-                                            ui.label(
-                                                egui::RichText::new(format!(":{}", entry.dst_port))
-                                                    .color(egui::Color32::from_gray(140))
-                                                    .size(11.0)
-                                                    .monospace(),
-                                            );
-                                        }
-                                    },
-                                );
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click())
-                        .clicked();
-
-                    if clicked {
+                    let is_selected = self.selected_log.as_ref().is_some_and(|s| s.id == entry.id);
+                    if log_row(ui, entry, is_selected) {
                         self.selected_log = Some(entry.clone());
                     }
-
                     ui.add_space(2.0);
                 }
             });
 
-        let mut ban_target = None;
-        if let Some(log) = &self.selected_log {
-            let mut open = true;
-            egui::Window::new("Packet Inspector")
-                .open(&mut open)
-                .resizable(true)
-                .default_width(400.0)
-                .show(ui.ctx(), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.heading("Alert Details");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // BAN on a subnet alert would ban only its network address.
-                            let (address, is_subnet) = match log.src_ip.split_once('/') {
-                                Some((address, _)) => (address, true),
-                                None => (log.src_ip.as_str(), false),
-                            };
-                            if !is_subnet
-                                && ui
-                                    .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
-                                    .clicked()
-                            {
-                                ban_target = address.parse().ok().map(Command::BanIp);
-                            }
-                            if ui.button("UNBAN").clicked() {
-                                ban_target = address.parse().ok().map(Command::UnbanIp);
-                            }
-                        });
-                    });
-                    ui.add_space(5.0);
-
-                    egui::Grid::new("inspector_grid")
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.label("Time:");
-                            ui.label(format!("T+{:.2}s", log.timestamp));
-                            ui.end_row();
-
-                            ui.label("Source IP:");
-                            ui.label(&log.src_ip);
-                            ui.end_row();
-
-                            ui.label("Dest IP:");
-                            ui.label(&log.dst_ip);
-                            ui.end_row();
-
-                            ui.label("Src Port:");
-                            ui.label(format!("{}", log.src_port));
-                            ui.end_row();
-
-                            ui.label("Dst Port:");
-                            ui.label(format!("{}", log.dst_port));
-                            ui.end_row();
-
-                            ui.label("Protocol:");
-                            ui.label(format!("{}", log.protocol));
-                            ui.end_row();
-
-                            ui.label("Packet Len:");
-                            ui.label(format!("{} bytes", log.packet_len));
-                            ui.end_row();
-
-                            if let Some(measured) = log.measured {
-                                ui.label("Measured:");
-                                ui.label(format!("{measured}"));
-                                ui.end_row();
-                            }
-
-                            ui.label("Reason:");
-                            ui.colored_label(log.color, &log.msg);
-                            ui.end_row();
-                        });
-                });
-
+        if let Some(entry) = &self.selected_log {
+            let (open, command) = packet_inspector(ui.ctx(), entry);
             if !open {
                 self.selected_log = None;
             }
-        }
-        if let Some(command) = ban_target {
-            let _ = self.issue(&command);
+            if let Some(command) = command {
+                let _ = self.issue(&command);
+            }
         }
     }
 
@@ -753,19 +605,7 @@ impl Dashboard {
                             CommandStatus::Pending,
                         ));
                     } else {
-                        let entry = LogEntry {
-                            timestamp: self.start_time.elapsed().as_secs_f64(),
-                            src_ip: "Localhost".to_string(),
-                            dst_ip: String::new(),
-                            src_port: 0,
-                            dst_port: 0,
-                            protocol: 0,
-                            packet_len: 0,
-                            measured: None,
-                            msg: "BPF: Compilation Failed".to_string(),
-                            color: egui::Color32::RED,
-                        };
-                        self.logs.push_front(entry);
+                        self.record(LogEvent::CompileFailed);
                     }
                 }
             });
@@ -909,6 +749,137 @@ impl eframe::App for Dashboard {
             }
         });
     }
+}
+
+/// Draws one log row; returns whether it was clicked.
+fn log_row(ui: &mut egui::Ui, entry: &LogEntry, is_selected: bool) -> bool {
+    let Description { tag, detail, color } = entry.event.describe();
+    let dst_port = match &entry.event {
+        LogEvent::Alert(alert) => alert.meta.dst_port,
+        _ => 0,
+    };
+    let fill = egui::Color32::from_gray(if is_selected { 40 } else { 20 });
+    egui::Frame::none()
+        .fill(fill)
+        .rounding(4.0)
+        .inner_margin(egui::Margin {
+            left: 0.0,
+            right: 8.0,
+            top: 4.0,
+            bottom: 4.0,
+        })
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(35)))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (accent, _) =
+                    ui.allocate_exact_size(egui::vec2(4.0, 24.0), egui::Sense::hover());
+                ui.painter().rect_filled(accent, 2.0, color);
+                ui.add_space(6.0);
+                egui::Frame::none()
+                    .fill(color.gamma_multiply(0.2))
+                    .rounding(3.0)
+                    .inner_margin(egui::Margin::symmetric(5.0, 1.0))
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new(tag).color(color).strong().size(10.0));
+                    });
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(detail)
+                        .color(egui::Color32::from_gray(210))
+                        .size(12.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("T+{:.1}s", entry.timestamp))
+                            .color(egui::Color32::from_gray(100))
+                            .size(11.0),
+                    );
+                    if dst_port > 0 {
+                        ui.label(
+                            egui::RichText::new(format!(":{dst_port}"))
+                                .color(egui::Color32::from_gray(140))
+                                .size(11.0)
+                                .monospace(),
+                        );
+                    }
+                });
+            });
+        })
+        .response
+        .interact(egui::Sense::click())
+        .clicked()
+}
+
+/// Shows the selected row's details in a window; returns whether the window
+/// is still open and the ban or unban the operator asked for, if any.
+fn packet_inspector(ctx: &egui::Context, entry: &LogEntry) -> (bool, Option<Command>) {
+    let mut open = true;
+    let mut command = None;
+    egui::Window::new("Packet Inspector")
+        .open(&mut open)
+        .resizable(true)
+        .default_width(400.0)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Alert Details");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    command = ban_buttons(ui, entry.event.source());
+                });
+            });
+            ui.add_space(5.0);
+            egui::Grid::new("inspector_grid")
+                .striped(true)
+                .show(ui, |ui| inspector_rows(ui, entry));
+        });
+    (open, command)
+}
+
+/// Ban and unban buttons for an alert's source. Only a single host can be
+/// banned from here; unbanning a subnet's network address lifts the ban
+/// covering it.
+fn ban_buttons(ui: &mut egui::Ui, source: Source) -> Option<Command> {
+    let (address, can_ban) = match source {
+        Source::Host(ip) => (ip, true),
+        Source::Subnet { network, .. } => (network, false),
+        Source::Kernel | Source::Local => return None,
+    };
+    let ban = can_ban
+        && ui
+            .button(egui::RichText::new("BAN IP").color(egui::Color32::RED))
+            .clicked();
+    let unban = ui.button("UNBAN").clicked();
+    if ban {
+        Some(Command::BanIp(address))
+    } else if unban {
+        Some(Command::UnbanIp(address))
+    } else {
+        None
+    }
+}
+
+fn inspector_rows(ui: &mut egui::Ui, entry: &LogEntry) {
+    let mut row = |label: &str, value: String| {
+        ui.label(label);
+        ui.label(value);
+        ui.end_row();
+    };
+    row("Time:", format!("T+{:.2}s", entry.timestamp));
+    row("Source:", entry.event.source().to_string());
+    if let LogEvent::Alert(alert) = &entry.event {
+        let meta = &alert.meta;
+        row("Dest IP:", meta.dst_ip.to_string());
+        row("Src Port:", meta.src_port.to_string());
+        row("Dst Port:", meta.dst_port.to_string());
+        row("Protocol:", meta.protocol.to_string());
+        row("Packet Len:", format!("{} bytes", meta.packet_len));
+        if meta.value != 0 {
+            row("Measured:", meta.value.to_string());
+        }
+    }
+    let Description { tag, detail, color } = entry.event.describe();
+    ui.label("Reason:");
+    ui.colored_label(color, format!("[{tag}] {detail}"));
+    ui.end_row();
 }
 
 /// Shows a rule's status, or its removal's while one is in flight or failed.

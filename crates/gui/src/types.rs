@@ -4,7 +4,7 @@
 //! between the GUI and the security kernel, including network statistics,
 //! log entries, and command types.
 
-use eframe::egui;
+use crate::log::LogEvent;
 use sec_core::config::{IP_ADDR, MANAGEMENT_PORT, TELEMETRY_PORT};
 use sec_core::security::mgmt::{Command, MgmtOutcome};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -16,36 +16,6 @@ pub const MGMT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(IP_ADDR, MANA
 /// Local address for receiving telemetry and alerts from the kernel.
 pub const LISTEN_ADDR: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, TELEMETRY_PORT));
-
-/// Represents a single security event or alert logged by the kernel.
-///
-/// Carries the fixed-size metadata record the kernel ships in alert
-/// packets — source/destination addresses, ports, protocol, and the
-/// observed packet length. Inbound payload bytes are deliberately not
-/// echoed by the kernel, so none are stored here.
-#[derive(Clone, Debug)]
-pub struct LogEntry {
-    /// Time elapsed since application start in seconds.
-    pub timestamp: f64,
-    /// Source IP address that triggered the event.
-    pub src_ip: String,
-    /// Destination IP address recorded by the kernel.
-    pub dst_ip: String,
-    /// Source port of the packet (0 if unknown).
-    pub src_port: u16,
-    /// Destination port of the packet (0 if unknown).
-    pub dst_port: u16,
-    /// IP protocol number (6 = TCP, 17 = UDP, ...).
-    pub protocol: u8,
-    /// Total observed packet length in bytes (saturated to `u16::MAX`).
-    pub packet_len: u16,
-    /// A detector's measurement behind the alert, if it carried one.
-    pub measured: Option<u32>,
-    /// Human-readable description of the security event.
-    pub msg: String,
-    /// Color code for UI display based on event severity.
-    pub color: egui::Color32,
-}
 
 /// Network statistics tracked by the security kernel.
 ///
@@ -150,8 +120,8 @@ pub enum CommandStatus {
 
 /// Messages from the network task to the UI.
 pub enum UiEvent {
-    /// An entry for the event log.
-    Log(LogEntry),
+    /// Something for the event log.
+    Log(LogEvent),
     /// A mgmt command's status changed.
     CommandStatus {
         /// The command whose status changed.
