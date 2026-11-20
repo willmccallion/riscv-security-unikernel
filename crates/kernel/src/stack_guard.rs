@@ -51,15 +51,11 @@ pub fn arm() {
 /// call from the telemetry tick.
 pub fn check_or_halt() {
     let (start, len) = region();
-    let mut intact = true;
-    for i in 0..len {
-        // SAFETY: Reading inside the linker-reserved guard region.
-        let b = unsafe { ptr::read_volatile(start.add(i)) };
-        if b != SENTINEL {
-            intact = false;
-            break;
-        }
-    }
+    let intact = (0..len).all(|i| {
+        let byte = start.wrapping_add(i);
+        // SAFETY: `byte` lies inside the linker-reserved guard region.
+        unsafe { ptr::read_volatile(byte) == SENTINEL }
+    });
     if intact {
         return;
     }

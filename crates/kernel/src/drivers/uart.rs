@@ -33,11 +33,10 @@ impl Uart {
 
     /// Writes a single byte to the UART transmit register.
     pub fn write_byte(&self, byte: u8) {
-        // SAFETY: UART_BASE is a valid MMIO address for this hardware platform;
-        // the THR offset is the standard transmit holding register offset.
-        unsafe {
-            self.base.offset(THR).write_volatile(byte);
-        }
+        let transmit = self.base.wrapping_offset(THR);
+        // SAFETY: UART_BASE is the platform's UART, and THR its transmit
+        // holding register, a valid MMIO byte.
+        unsafe { transmit.write_volatile(byte) }
     }
 }
 

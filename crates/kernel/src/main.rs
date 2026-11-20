@@ -13,6 +13,7 @@
 // MMIO, CSR access, linker symbols and the boot stub all need unsafe;
 // each block carries a SAFETY comment.
 #![allow(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn, clippy::multiple_unsafe_ops_per_block)]
 
 /// Hardware device drivers for network interfaces and peripherals.
 mod drivers;
