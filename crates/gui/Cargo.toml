@@ -12,6 +12,7 @@ categories.workspace = true
 description = "egui control plane for the security unikernel: telemetry, alerts, rules and a traffic generator."
 
 [dependencies]
+mgmt-key = { workspace = true }
 sec-core = { workspace = true }
 monitor-proto = { workspace = true }
 clap = { workspace = true }

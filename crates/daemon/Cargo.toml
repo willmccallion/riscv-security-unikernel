@@ -12,6 +12,7 @@ description = "Linux userspace daemon running the sec-core pipeline on live traf
 workspace = true
 
 [dependencies]
+mgmt-key = { workspace = true }
 aes = { workspace = true }
 aes-gcm = { workspace = true }
 anyhow = { workspace = true }

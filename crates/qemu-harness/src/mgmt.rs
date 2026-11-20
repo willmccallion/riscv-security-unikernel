@@ -25,7 +25,7 @@ impl MgmtClient {
     /// Reads the key the kernel was built with and learns the boot epoch
     /// from the kernel's telemetry.
     pub fn connect(kernel: &Kernel) -> Result<Self> {
-        let key = load_key()?;
+        let key = mgmt_key::load(Path::new(env!("CARGO_MANIFEST_DIR")))?;
         let telemetry = kernel
             .recv_matching(Duration::from_secs(5), |f| frame::telemetry(f).is_some())?
             .context("no telemetry frame to learn the epoch from")?;
@@ -84,17 +84,4 @@ impl MgmtClient {
         ))?;
         Ok(self.seq)
     }
-}
-
-fn load_key() -> Result<MgmtKey> {
-    let hex = if let Ok(hex) = std::env::var("KERNEL_MGMT_KEY") {
-        hex
-    } else {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.mgmt-key.local");
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?
-            .trim()
-            .to_string()
-    };
-    MgmtKey::parse_hex(&hex).context("mgmt key must be 32 hex characters")
 }
