@@ -22,10 +22,10 @@ use bench::VerdictCounts;
 use clap::{Parser, Subcommand};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use sec_core::config::{CMS_DECAY_INTERVAL, FLOW_TIMEOUT};
-use sec_core::engine::BootSecrets;
+use sec_core::config::FLOW_TIMEOUT;
+use sec_core::engine::{BootSecrets, Schedule};
 use sec_core::security::hash::MgmtKey;
-use sec_core::time::{TickSpan, TimeSource};
+use sec_core::time::TimeSource;
 use security_daemon::af_packet::{Outgoing, RxRing, TxSocket};
 use security_daemon::{monitor, sandbox};
 use std::sync::Arc;
@@ -33,9 +33,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 use synth::Mix;
-
-/// How often `run` prints stats and sends telemetry, in nanoseconds.
-const REPORT_INTERVAL: TickSpan = TickSpan::new(1_000_000_000);
 
 #[derive(Parser, Debug)]
 #[command(about = "Run the sec-core security pipeline on Linux")]
@@ -169,8 +166,7 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
 
     let mut counts = VerdictCounts::default();
     let mut frames = 0u64;
-    let mut last_report = clock.now();
-    let mut last_cms_decay = last_report;
+    let mut schedule = Schedule::new(clock.now());
 
     while duration.is_none_or(|d| started.elapsed() < d) {
         let now = clock.now();
@@ -180,12 +176,12 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
         frames += seen as u64;
 
         let now = clock.now();
-        if now.since(last_cms_decay) >= CMS_DECAY_INTERVAL {
+        let due = schedule.due(now);
+        if due.detection.is_some() {
             engine.end_detection_interval(&mut tx);
-            last_cms_decay = now;
         }
-        if now.since(last_report) >= REPORT_INTERVAL {
-            let secs = now.since(last_report).get() as f64 / 1e9;
+        if let Some(interval) = due.telemetry {
+            let secs = interval.get() as f64 / 1e9;
             let ring = rx.stats()?;
             let (sent, refused) = tx.counts();
             println!(
@@ -201,7 +197,6 @@ fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
             engine.start_interval();
             counts = VerdictCounts::default();
             frames = 0;
-            last_report = now;
         }
     }
     Ok(())

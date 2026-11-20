@@ -37,12 +37,12 @@ use crate::net_sink::VirtioNetSink;
 use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
 use sec_core::config::{
-    CMS_DECAY_INTERVAL, FLOW_TIMEOUT, IP_ADDR, KERNEL_VERSION, MAC_ADDR, MANAGEMENT_PORT,
-    TELEMETRY_INTERVAL, TELEMETRY_PORT, TOTAL_MEMORY_SIZE,
+    FLOW_TIMEOUT, IP_ADDR, KERNEL_VERSION, MAC_ADDR, MANAGEMENT_PORT, TELEMETRY_PORT,
+    TOTAL_MEMORY_SIZE,
 };
-use sec_core::engine::{BootSecrets, Engine};
+use sec_core::engine::{BootSecrets, Engine, Schedule};
 use sec_core::security::hash::MgmtKey;
-use sec_core::time::TimeSource;
+use sec_core::time::{Ticks, TimeSource};
 use sec_core::types::TakeOnce;
 
 include!(concat!(env!("OUT_DIR"), "/mgmt_key.rs"));
@@ -120,7 +120,12 @@ pub extern "C" fn kmain() -> ! {
         crate::kprintln!("\n\x1b[31m[BOOT]\x1b[0m engine already in use; halting.");
         halt();
     };
+    print_banner();
+    engine.init(BootSecrets::from_entropy(&gather_entropy(rng_present)));
+    run(engine)
+}
 
+fn print_banner() {
     crate::kprintln!("\n[ RISC-V Security Unikernel {} ]", KERNEL_VERSION);
     crate::kprintln!("[*] Architecture: RISC-V64 (Bare Metal)");
     crate::kprintln!("[*] Memory Limit: 64KB");
@@ -139,14 +144,12 @@ pub extern "C" fn kmain() -> ! {
     );
     crate::kprintln!("[*] Management  : UDP :{}", MANAGEMENT_PORT);
     crate::kprintln!("[*] Telemetry   : UDP :{} (Broadcast)", TELEMETRY_PORT);
+}
 
-    let clock = MCycle;
-    let mut sink = VirtioNetSink;
-    let mut last_report = clock.now();
-    let mut last_cms_decay = last_report;
-    let mut heartbeat = Heartbeat::new();
-
-    // XOR-mixed, so the result is unpredictable if any one source is.
+/// 32 bytes of boot entropy, XOR-mixed from every source present so the
+/// result is unpredictable if any one of them is; warns when only the
+/// cycle counter was available.
+fn gather_entropy(rng_present: bool) -> [u8; 32] {
     let mut entropy = [0u8; 32];
     let report = entropy::gather(&mut entropy, rng_present);
     crate::kprintln!(
@@ -161,41 +164,58 @@ pub extern "C" fn kmain() -> ! {
              Add virtio-rng (QEMU) or build with --features zkr (RISC-V K silicon) before deploying."
         );
     }
-    engine.init(BootSecrets::from_entropy(&entropy));
+    entropy
+}
 
+/// The packet loop: ends intervals as they fall due, then drains a batch
+/// of received frames through the engine.
+fn run(engine: &mut Engine) -> ! {
+    let clock = MCycle;
+    let mut sink = VirtioNetSink;
+    let mut heartbeat = Heartbeat::new();
+    let mut schedule = Schedule::new(clock.now());
     loop {
         let now = clock.now();
-        if now.since(last_report) > TELEMETRY_INTERVAL {
-            // Catch a stack overflow before we send telemetry built
-            // on possibly-corrupted state. Halts on detection.
-            stack_guard::check_or_halt();
-
-            engine.prune_flows(now, FLOW_TIMEOUT);
-            heartbeat.tick(engine.interval_stats(), engine.active_flows());
-            engine.send_telemetry(used_ram() as u64, &mut sink);
-            engine.start_interval();
-
-            last_report = now;
-            NetDevice::flush();
+        let due = schedule.due(now);
+        if due.telemetry.is_some() {
+            end_telemetry_interval(engine, &mut heartbeat, now, &mut sink);
         }
-
-        if now.since(last_cms_decay) > CMS_DECAY_INTERVAL {
+        if due.detection.is_some() {
             engine.end_detection_interval(&mut sink);
-            last_cms_decay = now;
         }
+        receive_batch(engine, now, &mut sink);
+    }
+}
 
-        let mut work_done = false;
-        for _ in 0..BATCH_SIZE {
-            let processed = NetDevice::receive(|packet| engine.process(packet, now, &mut sink));
-            if processed.is_none() {
-                break;
-            }
-            work_done = true;
-        }
+/// Prunes idle flows, prints the heartbeat and reports the interval.
+fn end_telemetry_interval(
+    engine: &mut Engine,
+    heartbeat: &mut Heartbeat,
+    now: Ticks,
+    sink: &mut VirtioNetSink,
+) {
+    // Catch a stack overflow before sending telemetry built on possibly
+    // corrupted state. Halts on detection.
+    stack_guard::check_or_halt();
+    engine.prune_flows(now, FLOW_TIMEOUT);
+    heartbeat.tick(engine.interval_stats(), engine.active_flows());
+    engine.send_telemetry(used_ram() as u64, sink);
+    engine.start_interval();
+    NetDevice::flush();
+}
 
-        if work_done {
-            NetDevice::flush();
+/// Runs up to [`BATCH_SIZE`] received frames through the engine.
+fn receive_batch(engine: &mut Engine, now: Ticks, sink: &mut VirtioNetSink) {
+    let mut work_done = false;
+    for _ in 0..BATCH_SIZE {
+        let processed = NetDevice::receive(|packet| engine.process(packet, now, sink));
+        if processed.is_none() {
+            break;
         }
+        work_done = true;
+    }
+    if work_done {
+        NetDevice::flush();
     }
 }
 
