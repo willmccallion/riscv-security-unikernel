@@ -6,6 +6,7 @@
 
 use core::net::Ipv4Addr;
 
+use crate::time::{TickSpan, Ticks};
 use core::num::NonZeroU64;
 
 /// Maximum number of flows that can be tracked simultaneously.
@@ -17,8 +18,8 @@ const MAX_FLOWS: usize = 74;
 /// flows just by being newer; with it, the table refuses to evict any
 /// flow that has been touched in the last `MIN_EVICTION_AGE` ticks and
 /// instead drops the new flow on the floor. Tuned well below
-/// `FLOW_TIMEOUT_CYCLES` so genuinely stale entries are still recyclable.
-const MIN_EVICTION_AGE: u64 = 1_000_000;
+/// `FLOW_TIMEOUT` so genuinely stale entries are still recyclable.
+const MIN_EVICTION_AGE: TickSpan = TickSpan::new(1_000_000);
 
 /// The 5-tuple identifying a flow. Addresses are in network byte order,
 /// ports in host byte order.
@@ -45,11 +46,11 @@ struct Flow {
     packets: NonZeroU64,
     bytes: u64,
     /// Last time this flow was seen (time-source units).
-    last_seen: u64,
+    last_seen: Ticks,
 }
 
 impl Flow {
-    const fn first(key: FlowKey, len: usize, now: u64) -> Self {
+    const fn first(key: FlowKey, len: usize, now: Ticks) -> Self {
         Self {
             key,
             packets: NonZeroU64::MIN,
@@ -58,7 +59,7 @@ impl Flow {
         }
     }
 
-    const fn record(&mut self, len: usize, now: u64) {
+    const fn record(&mut self, len: usize, now: Ticks) {
         self.packets = self.packets.saturating_add(1);
         self.bytes += len as u64;
         self.last_seen = now;
@@ -73,7 +74,7 @@ enum Lookup {
     Free(usize),
     /// Untracked and the table is full; this slot holds the flow seen
     /// least recently, at `last_seen`.
-    Oldest { index: usize, last_seen: u64 },
+    Oldest { index: usize, last_seen: Ticks },
 }
 
 /// Flow table for tracking active network connections.
@@ -108,7 +109,7 @@ impl FlowTable {
     ///
     /// Returns `true` if a new flow was created, `false` if an existing
     /// one was updated or the table refused to evict a recent flow.
-    pub fn update(&mut self, key: &FlowKey, len: usize, now: u64) -> bool {
+    pub fn update(&mut self, key: &FlowKey, len: usize, now: Ticks) -> bool {
         let index = match self.lookup(key) {
             Lookup::Tracked(index) => {
                 if let Some(flow) = &mut self.slots[index] {
@@ -119,7 +120,7 @@ impl FlowTable {
             Lookup::Free(index) => index,
             // Refuse to evict a recent flow, or a unique-5-tuple flood could
             // churn out long-lived legitimate flows simply by being newer.
-            Lookup::Oldest { last_seen, .. } if now.wrapping_sub(last_seen) < MIN_EVICTION_AGE => {
+            Lookup::Oldest { last_seen, .. } if now.since(last_seen) < MIN_EVICTION_AGE => {
                 return false;
             }
             Lookup::Oldest { index, .. } => index,
@@ -132,7 +133,7 @@ impl FlowTable {
     /// free slot, else the least recently seen flow's.
     fn lookup(&self, key: &FlowKey) -> Lookup {
         let mut free = None;
-        let (mut oldest, mut oldest_seen) = (0, u64::MAX);
+        let (mut oldest, mut oldest_seen) = (0, Ticks::new(u64::MAX));
         for (index, slot) in self.slots.iter().enumerate() {
             match slot {
                 Some(flow) if flow.key == *key => return Lookup::Tracked(index),
@@ -154,9 +155,9 @@ impl FlowTable {
     }
 
     /// Forgets the flows not seen for longer than `timeout`.
-    pub fn prune(&mut self, now: u64, timeout: u64) {
+    pub fn prune(&mut self, now: Ticks, timeout: TickSpan) {
         for slot in &mut self.slots {
-            if slot.is_some_and(|flow| now.wrapping_sub(flow.last_seen) > timeout) {
+            if slot.is_some_and(|flow| now.since(flow.last_seen) > timeout) {
                 *slot = None;
             }
         }
@@ -180,14 +181,14 @@ mod tests {
     #[test]
     fn pruning_forgets_flows_idle_past_the_timeout() {
         let mut table = FlowTable::new();
-        let _ = table.update(&key(1), 60, 0);
-        let _ = table.update(&key(2), 60, 900);
+        let _ = table.update(&key(1), 60, Ticks::new(0));
+        let _ = table.update(&key(2), 60, Ticks::new(900));
 
-        table.prune(1_000, 500);
+        table.prune(Ticks::new(1_000), TickSpan::new(500));
 
         assert_eq!(table.active_count(), 1);
         assert!(
-            !table.update(&key(2), 60, 1_001),
+            !table.update(&key(2), 60, Ticks::new(1_001)),
             "the recent flow is still tracked"
         );
     }
@@ -196,9 +197,9 @@ mod tests {
     fn a_full_table_evicts_its_least_recently_seen_flow_once_old_enough() {
         let mut table = FlowTable::new();
         for port in 0..MAX_FLOWS as u16 {
-            let _ = table.update(&key(port), 60, u64::from(port) + 1);
+            let _ = table.update(&key(port), 60, Ticks::new(u64::from(port) + 1));
         }
-        let later = MIN_EVICTION_AGE + 1;
+        let later = Ticks::new(MIN_EVICTION_AGE.get() + 1);
 
         let created = table.update(&key(9_999), 60, later);
 

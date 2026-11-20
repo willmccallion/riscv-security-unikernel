@@ -37,8 +37,8 @@ use crate::net_sink::VirtioNetSink;
 use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
 use sec_core::config::{
-    CMS_DECAY_INTERVAL_CYCLES, FLOW_TIMEOUT_CYCLES, IP_ADDR, KERNEL_VERSION, MAC_ADDR,
-    MANAGEMENT_PORT, TELEMETRY_INTERVAL_CYCLES, TELEMETRY_PORT, TOTAL_MEMORY_SIZE,
+    CMS_DECAY_INTERVAL, FLOW_TIMEOUT, IP_ADDR, KERNEL_VERSION, MAC_ADDR, MANAGEMENT_PORT,
+    TELEMETRY_INTERVAL, TELEMETRY_PORT, TOTAL_MEMORY_SIZE,
 };
 use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::stack::SynCookieSecret;
@@ -166,12 +166,12 @@ pub extern "C" fn kmain() -> ! {
 
     loop {
         let now = clock.now();
-        if now.wrapping_sub(last_report) > TELEMETRY_INTERVAL_CYCLES as u64 {
+        if now.since(last_report) > TELEMETRY_INTERVAL {
             // Catch a stack overflow before we send telemetry built
             // on possibly-corrupted state. Halts on detection.
             stack_guard::check_or_halt();
 
-            engine.prune_flows(now, FLOW_TIMEOUT_CYCLES as u64);
+            engine.prune_flows(now, FLOW_TIMEOUT);
             heartbeat.tick(engine.interval_stats(), engine.active_flows());
             engine.send_telemetry(used_ram() as u64, &mut sink);
             engine.start_interval();
@@ -180,7 +180,7 @@ pub extern "C" fn kmain() -> ! {
             NetDevice::flush();
         }
 
-        if now.wrapping_sub(last_cms_decay) > CMS_DECAY_INTERVAL_CYCLES as u64 {
+        if now.since(last_cms_decay) > CMS_DECAY_INTERVAL {
             engine.end_detection_interval(&mut sink);
             last_cms_decay = now;
         }

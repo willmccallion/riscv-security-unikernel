@@ -21,6 +21,7 @@ use sec_core::security::mgmt::ManagementMessageType;
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
 use sec_core::security::report_auth::ReportVerifier;
+use sec_core::time::{TickSpan, Ticks};
 use std::net::Ipv4Addr;
 
 const KEY: MgmtKey = MgmtKey::new([0x5A; 16]);
@@ -113,21 +114,21 @@ fuzz_target!(|steps: Vec<Step>| {
         cms_key: SketchKey::new([1; 16]),
         mgmt_epoch: EPOCH,
     });
-    let mut now: u64 = 0;
+    let mut now = Ticks::ZERO;
     let mut seq: u32 = 0;
     let mut sink = CheckedSink::new();
 
     for step in steps.into_iter().take(256) {
         match step {
             Step::Frame { dt, bytes } => {
-                now += u64::from(dt);
+                now += TickSpan::new(u64::from(dt));
                 if bytes.len() <= MAX_FRAME {
                     let mut frame = bytes;
                     let _ = engine.process(&mut frame, now, &mut sink);
                 }
             }
             Step::Udp { dt, src_last, src_port, dst_port, payload } => {
-                now += u64::from(dt);
+                now += TickSpan::new(u64::from(dt));
                 if payload.len() <= MAX_FRAME - 42 {
                     let src_ip = [192, 168, 100, src_last];
                     let mut frame = udp_frame(src_ip, src_port, dst_port, &payload);
@@ -135,7 +136,7 @@ fuzz_target!(|steps: Vec<Step>| {
                 }
             }
             Step::Mgmt { dt, seq_gap, body } => {
-                now += u64::from(dt);
+                now += TickSpan::new(u64::from(dt));
                 seq = seq.saturating_add(u32::from(seq_gap));
                 if body.len() <= 1400
                     && let Some(mut frame) = sealed_mgmt_frame(seq, &body)
@@ -144,8 +145,8 @@ fuzz_target!(|steps: Vec<Step>| {
                 }
             }
             Step::Tick { dt } => {
-                now += u64::from(dt);
-                engine.prune_flows(now, sec_core::config::FLOW_TIMEOUT_CYCLES as u64);
+                now += TickSpan::new(u64::from(dt));
+                engine.prune_flows(now, sec_core::config::FLOW_TIMEOUT);
                 engine.end_detection_interval(&mut sink);
                 engine.send_telemetry(0, &mut sink);
                 engine.start_interval();

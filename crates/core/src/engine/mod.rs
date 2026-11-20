@@ -6,17 +6,18 @@
 //! as an argument. That keeps the whole pipeline runnable, testable and
 //! fuzzable on the host.
 
+use crate::time::{TickSpan, Ticks};
 use core::net::Ipv4Addr;
 
 mod report;
 
 use crate::config::{
-    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES, CMS_DEPTH, CMS_WIDTH, DDOS_ALERT_SAMPLE_RATE,
-    DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD, IP_ADDR,
-    IP_BAN_DURATION_CYCLES, MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY,
-    MGMT_TOKEN_COST_CYCLES, PREFIX_SKETCH_DEPTH, PREFIX_SKETCH_WIDTH, RATE_LIMIT_TOKEN_COST_CYCLES,
-    SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM, SUBNET_16_THRESHOLD,
-    SUBNET_24_THRESHOLD, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
+    ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST, CMS_DEPTH, CMS_WIDTH, DDOS_ALERT_SAMPLE_RATE,
+    DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION,
+    MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST,
+    PREFIX_SKETCH_DEPTH, PREFIX_SKETCH_WIDTH, RATE_LIMIT_TOKEN_COST, SOURCE_COUNTER_REGISTERS,
+    SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
+    TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
@@ -152,15 +153,9 @@ impl<
             port_scans: scan::PortScanDetector::new(SketchKey::new([0; 16])),
             source_surge: anomaly::SurgeDetector::new(SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM),
             penalty_box: dos::PenaltyBox::new(),
-            limiter: dos::TokenBucket::new(
-                TOKEN_BUCKET_CAPACITY as u64,
-                RATE_LIMIT_TOKEN_COST_CYCLES,
-            ),
-            mgmt_failure_limiter: dos::TokenBucket::new(
-                MGMT_BUCKET_CAPACITY,
-                MGMT_TOKEN_COST_CYCLES,
-            ),
-            alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST_CYCLES),
+            limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY, RATE_LIMIT_TOKEN_COST),
+            mgmt_failure_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST),
+            alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST),
             vm: VM::new(),
             bpf: BpfSlot {
                 program: [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE],
@@ -225,13 +220,13 @@ impl<
     }
 
     /// Expires flows idle for longer than `timeout`.
-    pub fn prune_flows(&mut self, now: u64, timeout: u64) {
+    pub fn prune_flows(&mut self, now: Ticks, timeout: TickSpan) {
         self.flows.prune(now, timeout);
     }
 
     /// Closes one detection interval: ages the heavy-hitter counts and lets
     /// interval-based detectors report. Call every
-    /// [`CMS_DECAY_INTERVAL_CYCLES`](crate::config::CMS_DECAY_INTERVAL_CYCLES).
+    /// [`CMS_DECAY_INTERVAL`](crate::config::CMS_DECAY_INTERVAL).
     pub fn end_detection_interval<S: PacketSink>(&mut self, sink: &mut S) {
         self.source_rates.decay();
         self.prefixes.decay();
@@ -271,7 +266,12 @@ impl<
     }
 
     /// Runs one received frame through the pipeline.
-    pub fn process<S: PacketSink>(&mut self, packet: &mut [u8], now: u64, sink: &mut S) -> Verdict {
+    pub fn process<S: PacketSink>(
+        &mut self,
+        packet: &mut [u8],
+        now: Ticks,
+        sink: &mut S,
+    ) -> Verdict {
         if is_for_us(packet) {
             self.stats.received_for_us += 1;
         }
@@ -301,12 +301,11 @@ impl<
             if self.penalty_box.is_banned(meta.src_ip, now) {
                 drop = true;
             } else if self.source_rates.insert_hash(source_hash) > HEAVY_HITTER_THRESHOLD {
-                self.penalty_box
-                    .ban(meta.src_ip, IP_BAN_DURATION_CYCLES as u64, now);
+                self.penalty_box.ban(meta.src_ip, IP_BAN_DURATION, now);
                 drop = true;
             } else if let Some(subnet) = self.count_subnets(meta.src_ip) {
                 self.penalty_box
-                    .ban_prefix(subnet.prefix, IP_BAN_DURATION_CYCLES as u64, now);
+                    .ban_prefix(subnet.prefix, IP_BAN_DURATION, now);
                 let alert = AlertMeta {
                     src_ip: subnet.prefix.network(),
                     prefix_len: subnet.prefix.prefix_len(),
@@ -316,8 +315,7 @@ impl<
                 self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
                 drop = true;
             } else if let Some(scan) = self.count_connection_attempt(packet, ip, meta.dst_port) {
-                self.penalty_box
-                    .ban(scan.source, IP_BAN_DURATION_CYCLES as u64, now);
+                self.penalty_box.ban(scan.source, IP_BAN_DURATION, now);
                 let alert = AlertMeta {
                     value: scan.distinct_ports,
                     ..meta
@@ -405,7 +403,7 @@ impl<
         &mut self,
         envelope: MgmtEnvelope<'_>,
         meta: &AlertMeta,
-        now: u64,
+        now: Ticks,
         sink: &mut S,
     ) -> Verdict {
         self.stats.mgmt += 1;
@@ -464,7 +462,13 @@ impl<
 
     /// Records the packet against its flow, alerting on a sample of new
     /// flows.
-    fn track_flow<S: PacketSink>(&mut self, meta: &AlertMeta, len: usize, now: u64, sink: &mut S) {
+    fn track_flow<S: PacketSink>(
+        &mut self,
+        meta: &AlertMeta,
+        len: usize,
+        now: Ticks,
+        sink: &mut S,
+    ) {
         let key = flow::FlowKey {
             src_ip: meta.src_ip,
             dst_ip: meta.dst_ip,
@@ -473,7 +477,7 @@ impl<
             protocol: meta.protocol,
         };
         let is_new = self.flows.update(&key, len, now);
-        if is_new && (now & FLOW_LOG_SAMPLE_MASK as u64) == 0 {
+        if is_new && now.get() & FLOW_LOG_SAMPLE_MASK == 0 {
             self.alert(meta, AlertReason::Flow, now, sink);
         }
     }
@@ -482,7 +486,7 @@ impl<
         &mut self,
         rejected: &RejectedIpv4,
         meta: &AlertMeta,
-        now: u64,
+        now: Ticks,
         sink: &mut S,
     ) -> Verdict {
         let alert = AlertMeta {
@@ -498,7 +502,7 @@ impl<
         &mut self,
         meta: &AlertMeta,
         reason: AlertReason,
-        now: u64,
+        now: Ticks,
         sink: &mut S,
     ) -> Verdict {
         self.alert(meta, reason, now, sink);
@@ -521,7 +525,7 @@ impl<
         &mut self,
         meta: &AlertMeta,
         reason: AlertReason,
-        now: u64,
+        now: Ticks,
         sink: &mut S,
     ) {
         if self.alert_limiter.allow(now) {
@@ -561,7 +565,7 @@ impl<
     }
 
     /// Applies an authenticated mgmt body and reports what happened.
-    fn dispatch_mgmt(&mut self, body: &[u8], now: u64) -> MgmtOutcome {
+    fn dispatch_mgmt(&mut self, body: &[u8], now: Ticks) -> MgmtOutcome {
         let Some(&msg_type) = body.get(mgmt_packet::MSG_TYPE_OFFSET) else {
             return MgmtOutcome::Invalid;
         };
@@ -621,14 +625,11 @@ impl<
         MgmtOutcome::Applied
     }
 
-    fn ban_ip(&mut self, body: &[u8], now: u64) -> MgmtOutcome {
+    fn ban_ip(&mut self, body: &[u8], now: Ticks) -> MgmtOutcome {
         let Some(ip) = ip_operand(body) else {
             return MgmtOutcome::Invalid;
         };
-        match self
-            .penalty_box
-            .ban_by_operator(ip, IP_BAN_DURATION_CYCLES as u64, now)
-        {
+        match self.penalty_box.ban_by_operator(ip, IP_BAN_DURATION, now) {
             Ok(()) => MgmtOutcome::Applied,
             Err(dos::PenaltyBoxFull) => MgmtOutcome::TableFull,
         }

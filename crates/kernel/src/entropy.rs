@@ -103,7 +103,7 @@ pub struct McycleSource;
 
 impl EntropySource for McycleSource {
     fn fill(&mut self, buf: &mut [u8]) -> usize {
-        let mc = MCycle.now();
+        let mc = MCycle.now().get();
         for (i, b) in buf.iter_mut().enumerate() {
             *b = ((mc >> ((i % 8) * 8)) as u8) ^ MAC_ADDR[i % MAC_ADDR.len()];
         }
