@@ -7,6 +7,7 @@ use sec_core::engine::{BootSecrets, Engine};
 use sec_core::net::PacketSink;
 use sec_core::net::frame::{self, Frame, Transport};
 use sec_core::net::stack::{SynCookieSecret, checksum};
+use sec_core::net::tcp::TcpFlags;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
 use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
@@ -119,13 +120,48 @@ pub fn udp(src_ip: [u8; 4], src_port: u16, dst_port: u16, payload: &[u8]) -> Vec
 }
 
 pub fn tcp(src_ip: [u8; 4], src_port: u16, dst_port: u16, flags: u8, payload: &[u8]) -> Vec<u8> {
+    tcp_segment(
+        src_ip,
+        (src_port, dst_port),
+        TcpFlags::new(flags),
+        0,
+        payload,
+    )
+}
+
+/// A TCP segment between `ports` (source, destination) with sequence
+/// number `seq`.
+pub fn tcp_segment(
+    src_ip: [u8; 4],
+    (src_port, dst_port): (u16, u16),
+    flags: TcpFlags,
+    seq: u32,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut l4 = vec![0u8; 20];
     l4[0..2].copy_from_slice(&src_port.to_be_bytes());
     l4[2..4].copy_from_slice(&dst_port.to_be_bytes());
+    l4[4..8].copy_from_slice(&seq.to_be_bytes());
     l4[12] = 0x50;
-    l4[13] = flags;
+    l4[13] = flags.bits();
     l4.extend_from_slice(payload);
     ipv4(src_ip, 6, &l4)
+}
+
+/// An ARP request from the peer asking who has `target_ip`, with the
+/// given hardware type (1 for Ethernet).
+pub fn arp_request(hw_type: u16, target_ip: [u8; 4]) -> Vec<u8> {
+    let mut f = Vec::with_capacity(42);
+    f.extend_from_slice(&[0xFF; 6]);
+    f.extend_from_slice(&PEER_MAC);
+    f.extend_from_slice(&[0x08, 0x06]);
+    f.extend_from_slice(&hw_type.to_be_bytes());
+    f.extend_from_slice(&[0x08, 0x00, 6, 4, 0x00, 0x01]);
+    f.extend_from_slice(&PEER_MAC);
+    f.extend_from_slice(&PEER_IP);
+    f.extend_from_slice(&[0; 6]);
+    f.extend_from_slice(&target_ip);
+    f
 }
 
 /// An ICMP echo request with a correct checksum carrying `data`.
