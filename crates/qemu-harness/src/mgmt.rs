@@ -40,7 +40,9 @@ impl MgmtClient {
     /// built with, returning its body.
     pub fn verify_report<'a>(&self, frame: &'a [u8]) -> Option<&'a [u8]> {
         let mut verifier = ReportVerifier::new(ReportKey::derive(&self.key));
-        verifier.verify(frame.get(42..)?).map(|report| report.body)
+        verifier
+            .verify(frame.get(frame::UDP_PAYLOAD_OFFSET..)?)
+            .map(|report| report.body)
     }
 
     /// Checks the kernel still runs its packet loop: sends a command of an
