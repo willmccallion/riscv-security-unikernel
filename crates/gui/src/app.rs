@@ -44,21 +44,32 @@ enum Tab {
     LiveNetwork,
 }
 
+/// Where a rule shown in the UI came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// Compiled into the kernel, and not removable at run time.
+    Fixed,
+    /// Part of the kernel's default configuration, which can be removed.
+    Default,
+    /// Added by this command.
+    Issued(CommandId),
+}
+
 /// A rule shown in the UI, with what the kernel said about it.
+#[derive(Debug)]
 struct Rule<T> {
     item: T,
-    /// The command that installed it; `None` for rules built into the kernel.
-    command: Option<CommandId>,
+    origin: Origin,
     status: CommandStatus,
     /// The command removing it, while one is outstanding or failed.
     removal: Option<(CommandId, CommandStatus)>,
 }
 
 impl<T> Rule<T> {
-    const fn built_in(item: T) -> Self {
+    const fn built_in(item: T, origin: Origin) -> Self {
         Self {
             item,
-            command: None,
+            origin,
             status: CommandStatus::Applied,
             removal: None,
         }
@@ -67,16 +78,24 @@ impl<T> Rule<T> {
     const fn issued(item: T, command: CommandId, status: CommandStatus) -> Self {
         Self {
             item,
-            command: Some(command),
+            origin: Origin::Issued(command),
             status,
             removal: None,
         }
     }
 
+    /// Whether the operator may remove it now: it is in force, removable,
+    /// and no removal is under way.
+    fn can_remove(&self) -> bool {
+        self.origin != Origin::Fixed
+            && self.status == CommandStatus::Applied
+            && self.removal.is_none()
+    }
+
     /// Applies a status update; returns `true` once the rule's removal has
     /// been applied and the row should go.
     fn update(&mut self, id: CommandId, status: CommandStatus) -> bool {
-        if self.command == Some(id) {
+        if self.origin == Origin::Issued(id) {
             self.status = status;
         }
         match &mut self.removal {
@@ -169,10 +188,13 @@ impl Dashboard {
             sdn_port: String::new(),
             sdn_sig: String::new(),
             bpf_code: "BLOCK TCP DST 80".to_string(),
-            blocked_ports: vec![Rule::built_in(sec_core::config::DEFAULT_BLOCKED_PORT)],
+            blocked_ports: vec![Rule::built_in(
+                sec_core::config::DEFAULT_BLOCKED_PORT,
+                Origin::Default,
+            )],
             dpi_signatures: BUILTIN_SIGNATURES
                 .iter()
-                .map(|sig| Rule::built_in(String::from_utf8_lossy(sig).into_owned()))
+                .map(|sig| Rule::built_in(String::from_utf8_lossy(sig).into_owned(), Origin::Fixed))
                 .collect(),
             bpf_programs: Vec::new(),
             log_mode: LogMode::Alerts,
@@ -270,57 +292,23 @@ impl Dashboard {
     /// Displays network statistics cards, traffic generation controls,
     /// real-time traffic rate graphs, and the security event log.
     fn ui_dashboard(&mut self, ui: &mut egui::Ui) {
-        let stats = self.stats.snapshot();
         ui.add_space(5.0);
-        stats_grid(ui, &stats);
-
+        stats_grid(ui, &self.stats.snapshot());
         ui.add_space(25.0);
-
-        ui.group(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("TRAFFIC GENERATOR:")
-                        .strong()
-                        .size(14.0),
-                );
-                ui.add_space(10.0);
-                if ui.button("STOP").clicked() {
-                    self.send(GuiCommand::SetMode(TrafficMode::Idle));
-                }
-                if ui.button("NORMAL (HTTP)").clicked() {
-                    self.send(GuiCommand::SetMode(TrafficMode::Normal));
-                }
-                if ui.button("DDoS ATTACK").clicked() {
-                    self.send(GuiCommand::SetMode(TrafficMode::DDoS));
-                }
-                if ui.button("LIVE SIMULATION").clicked() {
-                    self.send(GuiCommand::SetMode(TrafficMode::Live));
-                }
-            });
-        });
-
+        if let Some(mode) = traffic_generator_controls(ui) {
+            self.send(GuiCommand::SetMode(mode));
+        }
         ui.add_space(15.0);
-
-        let line_pass = Line::new(self.history_pass.iter().copied().collect::<PlotPoints>())
-            .color(egui::Color32::GREEN)
-            .name("Passed (PPS)");
-        let line_drop = Line::new(self.history_drop.iter().copied().collect::<PlotPoints>())
-            .color(egui::Color32::RED)
-            .name("Dropped (PPS)");
-
-        Plot::new("traffic_plot")
-            .height(300.0)
-            .show_axes([false, true])
-            .show_grid([false, true])
-            .legend(egui_plot::Legend::default())
-            .show(ui, |plot_ui| {
-                plot_ui.line(line_pass);
-                plot_ui.line(line_drop);
-            });
-
+        traffic_plot(ui, &self.history_pass, &self.history_drop);
         ui.add_space(15.0);
-
         ui.separator();
+        self.log_header(ui);
+        self.event_log(ui);
+        self.show_inspector(ui.ctx());
+    }
+
+    /// The log's title, its filter and its pause button.
+    fn log_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("LIVE EVENT LOG").strong());
             ui.add_space(10.0);
@@ -337,7 +325,11 @@ impl Dashboard {
                 }
             });
         });
+    }
 
+    /// The log rows, newest at the bottom, following new rows unless
+    /// paused; clicking a row selects it.
+    fn event_log(&mut self, ui: &mut egui::Ui) {
         let snap = !self.log_paused && self.log_new_entry;
         self.log_new_entry = false;
         egui::ScrollArea::vertical()
@@ -355,241 +347,240 @@ impl Dashboard {
                     ui.add_space(2.0);
                 }
             });
+    }
 
-        if let Some(entry) = &self.selected_log {
-            let (open, command) = packet_inspector(ui.ctx(), entry);
-            if !open {
-                self.selected_log = None;
-            }
-            if let Some(command) = command {
-                let _ = self.issue(&command);
-            }
+    /// The packet inspector for the selected row, and any ban it asks for.
+    fn show_inspector(&mut self, ctx: &egui::Context) {
+        let Some(entry) = &self.selected_log else {
+            return;
+        };
+        let (open, command) = packet_inspector(ctx, entry);
+        if !open {
+            self.selected_log = None;
+        }
+        if let Some(command) = command {
+            let _ = self.issue(&command);
         }
     }
 
-    /// Renders the SDN and firewall configuration tab.
-    ///
-    /// Provides interfaces for:
-    /// - Blocking specific destination ports
-    /// - Adding DPI signature patterns for deep packet inspection
+    /// Renders the SDN and firewall configuration tab: blocked ports on
+    /// the left, DPI signatures on the right.
     fn ui_sdn(&mut self, ui: &mut egui::Ui) {
         ui.heading("Firewall & SDN Rules");
         ui.add_space(10.0);
-
-        ui.columns(2, |cols| {
-            // Left column: Firewall
-            cols[0].group(|ui| {
-                ui.label(egui::RichText::new("Firewall — Blocked Ports").strong());
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.sdn_port);
-                    if ui.button("BLOCK PORT").clicked()
-                        && let Ok(port) = self.sdn_port.trim().parse::<u16>()
-                    {
-                        let command = self.issue(&Command::BlockPort(port));
-                        self.blocked_ports.retain(|r| r.item != port);
-                        self.blocked_ports.push(Rule::issued(
-                            port,
-                            command,
-                            CommandStatus::Pending,
-                        ));
-                        self.sdn_port.clear();
-                    }
-                });
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(5.0);
-                egui::ScrollArea::vertical()
-                    .id_source("fw_list")
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        let mut unblock = None;
-                        for rule in &self.blocked_ports {
-                            ui.horizontal(|ui| {
-                                ui.colored_label(egui::Color32::RED, "BLOCK");
-                                ui.label(format!("TCP/UDP dst:{}", rule.item));
-                                rule_status(ui, rule);
-                                if rule.status == CommandStatus::Applied
-                                    && rule.removal.is_none()
-                                    && ui.small_button("remove").clicked()
-                                {
-                                    unblock = Some(rule.item);
-                                }
-                            });
-                        }
-                        if let Some(port) = unblock {
-                            let id = self.issue(&Command::UnblockPort(port));
-                            if let Some(rule) =
-                                self.blocked_ports.iter_mut().find(|r| r.item == port)
-                            {
-                                rule.removal = Some((id, CommandStatus::Pending));
-                            }
-                        }
-                    });
-            });
-
-            // Right column: DPI signatures
-            cols[1].group(|ui| {
-                ui.label(egui::RichText::new("DPI — Signature Rules").strong());
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.sdn_sig);
-                    if ui.button("ADD SIGNATURE").clicked() && !self.sdn_sig.is_empty() {
-                        let sig = std::mem::take(&mut self.sdn_sig);
-                        let add = Pattern::new(sig.as_bytes())
-                            .ok()
-                            .map(Command::AddDpiPattern);
-                        let (command, status) = self.issue_if_valid(add.as_ref());
-                        self.dpi_signatures.retain(|r| r.item != sig);
-                        self.dpi_signatures.push(Rule::issued(sig, command, status));
-                        self.sdn_sig.clear();
-                    }
-                });
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(5.0);
-                egui::ScrollArea::vertical()
-                    .id_source("dpi_list")
-                    .max_height(200.0)
-                    .show(ui, |ui| {
-                        let mut remove = None;
-                        for rule in &self.dpi_signatures {
-                            ui.horizontal(|ui| {
-                                ui.colored_label(egui::Color32::from_rgb(255, 140, 0), "MATCH");
-                                ui.monospace(format!("\"{}\"", rule.item));
-                                rule_status(ui, rule);
-                                // Built-in signatures live in the kernel's automaton
-                                // and cannot be removed at runtime.
-                                if rule.command.is_some()
-                                    && rule.status == CommandStatus::Applied
-                                    && rule.removal.is_none()
-                                    && ui.small_button("remove").clicked()
-                                {
-                                    remove = Some(rule.item.clone());
-                                }
-                            });
-                        }
-                        if let Some(sig) = remove {
-                            let removal = Pattern::new(sig.as_bytes())
-                                .ok()
-                                .map(Command::RemoveDpiPattern);
-                            let removal = self.issue_if_valid(removal.as_ref());
-                            if let Some(rule) =
-                                self.dpi_signatures.iter_mut().find(|r| r.item == sig)
-                            {
-                                rule.removal = Some(removal);
-                            }
-                        }
-                    });
-            });
+        let (firewall, dpi) = ui.columns(2, |cols| {
+            let firewall = rule_column(
+                &mut cols[0],
+                &FIREWALL_COLUMN,
+                &mut self.sdn_port,
+                &self.blocked_ports,
+                |port| format!("TCP/UDP dst:{port}"),
+            );
+            let dpi = rule_column(
+                &mut cols[1],
+                &DPI_COLUMN,
+                &mut self.sdn_sig,
+                &self.dpi_signatures,
+                |sig| format!("\"{sig}\""),
+            );
+            (firewall, dpi)
         });
+        match firewall {
+            Some(RuleAction::Add) => self.block_port(),
+            Some(RuleAction::Remove(port)) => self.unblock_port(port),
+            None => {}
+        }
+        match dpi {
+            Some(RuleAction::Add) => self.add_signature(),
+            Some(RuleAction::Remove(sig)) => self.remove_signature(&sig),
+            None => {}
+        }
     }
 
-    /// Renders the BPF program editor tab.
-    ///
-    /// Allows users to write and compile custom packet filtering programs
-    /// that are executed in the kernel's virtual machine for each packet.
+    /// Blocks the port typed into the firewall column, if it is one.
+    fn block_port(&mut self) {
+        let Ok(port) = self.sdn_port.trim().parse::<u16>() else {
+            return;
+        };
+        let command = self.issue(&Command::BlockPort(port));
+        self.blocked_ports.retain(|r| r.item != port);
+        self.blocked_ports
+            .push(Rule::issued(port, command, CommandStatus::Pending));
+        self.sdn_port.clear();
+    }
+
+    fn unblock_port(&mut self, port: u16) {
+        let id = self.issue(&Command::UnblockPort(port));
+        if let Some(rule) = self.blocked_ports.iter_mut().find(|r| r.item == port) {
+            rule.removal = Some((id, CommandStatus::Pending));
+        }
+    }
+
+    /// Adds the signature typed into the DPI column; one the kernel would
+    /// refuse is listed as not sent.
+    fn add_signature(&mut self) {
+        if self.sdn_sig.is_empty() {
+            return;
+        }
+        let sig = std::mem::take(&mut self.sdn_sig);
+        let add = Pattern::new(sig.as_bytes())
+            .ok()
+            .map(Command::AddDpiPattern);
+        let (command, status) = self.issue_if_valid(add.as_ref());
+        self.dpi_signatures.retain(|r| r.item != sig);
+        self.dpi_signatures.push(Rule::issued(sig, command, status));
+    }
+
+    fn remove_signature(&mut self, sig: &str) {
+        let removal = Pattern::new(sig.as_bytes())
+            .ok()
+            .map(Command::RemoveDpiPattern);
+        let removal = self.issue_if_valid(removal.as_ref());
+        if let Some(rule) = self.dpi_signatures.iter_mut().find(|r| r.item == sig) {
+            rule.removal = Some(removal);
+        }
+    }
+
+    /// Renders the BPF tab: the program editor on the left, the uploaded
+    /// programs on the right.
     fn ui_bpf(&mut self, ui: &mut egui::Ui) {
         ui.heading("BPF Packet Filter");
         ui.label("Inject custom assembly into the packet processing pipeline.");
         ui.add_space(10.0);
-
         ui.columns(2, |cols| {
-            // Left: editor
-            cols[0].group(|ui| {
-                ui.label(egui::RichText::new("Program Editor").strong());
-                ui.add_space(5.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Preset: Block TCP Port 80").clicked() {
-                        self.bpf_code = "BLOCK TCP DST 80".to_string();
-                    }
-                    if ui.button("Preset: Block All").clicked() {
-                        self.bpf_code = "DROP ALL".to_string();
-                    }
-                });
-                ui.add_space(5.0);
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.bpf_code)
-                        .code_editor()
-                        .desired_rows(6),
-                );
-                ui.add_space(5.0);
-                if ui.button("COMPILE & UPLOAD").clicked() {
-                    if let Some(program) = compile_bpf(&self.bpf_code) {
-                        let command = self.issue(&Command::UploadBpf(program));
-                        self.bpf_programs.push(Rule::issued(
-                            self.bpf_code.trim().to_string(),
-                            command,
-                            CommandStatus::Pending,
-                        ));
-                    } else {
-                        self.record(LogEvent::CompileFailed);
-                    }
-                }
-            });
-
-            // Right: active programs list
-            cols[1].group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Uploaded Programs").strong());
-                    if ui.small_button("unload").clicked() {
-                        let id = self.issue(&Command::UnloadBpf);
-                        if let Some(active) = self
-                            .bpf_programs
-                            .iter_mut()
-                            .rfind(|r| r.status == CommandStatus::Applied)
-                        {
-                            active.removal = Some((id, CommandStatus::Pending));
-                        }
-                    }
-                });
-                ui.add_space(5.0);
-                ui.separator();
-                ui.add_space(5.0);
-                if self.bpf_programs.is_empty() {
-                    ui.label(egui::RichText::new("No programs loaded").color(egui::Color32::GRAY));
-                } else {
-                    egui::ScrollArea::vertical()
-                        .id_source("bpf_list")
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            let active = self
-                                .bpf_programs
-                                .iter()
-                                .rposition(|r| r.status == CommandStatus::Applied);
-                            for (i, rule) in self.bpf_programs.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(
-                                        egui::Color32::LIGHT_BLUE,
-                                        format!("[{}]", i + 1),
-                                    );
-                                    ui.monospace(&rule.item);
-                                    if rule.removal.is_some() {
-                                        rule_status(ui, rule);
-                                    } else if Some(i) == active {
-                                        ui.colored_label(egui::Color32::GREEN, "ACTIVE");
-                                    } else if rule.status == CommandStatus::Applied {
-                                        ui.colored_label(egui::Color32::GRAY, "replaced");
-                                    } else {
-                                        status_badge(ui, rule.status);
-                                    }
-                                });
-                            }
-                        });
-                }
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(5.0);
-                ui.label(
-                    egui::RichText::new("Syntax Reference")
-                        .color(egui::Color32::GRAY)
-                        .size(11.0),
-                );
-                ui.monospace("BLOCK <TCP|UDP> DST <port>");
-                ui.monospace("DROP ALL");
-            });
+            cols[0].group(|ui| self.bpf_editor(ui));
+            cols[1].group(|ui| self.bpf_program_list(ui));
         });
     }
+
+    fn bpf_editor(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Program Editor").strong());
+        ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            if ui.button("Preset: Block TCP Port 80").clicked() {
+                self.bpf_code = "BLOCK TCP DST 80".to_string();
+            }
+            if ui.button("Preset: Block All").clicked() {
+                self.bpf_code = "DROP ALL".to_string();
+            }
+        });
+        ui.add_space(5.0);
+        ui.add(
+            egui::TextEdit::multiline(&mut self.bpf_code)
+                .code_editor()
+                .desired_rows(6),
+        );
+        ui.add_space(5.0);
+        if ui.button("COMPILE & UPLOAD").clicked() {
+            self.upload_bpf();
+        }
+    }
+
+    /// Compiles the editor's program and uploads it, or logs that it did
+    /// not compile.
+    fn upload_bpf(&mut self) {
+        let Some(program) = compile_bpf(&self.bpf_code) else {
+            self.record(LogEvent::CompileFailed);
+            return;
+        };
+        let command = self.issue(&Command::UploadBpf(program));
+        let source = self.bpf_code.trim().to_string();
+        self.bpf_programs
+            .push(Rule::issued(source, command, CommandStatus::Pending));
+    }
+
+    fn bpf_program_list(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Uploaded Programs").strong());
+            if ui.small_button("unload").clicked() {
+                self.unload_bpf();
+            }
+        });
+        ui.add_space(5.0);
+        ui.separator();
+        ui.add_space(5.0);
+        if self.bpf_programs.is_empty() {
+            ui.label(egui::RichText::new("No programs loaded").color(egui::Color32::GRAY));
+        } else {
+            egui::ScrollArea::vertical()
+                .id_source("bpf_list")
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    let active = self
+                        .bpf_programs
+                        .iter()
+                        .rposition(|r| r.status == CommandStatus::Applied);
+                    for (i, rule) in self.bpf_programs.iter().enumerate() {
+                        program_row(ui, i, rule, Some(i) == active);
+                    }
+                });
+        }
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(5.0);
+        ui.label(
+            egui::RichText::new("Syntax Reference")
+                .color(egui::Color32::GRAY)
+                .size(11.0),
+        );
+        ui.monospace("BLOCK <TCP|UDP> DST <port>");
+        ui.monospace("DROP ALL");
+    }
+
+    /// Unloads the running program, marking the newest applied one as
+    /// being removed.
+    fn unload_bpf(&mut self) {
+        let id = self.issue(&Command::UnloadBpf);
+        if let Some(active) = self
+            .bpf_programs
+            .iter_mut()
+            .rfind(|r| r.status == CommandStatus::Applied)
+        {
+            active.removal = Some((id, CommandStatus::Pending));
+        }
+    }
+}
+
+impl Dashboard {
+    /// The title, the connection state and the tab bar.
+    fn header(&mut self, ctx: &egui::Context) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let connected = is_connected(self.stats.last_seen.load(Ordering::Relaxed), now);
+        egui::TopBottomPanel::top("header").show(ctx, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.heading("Security Appliance Dashboard");
+                let (state, color) = if connected {
+                    ("ONLINE", egui::Color32::GREEN)
+                } else {
+                    ("DISCONNECTED", egui::Color32::RED)
+                };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(state).color(color).strong());
+                });
+            });
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "DASHBOARD");
+                ui.selectable_value(&mut self.selected_tab, Tab::Sdn, "SDN / FIREWALL");
+                ui.selectable_value(&mut self.selected_tab, Tab::Bpf, "BPF STUDIO");
+                ui.selectable_value(&mut self.selected_tab, Tab::LiveNetwork, "LIVE NETWORK");
+            });
+            ui.add_space(4.0);
+        });
+    }
+}
+
+/// Whether a kernel last heard from at `last_seen` counts as online at
+/// `now`, both in Unix seconds: telemetry arrives every second, so a few
+/// missed reports mean it is gone.
+const fn is_connected(last_seen: u64, now: u64) -> bool {
+    const CONNECTED_WITHIN_SECS: u64 = 3;
+    now.saturating_sub(last_seen) < CONNECTED_WITHIN_SECS
 }
 
 impl eframe::App for Dashboard {
@@ -604,43 +595,7 @@ impl eframe::App for Dashboard {
 
         ctx.request_repaint();
 
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.heading("Security Appliance Dashboard");
-                let last = self.stats.last_seen.load(Ordering::Relaxed);
-                let sys_now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs());
-                let connected = sys_now.saturating_sub(last) < 3;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if connected {
-                        ui.label(
-                            egui::RichText::new("ONLINE")
-                                .color(egui::Color32::GREEN)
-                                .strong(),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new("DISCONNECTED")
-                                .color(egui::Color32::RED)
-                                .strong(),
-                        );
-                    }
-                });
-            });
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.selected_tab, Tab::Dashboard, "DASHBOARD");
-                ui.selectable_value(&mut self.selected_tab, Tab::Sdn, "SDN / FIREWALL");
-                ui.selectable_value(&mut self.selected_tab, Tab::Bpf, "BPF STUDIO");
-                ui.selectable_value(&mut self.selected_tab, Tab::LiveNetwork, "LIVE NETWORK");
-            });
-            ui.add_space(4.0);
-        });
-
+        self.header(ctx);
         egui::CentralPanel::default().show(ctx, |ui| match self.selected_tab {
             Tab::Dashboard => self.ui_dashboard(ui),
             Tab::Sdn => self.ui_sdn(ui),
@@ -752,6 +707,53 @@ fn stat_card(ui: &mut egui::Ui, title: &str, value: CardValue, color: egui::Colo
                     ui.add_space(14.0);
                 }
             });
+        });
+}
+
+/// The traffic generator's buttons; returns the mode chosen this frame.
+fn traffic_generator_controls(ui: &mut egui::Ui) -> Option<TrafficMode> {
+    const MODES: [(&str, TrafficMode); 4] = [
+        ("STOP", TrafficMode::Idle),
+        ("NORMAL (HTTP)", TrafficMode::Normal),
+        ("DDoS ATTACK", TrafficMode::DDoS),
+        ("LIVE SIMULATION", TrafficMode::Live),
+    ];
+    let mut chosen = None;
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("TRAFFIC GENERATOR:")
+                    .strong()
+                    .size(14.0),
+            );
+            ui.add_space(10.0);
+            for (label, mode) in MODES {
+                if ui.button(label).clicked() {
+                    chosen = Some(mode);
+                }
+            }
+        });
+    });
+    chosen
+}
+
+/// The passed and dropped rates over time.
+fn traffic_plot(ui: &mut egui::Ui, passed: &VecDeque<[f64; 2]>, dropped: &VecDeque<[f64; 2]>) {
+    let line = |history: &VecDeque<[f64; 2]>, color, name| {
+        Line::new(history.iter().copied().collect::<PlotPoints>())
+            .color(color)
+            .name(name)
+    };
+    let passed = line(passed, egui::Color32::GREEN, "Passed (PPS)");
+    let dropped = line(dropped, egui::Color32::RED, "Dropped (PPS)");
+    Plot::new("traffic_plot")
+        .height(300.0)
+        .show_axes([false, true])
+        .show_grid([false, true])
+        .legend(egui_plot::Legend::default())
+        .show(ui, |plot_ui| {
+            plot_ui.line(passed);
+            plot_ui.line(dropped);
         });
 }
 
@@ -884,6 +886,99 @@ fn inspector_rows(ui: &mut egui::Ui, entry: &LogEntry) {
     ui.label("Reason:");
     ui.colored_label(color, format!("[{tag}] {detail}"));
     ui.end_row();
+}
+
+/// One uploaded program: its number, source and whether it is the one
+/// running.
+fn program_row(ui: &mut egui::Ui, index: usize, rule: &Rule<String>, is_active: bool) {
+    ui.horizontal(|ui| {
+        ui.colored_label(egui::Color32::LIGHT_BLUE, format!("[{}]", index + 1));
+        ui.monospace(&rule.item);
+        if rule.removal.is_some() {
+            rule_status(ui, rule);
+        } else if is_active {
+            ui.colored_label(egui::Color32::GREEN, "ACTIVE");
+        } else if rule.status == CommandStatus::Applied {
+            ui.colored_label(egui::Color32::GRAY, "replaced");
+        } else {
+            status_badge(ui, rule.status);
+        }
+    });
+}
+
+/// How one of the SDN tab's rule columns is labelled.
+struct RuleColumn {
+    title: &'static str,
+    add_label: &'static str,
+    list_id: &'static str,
+    badge: &'static str,
+    badge_color: egui::Color32,
+}
+
+const FIREWALL_COLUMN: RuleColumn = RuleColumn {
+    title: "Firewall — Blocked Ports",
+    add_label: "BLOCK PORT",
+    list_id: "fw_list",
+    badge: "BLOCK",
+    badge_color: egui::Color32::RED,
+};
+
+const DPI_COLUMN: RuleColumn = RuleColumn {
+    title: "DPI — Signature Rules",
+    add_label: "ADD SIGNATURE",
+    list_id: "dpi_list",
+    badge: "MATCH",
+    badge_color: egui::Color32::from_rgb(255, 140, 0),
+};
+
+/// What the operator asked of a rule column this frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuleAction<T> {
+    /// Add the rule typed into the column's input.
+    Add,
+    /// Remove this rule.
+    Remove(T),
+}
+
+/// A rule column: an input with its add button, then every rule with its
+/// status and, where it can go, a remove button.
+fn rule_column<T: Clone>(
+    ui: &mut egui::Ui,
+    column: &RuleColumn,
+    input: &mut String,
+    rules: &[Rule<T>],
+    label: impl Fn(&T) -> String,
+) -> Option<RuleAction<T>> {
+    let mut action = None;
+    ui.group(|ui| {
+        ui.label(egui::RichText::new(column.title).strong());
+        ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(input);
+            if ui.button(column.add_label).clicked() {
+                action = Some(RuleAction::Add);
+            }
+        });
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(5.0);
+        egui::ScrollArea::vertical()
+            .id_source(column.list_id)
+            .max_height(200.0)
+            .show(ui, |ui| {
+                for rule in rules {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(column.badge_color, column.badge);
+                        ui.monospace(label(&rule.item));
+                        rule_status(ui, rule);
+                        if rule.can_remove() && ui.small_button("remove").clicked() {
+                            action = Some(RuleAction::Remove(rule.item.clone()));
+                        }
+                    });
+                }
+            });
+    });
+    action
 }
 
 /// Shows a rule's status, or its removal's while one is in flight or failed.
@@ -1061,6 +1156,81 @@ mod tests {
     fn block_rejects_unknown_protocol_and_out_of_range_port() {
         assert!(compile_bpf("BLOCK ICMP DST 80").is_none());
         assert!(compile_bpf("BLOCK TCP DST 70000").is_none());
+    }
+
+    const ADD: CommandId = CommandId(1);
+    const REMOVE: CommandId = CommandId(2);
+    const OTHER: CommandId = CommandId(3);
+
+    fn applied_rule() -> Rule<u16> {
+        let mut rule = Rule::issued(80, ADD, CommandStatus::Pending);
+        let _ = rule.update(ADD, CommandStatus::Applied);
+        rule
+    }
+
+    #[test]
+    fn a_rule_takes_the_status_of_the_command_that_added_it() {
+        let mut rule = Rule::issued(80, ADD, CommandStatus::Pending);
+
+        let removed = rule.update(ADD, CommandStatus::Rejected(MgmtOutcome::TableFull));
+
+        assert!(!removed);
+        assert_eq!(rule.status, CommandStatus::Rejected(MgmtOutcome::TableFull));
+    }
+
+    #[test]
+    fn a_rule_ignores_other_commands() {
+        let mut rule = Rule::issued(80, ADD, CommandStatus::Pending);
+        rule.removal = Some((REMOVE, CommandStatus::Pending));
+
+        let removed = rule.update(OTHER, CommandStatus::Applied);
+
+        assert!(!removed);
+        assert_eq!(rule.status, CommandStatus::Pending);
+        assert_eq!(rule.removal, Some((REMOVE, CommandStatus::Pending)));
+    }
+
+    #[test]
+    fn an_applied_removal_drops_the_row() {
+        let mut rules = vec![
+            applied_rule(),
+            Rule::issued(443, OTHER, CommandStatus::Pending),
+        ];
+        rules[0].removal = Some((REMOVE, CommandStatus::Pending));
+
+        update_rules(&mut rules, REMOVE, CommandStatus::Applied);
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].item, 443);
+    }
+
+    #[test]
+    fn a_failed_removal_keeps_the_row_and_says_why() {
+        let mut rules = vec![applied_rule()];
+        rules[0].removal = Some((REMOVE, CommandStatus::Pending));
+
+        update_rules(&mut rules, REMOVE, CommandStatus::NoAck);
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].removal, Some((REMOVE, CommandStatus::NoAck)));
+        assert!(!rules[0].can_remove());
+    }
+
+    #[test]
+    fn only_applied_rules_not_fixed_in_the_kernel_can_be_removed() {
+        let pending = Rule::issued(80, ADD, CommandStatus::Pending);
+
+        assert!(applied_rule().can_remove());
+        assert!(Rule::built_in(23, Origin::Default).can_remove());
+        assert!(!Rule::built_in(23, Origin::Fixed).can_remove());
+        assert!(!pending.can_remove());
+    }
+
+    #[test]
+    fn the_kernel_is_online_until_three_seconds_pass_without_telemetry() {
+        assert!(is_connected(100, 102));
+        assert!(!is_connected(100, 103));
+        assert!(is_connected(100, 99));
     }
 
     #[test]
