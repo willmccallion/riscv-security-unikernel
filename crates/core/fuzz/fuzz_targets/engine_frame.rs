@@ -53,7 +53,7 @@ fuzz_target!(|data: &[u8]| {
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
         cms_key: SketchKey::new([1; 16]),
-        mgmt_epoch: 1,
+        mgmt_epoch: std::num::NonZeroU32::MIN,
     });
     let before = counters(engine.interval_stats());
     let mut frame = data.to_vec();
