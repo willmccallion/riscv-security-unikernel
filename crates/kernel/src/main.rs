@@ -18,8 +18,6 @@
 mod drivers;
 
 mod entropy;
-/// VirtIO-Net backed [`sec_core::net::PacketSink`] implementation.
-mod net_sink;
 /// Kernel panic handler: halts the core.
 mod panic;
 /// Physical Memory Protection setup: locks W^X across the kernel image.
@@ -31,9 +29,8 @@ mod time_riscv;
 /// M-mode trap handler: prints the cause and halts.
 mod trap;
 
-use crate::drivers::net_device::NetDevice;
+use crate::drivers::virtio::{InitError, VirtioNet};
 use crate::drivers::virtio_rng::VirtioRng;
-use crate::net_sink::VirtioNetSink;
 use crate::time_riscv::MCycle;
 use ::core::arch::{asm, global_asm};
 use sec_core::config::{
@@ -113,16 +110,25 @@ pub extern "C" fn kmain() -> ! {
     pmp::init();
     stack_guard::arm();
 
-    NetDevice::init();
-    let rng_present = VirtioRng::init();
+    let mut net = match VirtioNet::init() {
+        Ok(net) => net,
+        Err(InitError::NotFound) => boot_failure("no VirtIO network card"),
+        Err(InitError::AlreadyRunning) => boot_failure("network driver already running"),
+    };
+    let mut rng = VirtioRng::init();
 
     let Some(engine) = ENGINE.take() else {
-        crate::kprintln!("\n\x1b[31m[BOOT]\x1b[0m engine already in use; halting.");
-        halt();
+        boot_failure("engine already in use");
     };
     print_banner();
-    engine.init(BootSecrets::from_entropy(&gather_entropy(rng_present)));
-    run(engine)
+    engine.init(BootSecrets::from_entropy(&gather_entropy(rng.as_mut())));
+    run(engine, &mut net)
+}
+
+/// Reports why the kernel cannot boot and stops.
+fn boot_failure(reason: &str) -> ! {
+    crate::kprintln!("\n\x1b[31m[BOOT]\x1b[0m {reason}; halting.");
+    halt();
 }
 
 fn print_banner() {
@@ -149,9 +155,9 @@ fn print_banner() {
 /// 32 bytes of boot entropy, XOR-mixed from every source present so the
 /// result is unpredictable if any one of them is; warns when only the
 /// cycle counter was available.
-fn gather_entropy(rng_present: bool) -> [u8; 32] {
+fn gather_entropy(rng: Option<&mut VirtioRng>) -> [u8; 32] {
     let mut entropy = [0u8; 32];
-    let report = entropy::gather(&mut entropy, rng_present);
+    let report = entropy::gather(&mut entropy, rng);
     crate::kprintln!(
         "[*] Entropy     : zkr={} virtio-rng={} mcycle={}",
         report.zkr,
@@ -169,21 +175,20 @@ fn gather_entropy(rng_present: bool) -> [u8; 32] {
 
 /// The packet loop: ends intervals as they fall due, then drains a batch
 /// of received frames through the engine.
-fn run(engine: &mut Engine) -> ! {
+fn run(engine: &mut Engine, net: &mut VirtioNet) -> ! {
     let clock = MCycle;
-    let mut sink = VirtioNetSink;
     let mut heartbeat = Heartbeat::new();
     let mut schedule = Schedule::new(clock.now());
     loop {
         let now = clock.now();
         let due = schedule.due(now);
         if due.telemetry.is_some() {
-            end_telemetry_interval(engine, &mut heartbeat, now, &mut sink);
+            end_telemetry_interval(engine, &mut heartbeat, now, net);
         }
         if due.detection.is_some() {
-            engine.end_detection_interval(&mut sink);
+            engine.end_detection_interval(&mut net.tx);
         }
-        receive_batch(engine, now, &mut sink);
+        receive_batch(engine, now, net);
     }
 }
 
@@ -192,30 +197,32 @@ fn end_telemetry_interval(
     engine: &mut Engine,
     heartbeat: &mut Heartbeat,
     now: Ticks,
-    sink: &mut VirtioNetSink,
+    net: &mut VirtioNet,
 ) {
     // Catch a stack overflow before sending telemetry built on possibly
     // corrupted state. Halts on detection.
     stack_guard::check_or_halt();
     engine.prune_flows(now, FLOW_TIMEOUT);
     heartbeat.tick(engine.interval_stats(), engine.active_flows());
-    engine.send_telemetry(used_ram() as u64, sink);
+    engine.send_telemetry(used_ram() as u64, &mut net.tx);
     engine.start_interval();
-    NetDevice::flush();
+    net.flush();
 }
 
 /// Runs up to [`BATCH_SIZE`] received frames through the engine.
-fn receive_batch(engine: &mut Engine, now: Ticks, sink: &mut VirtioNetSink) {
+fn receive_batch(engine: &mut Engine, now: Ticks, net: &mut VirtioNet) {
     let mut work_done = false;
     for _ in 0..BATCH_SIZE {
-        let processed = NetDevice::receive(|packet| engine.process(packet, now, sink));
+        let processed = net
+            .rx
+            .receive(|packet| engine.process(packet, now, &mut net.tx));
         if processed.is_none() {
             break;
         }
         work_done = true;
     }
     if work_done {
-        NetDevice::flush();
+        net.flush();
     }
 }
 
