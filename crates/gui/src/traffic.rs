@@ -5,22 +5,22 @@
 //! and generating test traffic patterns for security testing.
 
 use crate::acks::PendingAcks;
+use crate::log::LogEvent;
 use crate::netns::NsPool;
 use crate::reply_addr::reply_address;
 use crate::types::{
-    CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, NotSentReason,
-    TrafficMode, UiEvent,
+    CommandStatus, GuiCommand, LISTEN_ADDR, MGMT_ADDR, NetStats, NotSentReason, TrafficMode,
+    UiEvent,
 };
 use anyhow::Context;
-use eframe::egui;
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
-use sec_core::security::alert::{Alert, AlertReason, alert_packet};
+use sec_core::security::alert::alert_packet;
 use sec_core::security::hash::{MgmtKey, ReportKey};
+use sec_core::security::mgmt::Command;
 use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
-use sec_core::security::mgmt::{Ack, Command, ManagementMessageType, MgmtOutcome};
 use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, seal};
 use sec_core::security::report_auth::{Report, ReportBody, ReportVerifier, Telemetry};
 use std::net::SocketAddr;
@@ -185,7 +185,7 @@ pub async fn start_background_task(
                     GuiCommand::SetMode(m) => mode = m,
                     GuiCommand::Mgmt { id, command } => {
                         if let Command::BanIp(ip) = *command {
-                            let _ = events.send(UiEvent::Log(manual_ban_entry(ip)));
+                            let _ = events.send(UiEvent::Log(LogEvent::ManualBan(ip)));
                         }
                         let sent = send_sealed(&socket_pool[0], &mgmt_key, &command).await;
                         let status = match sent {
@@ -289,20 +289,27 @@ fn handle_report(
             record_telemetry(stats, &telemetry);
         }
         Some(ReportBody::Alert(alert)) => {
-            let _ = events.send(UiEvent::Log(alert_entry(&alert)));
+            let _ = events.send(UiEvent::Log(LogEvent::Alert(alert)));
         }
         Some(ReportBody::Ack(ack)) => {
-            let _ = events.send(UiEvent::Log(ack_entry(ack)));
+            let _ = events.send(UiEvent::Log(LogEvent::Ack(ack)));
             if let Some((id, status)) = pending.acked(ack.seq, ack.outcome) {
                 let _ = events.send(UiEvent::CommandStatus { id, status });
             }
         }
         None => {
-            if let Some(entry) = unreadable_alert_entry(report.body) {
-                let _ = events.send(UiEvent::Log(entry));
+            if let Some(unreadable) = unreadable_alert(report.body) {
+                let _ = events.send(UiEvent::Log(unreadable));
             }
         }
     }
+}
+
+/// The log event for a report that did not decode, if it claims to be an
+/// alert: a newer kernel's, say.
+fn unreadable_alert(body: &[u8]) -> Option<LogEvent> {
+    (body.first() == Some(&alert_packet::ALERT_MESSAGE_TYPE))
+        .then_some(LogEvent::UnreadableAlert(body.len()))
 }
 
 /// Stores one interval's counters. The epoch is taken from the
@@ -345,164 +352,9 @@ async fn send_traffic(
     }
 }
 
-/// The log entry for an alert: its source (with the prefix for a subnet),
-/// a tagged message and a colour per reason.
-fn alert_entry(alert: &Alert) -> LogEntry {
-    let meta = &alert.meta;
-    let ip = if meta.prefix_len < 32 {
-        format!("{}/{}", meta.src_ip, meta.prefix_len)
-    } else {
-        meta.src_ip.to_string()
-    };
-    let measured = Some(meta.value).filter(|&value| value != 0);
-
-    let (msg, color) = match alert.reason {
-        AlertReason::Ddos => (
-            format!("[DDoS] High Volume from {ip}"),
-            egui::Color32::YELLOW,
-        ),
-        AlertReason::Firewall => (
-            format!("[FIREWALL] Blocked Port access from {ip}"),
-            egui::Color32::RED,
-        ),
-        AlertReason::Malware => (
-            format!("[MALWARE] Signature Match from {ip}"),
-            egui::Color32::RED,
-        ),
-        AlertReason::Bpf => (
-            format!("[BPF] Custom Filter Drop from {ip}"),
-            egui::Color32::LIGHT_BLUE,
-        ),
-        AlertReason::Heuristic => (
-            format!("[HEURISTIC] Anomaly Detected from {ip}"),
-            egui::Color32::from_rgb(255, 0, 255),
-        ),
-        AlertReason::Flow => (
-            format!("[FLOW] New Connection from {ip}"),
-            egui::Color32::LIGHT_BLUE,
-        ),
-        AlertReason::Pass => (
-            format!("[PASS] Allowed from {ip}"),
-            egui::Color32::from_gray(140),
-        ),
-        AlertReason::MgmtAuthFail => (
-            format!("[MGMT AUTH] Rejected unsigned/replayed mgmt packet from {ip}"),
-            egui::Color32::from_rgb(255, 80, 0),
-        ),
-        AlertReason::BpfTimeout => (
-            format!("[BPF TIMEOUT] Installed program hit cycle budget from {ip}"),
-            egui::Color32::from_rgb(255, 80, 0),
-        ),
-        AlertReason::SourceSurge => (
-            format!(
-                "[SURGE] ~{} distinct sources in one interval (spoofed flood?)",
-                measured.unwrap_or(0)
-            ),
-            egui::Color32::YELLOW,
-        ),
-        AlertReason::SubnetFlood => (
-            format!("[SUBNET] {ip} banned at ~{} pps", measured.unwrap_or(0)),
-            egui::Color32::YELLOW,
-        ),
-        AlertReason::PortScan => (
-            format!(
-                "[SCAN] {ip} banned after trying {} ports",
-                measured.unwrap_or(0)
-            ),
-            egui::Color32::YELLOW,
-        ),
-        AlertReason::MalformedIp => (
-            format!("[MALFORMED] Invalid IPv4 header from {ip}"),
-            egui::Color32::from_rgb(255, 0, 255),
-        ),
-        AlertReason::IpFragment => (
-            format!("[FRAGMENT] IPv4 fragment dropped from {ip}"),
-            egui::Color32::from_rgb(255, 0, 255),
-        ),
-    };
-
-    LogEntry {
-        timestamp: 0.0,
-        src_ip: ip,
-        dst_ip: meta.dst_ip.to_string(),
-        src_port: meta.src_port,
-        dst_port: meta.dst_port,
-        protocol: meta.protocol,
-        packet_len: meta.packet_len,
-        measured,
-        msg,
-        color,
-    }
-}
-
-/// A log entry for an alert report this dashboard cannot decode, such as
-/// one from a newer kernel; `None` if `body` is not an alert.
-fn unreadable_alert_entry(body: &[u8]) -> Option<LogEntry> {
-    (body.first() == Some(&alert_packet::ALERT_MESSAGE_TYPE)).then(|| LogEntry {
-        timestamp: 0.0,
-        src_ip: String::new(),
-        dst_ip: String::new(),
-        src_port: 0,
-        dst_port: 0,
-        protocol: 0,
-        packet_len: 0,
-        measured: None,
-        msg: format!("[UNREADABLE] alert report of {} bytes", body.len()),
-        color: egui::Color32::from_rgb(255, 80, 0),
-    })
-}
-
-fn ack_entry(ack: Ack) -> LogEntry {
-    let command = match ManagementMessageType::from_u8(ack.command) {
-        Some(ManagementMessageType::BlockPort) => "block port",
-        Some(ManagementMessageType::AddDpiPattern) => "add DPI pattern",
-        Some(ManagementMessageType::UploadBpfProgram) => "upload BPF program",
-        Some(ManagementMessageType::BanIp) => "ban IP",
-        Some(ManagementMessageType::UnblockPort) => "unblock port",
-        Some(ManagementMessageType::RemoveDpiPattern) => "remove DPI pattern",
-        Some(ManagementMessageType::UnloadBpfProgram) => "unload BPF program",
-        Some(ManagementMessageType::UnbanIp) => "unban IP",
-        None => "unknown command",
-    };
-    let (outcome, color) = match ack.outcome {
-        MgmtOutcome::Applied => ("applied", egui::Color32::GREEN),
-        MgmtOutcome::TableFull => ("rejected: table full", egui::Color32::from_rgb(255, 80, 0)),
-        MgmtOutcome::Invalid => ("rejected: invalid", egui::Color32::from_rgb(255, 80, 0)),
-        MgmtOutcome::Refused => ("refused", egui::Color32::from_rgb(255, 80, 0)),
-    };
-    LogEntry {
-        timestamp: 0.0,
-        src_ip: "Kernel".to_string(),
-        dst_ip: String::new(),
-        src_port: 0,
-        dst_port: 0,
-        protocol: 0,
-        packet_len: 0,
-        measured: None,
-        msg: format!("[MGMT] #{} {command}: {outcome}", ack.seq),
-        color,
-    }
-}
-
-fn manual_ban_entry(ip: std::net::Ipv4Addr) -> LogEntry {
-    LogEntry {
-        timestamp: 0.0,
-        src_ip: "Localhost".to_string(),
-        dst_ip: String::new(),
-        src_port: 0,
-        dst_port: 0,
-        protocol: 0,
-        packet_len: 0,
-        measured: None,
-        msg: format!("MANUAL BAN: {ip}"),
-        color: egui::Color32::from_rgb(255, 0, 255),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sec_core::security::alert::AlertMeta;
     use sec_core::security::dpi::Pattern;
     use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, seal, sealed_len};
     use std::net::Ipv4Addr;
@@ -554,66 +406,20 @@ mod tests {
         }
     }
 
-    fn alert(reason: AlertReason) -> Alert {
-        Alert {
-            reason,
-            meta: AlertMeta {
-                src_ip: Ipv4Addr::new(192, 168, 1, 50),
-                dst_ip: Ipv4Addr::new(10, 0, 0, 1),
-                src_port: 1234,
-                dst_port: 80,
-                protocol: 6,
-                packet_len: 512,
-                prefix_len: 32,
-                value: 0,
-            },
-        }
-    }
-
     #[test]
-    fn alert_entries_show_subnet_prefixes_and_measurements() {
-        let mut subnet = alert(AlertReason::SubnetFlood);
-        subnet.meta.prefix_len = 24;
-        subnet.meta.value = 4_200;
-
-        let entry = alert_entry(&subnet);
-
-        assert_eq!(entry.src_ip, "192.168.1.50/24");
-        assert_eq!(entry.measured, Some(4_200));
-    }
-
-    #[test]
-    fn every_alert_reason_has_its_own_tag() {
-        let mut tags = std::collections::HashSet::new();
-        for reason in AlertReason::ALL {
-            let entry = alert_entry(&alert(reason));
-            let tag = entry.msg.split(']').next().unwrap_or_default().to_string();
-            assert!(
-                entry.msg.starts_with('[') && tags.insert(tag),
-                "reason {reason:?} → msg {:?} has no tag of its own",
-                entry.msg,
-            );
-            assert_eq!(entry.src_ip, "192.168.1.50");
-            assert_eq!(entry.dst_ip, "10.0.0.1");
-            assert_eq!(entry.src_port, 1234);
-            assert_eq!(entry.dst_port, 80);
-            assert_eq!(entry.protocol, 6);
-            assert_eq!(entry.packet_len, 512);
-        }
-    }
-
-    #[test]
-    fn an_alert_report_that_does_not_decode_is_logged_as_unreadable() {
-        let mut unknown_reason = alert(AlertReason::Ddos).encode();
+    fn an_alert_that_does_not_decode_is_logged_as_unreadable() {
+        let mut unknown_reason = [0u8; alert_packet::ALERT_BODY_LEN];
+        unknown_reason[0] = alert_packet::ALERT_MESSAGE_TYPE;
         unknown_reason[alert_packet::REASON_OFFSET] = 99;
-        let whole = alert(AlertReason::Ddos).encode();
-        let truncated = (0..alert_packet::ALERT_BODY_LEN).map(|n| whole[..n].to_vec());
 
-        for body in truncated.chain([unknown_reason.to_vec()]).skip(1) {
-            let entry = unreadable_alert_entry(&body).expect("an alert-typed body");
-            assert!(entry.msg.starts_with("[UNREADABLE]"), "{:?}", entry.msg);
-        }
-        assert!(unreadable_alert_entry(&[]).is_none());
+        let event = unreadable_alert(&unknown_reason);
+
+        assert!(matches!(
+            event,
+            Some(LogEvent::UnreadableAlert(alert_packet::ALERT_BODY_LEN))
+        ));
+        assert!(unreadable_alert(&[]).is_none());
+        assert!(unreadable_alert(&[0xEE; 8]).is_none());
     }
 
     const EPOCH: u32 = 0xDEAD_BEEF;

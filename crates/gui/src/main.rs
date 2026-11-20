@@ -13,6 +13,7 @@
 mod acks;
 mod app;
 mod live;
+mod log;
 /// Per-namespace UDP sender pool for realistic multi-source traffic.
 mod netns;
 mod reply_addr;
