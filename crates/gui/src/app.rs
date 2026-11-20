@@ -15,7 +15,7 @@ use egui_plot::{Line, Plot, PlotPoints};
 use sec_core::net::constants::IpProtocol;
 use sec_core::security::dpi::BUILTIN_SIGNATURES;
 use sec_core::security::mgmt::MgmtOutcome;
-use sec_core::security::vm::Opcode;
+use sec_core::security::vm::{Instruction, Opcode};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -950,7 +950,7 @@ fn compile_bpf(code: &str) -> Option<Vec<u8>> {
     const DROP_INDEX: u32 = 10;
 
     if code.trim() == "DROP ALL" {
-        return Some(encode(Opcode::Ret, 0, 0, 0).to_vec());
+        return Some(Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes().to_vec());
     }
 
     let parts: Vec<&str> = code.split_whitespace().collect();
@@ -968,25 +968,19 @@ fn compile_bpf(code: &str) -> Option<Vec<u8>> {
     let port = port.parse::<u16>().ok()?;
 
     let program = [
-        encode(Opcode::Ldb, 0, 0, PROTOCOL_OFFSET),
-        encode(Opcode::Ldi, 1, 0, protocol as u32),
-        encode(Opcode::Eq, 0, 1, 0),
-        encode(Opcode::Jf, 0, 0, PASS_INDEX),
-        encode(Opcode::Ldmsh, 4, 0, VERSION_IHL_OFFSET),
-        encode(Opcode::Ldhx, 2, 4, DST_PORT_AFTER_IP_HEADER),
-        encode(Opcode::Ldi, 3, 0, u32::from(port)),
-        encode(Opcode::Eq, 2, 3, 0),
-        encode(Opcode::Jt, 0, 0, DROP_INDEX),
-        encode(Opcode::Ret, 0, 0, 1),
-        encode(Opcode::Ret, 0, 0, 0),
+        Instruction::new(Opcode::Ldb, 0, 0, PROTOCOL_OFFSET).to_bytes(),
+        Instruction::new(Opcode::Ldi, 1, 0, protocol as u32).to_bytes(),
+        Instruction::new(Opcode::Eq, 0, 1, 0).to_bytes(),
+        Instruction::new(Opcode::Jf, 0, 0, PASS_INDEX).to_bytes(),
+        Instruction::new(Opcode::Ldmsh, 4, 0, VERSION_IHL_OFFSET).to_bytes(),
+        Instruction::new(Opcode::Ldhx, 2, 4, DST_PORT_AFTER_IP_HEADER).to_bytes(),
+        Instruction::new(Opcode::Ldi, 3, 0, u32::from(port)).to_bytes(),
+        Instruction::new(Opcode::Eq, 2, 3, 0).to_bytes(),
+        Instruction::new(Opcode::Jt, 0, 0, DROP_INDEX).to_bytes(),
+        Instruction::new(Opcode::Ret, 0, 0, 1).to_bytes(),
+        Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes(),
     ];
     Some(program.concat())
-}
-
-/// Encodes one VM instruction in the 7-byte wire format the kernel decodes.
-const fn encode(op: Opcode, reg_a: u8, reg_b: u8, imm: u32) -> [u8; 7] {
-    let imm = imm.to_be_bytes();
-    [op as u8, reg_a, reg_b, imm[0], imm[1], imm[2], imm[3]]
 }
 
 #[cfg(test)]
