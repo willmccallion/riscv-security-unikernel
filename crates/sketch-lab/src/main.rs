@@ -149,37 +149,7 @@ fn cms_detector_vs_load(path: &Path) -> Result<()> {
     }
     summary.push('\n');
 
-    let configs: Vec<(&str, MakeSketch)> = vec![
-        ("previous: 128x4 classic, 1 s reset", || {
-            Box::new(Cms::<128, 4>::new(
-                Update::Classic,
-                Aging::Reset { intervals: 2 },
-                KEY,
-            ))
-        }),
-        ("128x4", || {
-            Box::new(Cms::<128, 4>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("512x3", || {
-            Box::new(Cms::<512, 3>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("1024x3", || {
-            Box::new(Cms::<1024, 3>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("2048x3", || {
-            Box::new(Cms::<2048, 3>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("4096x4", || {
-            Box::new(Cms::<4096, 4>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("65536x4", || {
-            Box::new(Cms::<65536, 4>::new(
-                Update::Conservative,
-                Aging::Decay,
-                KEY,
-            ))
-        }),
-    ];
+    let configs = detector_sketches();
     let mut table: Vec<Vec<String>> = vec![Vec::new(); configs.len()];
 
     for load in LOADS {
@@ -218,6 +188,41 @@ fn cms_detector_vs_load(path: &Path) -> Result<()> {
         "config,width,depth,memory_bytes,load_pps,legit_sources,false_positive_rate,attackers_missed,mean_detection_ms",
         &rows,
     )
+}
+
+/// The host sketches the detector study compares, by label.
+fn detector_sketches() -> Vec<(&'static str, MakeSketch)> {
+    vec![
+        ("previous: 128x4 classic, 1 s reset", || {
+            Box::new(Cms::<128, 4>::new(
+                Update::Classic,
+                Aging::Reset { intervals: 2 },
+                KEY,
+            ))
+        }),
+        ("128x4", || {
+            Box::new(Cms::<128, 4>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("512x3", || {
+            Box::new(Cms::<512, 3>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("1024x3", || {
+            Box::new(Cms::<1024, 3>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("2048x3", || {
+            Box::new(Cms::<2048, 3>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("4096x4", || {
+            Box::new(Cms::<4096, 4>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("65536x4", || {
+            Box::new(Cms::<65536, 4>::new(
+                Update::Conservative,
+                Aging::Decay,
+                KEY,
+            ))
+        }),
+    ]
 }
 
 /// What one detector run got right and wrong.
@@ -329,23 +334,7 @@ fn port_scans_vs_load(path: &Path) -> Result<()> {
     const SCANNERS_EACH: usize = 10;
     const SOURCES: [usize; 7] = [100, 300, 1_000, 3_000, 10_000, 30_000, 100_000];
 
-    let configs: Vec<(&str, MakeScanDetector)> = vec![
-        ("engine: 1 KB + exact confirm", || {
-            Box::new(Box::new(PortScanDetector::new(KEY)))
-        }),
-        ("1 KB vHLL alone", || {
-            Box::new(VhllThreshold::<1024, 32>::new(KEY))
-        }),
-        ("4 KB vHLL alone", || {
-            Box::new(VhllThreshold::<4096, 32>::new(KEY))
-        }),
-        ("16 KB vHLL alone", || {
-            Box::new(VhllThreshold::<16384, 32>::new(KEY))
-        }),
-        ("64 KB vHLL alone", || {
-            Box::new(VhllThreshold::<65536, 64>::new(KEY))
-        }),
-    ];
+    let configs = scan_detectors();
 
     let mut rows = Vec::new();
     for sources in SOURCES {
@@ -388,6 +377,27 @@ fn port_scans_vs_load(path: &Path) -> Result<()> {
     )
 }
 
+/// The scan detectors the port-scan study compares, by label.
+fn scan_detectors() -> Vec<(&'static str, MakeScanDetector)> {
+    vec![
+        ("engine: 1 KB + exact confirm", || {
+            Box::new(Box::new(PortScanDetector::new(KEY)))
+        }),
+        ("1 KB vHLL alone", || {
+            Box::new(VhllThreshold::<1024, 32>::new(KEY))
+        }),
+        ("4 KB vHLL alone", || {
+            Box::new(VhllThreshold::<4096, 32>::new(KEY))
+        }),
+        ("16 KB vHLL alone", || {
+            Box::new(VhllThreshold::<16384, 32>::new(KEY))
+        }),
+        ("64 KB vHLL alone", || {
+            Box::new(VhllThreshold::<65536, 64>::new(KEY))
+        }),
+    ]
+}
+
 /// Which sources `detector` bans over one window of `events`.
 fn run_scan_detector(
     detector: &mut dyn ScanDetector,
@@ -419,37 +429,7 @@ fn subnet_floods_vs_load(path: &Path) -> Result<()> {
     let interval_s = CMS_DECAY_INTERVAL.get() as f64 / 1e9;
     let intervals = (f64::from(SECONDS) / interval_s).round() as u32;
 
-    let configs: Vec<(&str, MakeSketch, MakeSketch)> = vec![
-        ("kernel: 256x3", kernel_host_sketch, || {
-            Box::new(Cms::<256, 3>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("256x2", kernel_host_sketch, || {
-            Box::new(Cms::<256, 2>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("512x2", kernel_host_sketch, || {
-            Box::new(Cms::<512, 2>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        ("1024x2", kernel_host_sketch, || {
-            Box::new(Cms::<1024, 2>::new(Update::Conservative, Aging::Decay, KEY))
-        }),
-        (
-            "daemon: 16384x4",
-            || {
-                Box::new(Cms::<65536, 4>::new(
-                    Update::Conservative,
-                    Aging::Decay,
-                    KEY,
-                ))
-            },
-            || {
-                Box::new(Cms::<16384, 4>::new(
-                    Update::Conservative,
-                    Aging::Decay,
-                    KEY,
-                ))
-            },
-        ),
-    ];
+    let configs = subnet_sketches();
 
     let mut rows = Vec::new();
     for load in LOADS {
@@ -493,6 +473,41 @@ fn subnet_floods_vs_load(path: &Path) -> Result<()> {
          mean_slash_24_detection_ms,mean_slash_16_detection_ms",
         &rows,
     )
+}
+
+/// The host and prefix sketch pairs the subnet study compares, by label.
+fn subnet_sketches() -> Vec<(&'static str, MakeSketch, MakeSketch)> {
+    vec![
+        ("kernel: 256x3", kernel_host_sketch, || {
+            Box::new(Cms::<256, 3>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("256x2", kernel_host_sketch, || {
+            Box::new(Cms::<256, 2>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("512x2", kernel_host_sketch, || {
+            Box::new(Cms::<512, 2>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        ("1024x2", kernel_host_sketch, || {
+            Box::new(Cms::<1024, 2>::new(Update::Conservative, Aging::Decay, KEY))
+        }),
+        (
+            "daemon: 16384x4",
+            || {
+                Box::new(Cms::<65536, 4>::new(
+                    Update::Conservative,
+                    Aging::Decay,
+                    KEY,
+                ))
+            },
+            || {
+                Box::new(Cms::<16384, 4>::new(
+                    Update::Conservative,
+                    Aging::Decay,
+                    KEY,
+                ))
+            },
+        ),
+    ]
 }
 
 fn kernel_host_sketch() -> Box<dyn FrequencySketch> {
