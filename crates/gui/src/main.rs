@@ -29,7 +29,6 @@ use clap::Parser;
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc::unbounded_channel;
 
 /// Command-line options.
@@ -71,21 +70,7 @@ async fn main() -> Result<(), eframe::Error> {
     let (event_tx, mut event_rx) = unbounded_channel::<UiEvent>();
     let (cmd_tx, cmd_rx) = unbounded_channel();
 
-    let stats = Arc::new(NetStats {
-        passed: AtomicU64::new(0),
-        ddos: AtomicU64::new(0),
-        firewall: AtomicU64::new(0),
-        malware: AtomicU64::new(0),
-        bpf: AtomicU64::new(0),
-        heuristic: AtomicU64::new(0),
-        flows: AtomicU64::new(0),
-        mgmt: AtomicU64::new(0),
-
-        total_passed: AtomicU64::new(0),
-        total_dropped: AtomicU64::new(0),
-
-        last_seen: AtomicU64::new(0),
-    });
+    let stats = Arc::new(NetStats::default());
 
     let stats_clone = stats.clone();
     tokio::spawn(async move {

@@ -8,7 +8,8 @@
 use crate::live::view::LiveView;
 use crate::log::{Description, LogEntry, LogEvent, Source};
 use crate::types::{
-    CommandId, CommandStatus, GuiCommand, LogMode, NetStats, NotSentReason, TrafficMode, UiEvent,
+    CommandId, CommandStatus, GuiCommand, LogMode, NetStats, NotSentReason, StatsSnapshot,
+    TrafficMode, UiEvent,
 };
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
@@ -23,6 +24,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
+
+/// Rows the event log keeps before dropping the oldest.
+const LOG_CAPACITY: usize = 1000;
+
+/// Points of pass and drop history the plot keeps.
+const HISTORY_POINTS: usize = 1000;
 
 /// Available tabs in the main application window.
 #[derive(PartialEq)]
@@ -154,7 +161,7 @@ impl Dashboard {
             next_log_id: 0,
             next_command: 0,
             cmd_tx,
-            logs: VecDeque::with_capacity(1000),
+            logs: VecDeque::with_capacity(LOG_CAPACITY),
             history_pass: VecDeque::new(),
             history_drop: VecDeque::new(),
             start_time: Instant::now(),
@@ -228,6 +235,21 @@ impl Dashboard {
         }
     }
 
+    /// Adds this frame's pass and drop rates to the plotted history.
+    fn record_history(&mut self) {
+        let now = self.start_time.elapsed().as_secs_f64();
+        let stats = self.stats.snapshot();
+        for (history, rate) in [
+            (&mut self.history_pass, stats.passed),
+            (&mut self.history_drop, stats.dropped),
+        ] {
+            if history.len() >= HISTORY_POINTS {
+                history.pop_front();
+            }
+            history.push_back([now, rate as f64]);
+        }
+    }
+
     /// Adds `event` to the log as its newest row.
     fn record(&mut self, event: LogEvent) {
         let entry = LogEntry {
@@ -236,7 +258,7 @@ impl Dashboard {
             event,
         };
         self.next_log_id += 1;
-        if self.logs.len() >= 1000 {
+        if self.logs.len() >= LOG_CAPACITY {
             self.logs.pop_back();
         }
         self.logs.push_front(entry);
@@ -248,66 +270,9 @@ impl Dashboard {
     /// Displays network statistics cards, traffic generation controls,
     /// real-time traffic rate graphs, and the security event log.
     fn ui_dashboard(&mut self, ui: &mut egui::Ui) {
-        let pass_pps = self.stats.passed.load(Ordering::Relaxed);
-        let ddos_pps = self.stats.ddos.load(Ordering::Relaxed);
-        let fw_pps = self.stats.firewall.load(Ordering::Relaxed);
-        let mal_pps = self.stats.malware.load(Ordering::Relaxed);
-        let bpf_pps = self.stats.bpf.load(Ordering::Relaxed);
-        let heur_pps = self.stats.heuristic.load(Ordering::Relaxed);
-
-        let drop_pps = ddos_pps + fw_pps + mal_pps + bpf_pps + heur_pps;
-        let total_pps = pass_pps + drop_pps;
-
-        let total_pass_count = self.stats.total_passed.load(Ordering::Relaxed);
-        let total_drop_count = self.stats.total_dropped.load(Ordering::Relaxed);
-        let total_req_count = total_pass_count + total_drop_count;
-
-        let flows_count = self.stats.flows.load(Ordering::Relaxed);
-        let mgmt_pps = self.stats.mgmt.load(Ordering::Relaxed);
-
+        let stats = self.stats.snapshot();
         ui.add_space(5.0);
-
-        egui::Grid::new("stats_grid")
-            .spacing([15.0, 15.0])
-            .min_col_width(220.0)
-            .show(ui, |ui| {
-                Self::stat_card(
-                    ui,
-                    "THROUGHPUT",
-                    total_pps,
-                    total_req_count,
-                    egui::Color32::WHITE,
-                );
-                Self::stat_card(
-                    ui,
-                    "PASSED TRAFFIC",
-                    pass_pps,
-                    total_pass_count,
-                    egui::Color32::GREEN,
-                );
-                Self::stat_card(
-                    ui,
-                    "MITIGATED ATTACKS",
-                    drop_pps,
-                    total_drop_count,
-                    egui::Color32::RED,
-                );
-                Self::stat_card(
-                    ui,
-                    "ACTIVE FLOWS",
-                    flows_count,
-                    0,
-                    egui::Color32::LIGHT_BLUE,
-                );
-                Self::stat_card(
-                    ui,
-                    "MGMT TRAFFIC",
-                    mgmt_pps,
-                    0,
-                    egui::Color32::from_rgb(255, 165, 0),
-                );
-                ui.end_row();
-            });
+        stats_grid(ui, &stats);
 
         ui.add_space(25.0);
 
@@ -400,53 +365,6 @@ impl Dashboard {
                 let _ = self.issue(&command);
             }
         }
-    }
-
-    /// Renders a single statistics card widget.
-    ///
-    /// Displays a title, current rate value, and total count in a
-    /// styled card with colored text for visual distinction.
-    fn stat_card(ui: &mut egui::Ui, title: &str, rate: u64, total: u64, color: egui::Color32) {
-        egui::Frame::none()
-            .fill(egui::Color32::from_gray(25))
-            .rounding(4.0)
-            .inner_margin(15.0)
-            .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45)))
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new(title)
-                            .size(12.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                    ui.add_space(5.0);
-
-                    let rate_text = if title == "ACTIVE FLOWS" {
-                        format!("{rate}")
-                    } else {
-                        format!("{} PPS", format_metric(rate))
-                    };
-
-                    ui.label(
-                        egui::RichText::new(rate_text)
-                            .size(24.0)
-                            .strong()
-                            .color(color),
-                    );
-
-                    if total > 0 && title != "ACTIVE FLOWS" {
-                        ui.add_space(2.0);
-                        let total_text = format!("Total: {}", format_metric(total));
-                        ui.label(
-                            egui::RichText::new(total_text)
-                                .size(10.0)
-                                .color(egui::Color32::from_gray(150)),
-                        );
-                    } else {
-                        ui.add_space(14.0);
-                    }
-                });
-            });
     }
 
     /// Renders the SDN and firewall configuration tab.
@@ -682,24 +600,7 @@ impl eframe::App for Dashboard {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
 
-        let now = self.start_time.elapsed().as_secs_f64();
-        let pass_rate = self.stats.passed.load(Ordering::Relaxed) as f64;
-        let ddos_rate = self.stats.ddos.load(Ordering::Relaxed) as f64;
-        let fw_rate = self.stats.firewall.load(Ordering::Relaxed) as f64;
-        let mal_rate = self.stats.malware.load(Ordering::Relaxed) as f64;
-        let bpf_rate = self.stats.bpf.load(Ordering::Relaxed) as f64;
-        let heur_rate = self.stats.heuristic.load(Ordering::Relaxed) as f64;
-
-        let drop_rate = ddos_rate + fw_rate + mal_rate + bpf_rate + heur_rate;
-
-        self.history_pass.push_back([now, pass_rate]);
-        self.history_drop.push_back([now, drop_rate]);
-        if self.history_pass.len() > 1000 {
-            self.history_pass.pop_front();
-        }
-        if self.history_drop.len() > 1000 {
-            self.history_drop.pop_front();
-        }
+        self.record_history();
 
         ctx.request_repaint();
 
@@ -749,6 +650,109 @@ impl eframe::App for Dashboard {
             }
         });
     }
+}
+
+/// What a stat card shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardValue {
+    /// Packets per second, with a running total when it is not zero.
+    Rate { pps: u64, total: u64 },
+    /// A plain number.
+    Count(u64),
+}
+
+/// The row of stat cards above the plot.
+fn stats_grid(ui: &mut egui::Ui, stats: &StatsSnapshot) {
+    let cards = [
+        (
+            "THROUGHPUT",
+            CardValue::Rate {
+                pps: stats.passed + stats.dropped,
+                total: stats.total_passed + stats.total_dropped,
+            },
+            egui::Color32::WHITE,
+        ),
+        (
+            "PASSED TRAFFIC",
+            CardValue::Rate {
+                pps: stats.passed,
+                total: stats.total_passed,
+            },
+            egui::Color32::GREEN,
+        ),
+        (
+            "MITIGATED ATTACKS",
+            CardValue::Rate {
+                pps: stats.dropped,
+                total: stats.total_dropped,
+            },
+            egui::Color32::RED,
+        ),
+        (
+            "ACTIVE FLOWS",
+            CardValue::Count(stats.flows),
+            egui::Color32::LIGHT_BLUE,
+        ),
+        (
+            "MGMT TRAFFIC",
+            CardValue::Rate {
+                pps: stats.mgmt,
+                total: 0,
+            },
+            egui::Color32::from_rgb(255, 165, 0),
+        ),
+    ];
+    egui::Grid::new("stats_grid")
+        .spacing([15.0, 15.0])
+        .min_col_width(220.0)
+        .show(ui, |ui| {
+            for (title, value, color) in cards {
+                stat_card(ui, title, value, color);
+            }
+            ui.end_row();
+        });
+}
+
+/// One stat card: a title, its value large, and any total small beneath.
+fn stat_card(ui: &mut egui::Ui, title: &str, value: CardValue, color: egui::Color32) {
+    let (headline, total) = match value {
+        CardValue::Rate { pps, total } => (
+            format!("{} PPS", format_metric(pps)),
+            (total > 0).then(|| format!("Total: {}", format_metric(total))),
+        ),
+        CardValue::Count(count) => (count.to_string(), None),
+    };
+    egui::Frame::none()
+        .fill(egui::Color32::from_gray(25))
+        .rounding(4.0)
+        .inner_margin(15.0)
+        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_gray(45)))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .size(12.0)
+                        .color(egui::Color32::GRAY),
+                );
+                ui.add_space(5.0);
+                ui.label(
+                    egui::RichText::new(headline)
+                        .size(24.0)
+                        .strong()
+                        .color(color),
+                );
+                if let Some(total) = total {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(total)
+                            .size(10.0)
+                            .color(egui::Color32::from_gray(150)),
+                    );
+                } else {
+                    ui.add_space(14.0);
+                }
+            });
+        });
 }
 
 /// Draws one log row; returns whether it was clicked.
