@@ -84,31 +84,34 @@ pub fn init() {
         RAM_END >> 2,
     ];
 
-    // SAFETY: pmpaddr0..6 and pmpcfg0 are standard M-mode CSRs. The
-    // CSR writes have no observable effect until pmpcfg0's A field
-    // is set non-zero, which happens last so the address registers
-    // are all in place before enforcement begins.
-    unsafe {
-        asm!("csrw pmpaddr0, {0}", in(reg) addrs[0]);
-        asm!("csrw pmpaddr1, {0}", in(reg) addrs[1]);
-        asm!("csrw pmpaddr2, {0}", in(reg) addrs[2]);
-        asm!("csrw pmpaddr3, {0}", in(reg) addrs[3]);
-        asm!("csrw pmpaddr4, {0}", in(reg) addrs[4]);
-        asm!("csrw pmpaddr5, {0}", in(reg) addrs[5]);
-        // All-ones NAPOT encodes the largest region the hart supports.
-        asm!("csrw pmpaddr6, {0}", in(reg) usize::MAX);
-
-        let cfg: usize = (CFG_OFF as usize)
-            | ((CFG_MMIO as usize) << 8)
-            | ((CFG_OFF as usize) << 16)
-            | ((CFG_TEXT as usize) << 24)
-            | ((CFG_RODATA as usize) << 32)
-            | ((CFG_DATA as usize) << 40)
-            | ((CFG_DENY_ALL as usize) << 48);
-        asm!("csrw pmpcfg0, {0}", in(reg) cfg);
-        // sfence/fence not architecturally required for PMP updates,
-        // but a fence keeps reordering at bay against following
-        // memory accesses on aggressive implementations.
-        asm!("fence");
+    /// Writes `$value` to the PMP CSR `$csr`.
+    macro_rules! csrw {
+        ($csr:literal, $value:expr) => {
+            // SAFETY: PMP CSRs exist on every RV64GC hart in M-mode. Writes
+            // take effect only once pmpcfg0's A field is set, which happens
+            // last, so every address register is in place before enforcement.
+            unsafe { asm!(concat!("csrw ", $csr, ", {0}"), in(reg) $value) }
+        };
     }
+    csrw!("pmpaddr0", addrs[0]);
+    csrw!("pmpaddr1", addrs[1]);
+    csrw!("pmpaddr2", addrs[2]);
+    csrw!("pmpaddr3", addrs[3]);
+    csrw!("pmpaddr4", addrs[4]);
+    csrw!("pmpaddr5", addrs[5]);
+    // All-ones NAPOT encodes the largest region the hart supports.
+    csrw!("pmpaddr6", usize::MAX);
+
+    let cfg: usize = (CFG_OFF as usize)
+        | ((CFG_MMIO as usize) << 8)
+        | ((CFG_OFF as usize) << 16)
+        | ((CFG_TEXT as usize) << 24)
+        | ((CFG_RODATA as usize) << 32)
+        | ((CFG_DATA as usize) << 40)
+        | ((CFG_DENY_ALL as usize) << 48);
+    csrw!("pmpcfg0", cfg);
+    // Not architecturally required for PMP updates, but keeps aggressive
+    // implementations from reordering later accesses ahead of them.
+    // SAFETY: a fence has no effect beyond ordering memory accesses.
+    unsafe { asm!("fence") };
 }
