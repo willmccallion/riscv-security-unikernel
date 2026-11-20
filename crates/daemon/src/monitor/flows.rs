@@ -114,6 +114,44 @@ pub struct PacketRole {
     pub opening: Opening,
 }
 
+impl Flow {
+    /// A flow whose first packet is `exchange`, seen `at`.
+    fn open(exchange: &Exchange, at: UnixNanos) -> Self {
+        let (client, opening) = exchange.client();
+        let server = if client == exchange.sender {
+            exchange.receiver
+        } else {
+            exchange.sender
+        };
+        Self {
+            protocol: exchange.protocol,
+            client,
+            server,
+            opening,
+            first_seen: at,
+            last_seen: at,
+            from_client: Counter::default(),
+            from_server: Counter::default(),
+            closing: false,
+        }
+    }
+
+    /// Counts a packet of `wire_len` bytes seen `at`; whether the client
+    /// sent it.
+    fn record(&mut self, exchange: &Exchange, wire_len: u32, at: UnixNanos) -> bool {
+        let from_client = exchange.sender == self.client;
+        let counter = if from_client {
+            &mut self.from_client
+        } else {
+            &mut self.from_server
+        };
+        counter.add(wire_len);
+        self.last_seen = self.last_seen.max(at);
+        self.closing |= exchange.closes_tcp_connection();
+        from_client
+    }
+}
+
 /// Both directions of a conversation map to one key: the endpoints in
 /// sorted order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -235,36 +273,10 @@ impl FlowTable {
             return None;
         }
         if opened {
-            let (client, opening) = exchange.client();
-            let server = if client == exchange.sender {
-                exchange.receiver
-            } else {
-                exchange.sender
-            };
-            let _ = self.flows.insert(
-                key,
-                Flow {
-                    protocol: exchange.protocol,
-                    client,
-                    server,
-                    opening,
-                    first_seen: at,
-                    last_seen: at,
-                    from_client: Counter::default(),
-                    from_server: Counter::default(),
-                    closing: false,
-                },
-            );
+            let _ = self.flows.insert(key, Flow::open(&exchange, at));
         }
         let flow = self.flows.get_mut(&key)?;
-        let from_client = exchange.sender == flow.client;
-        if from_client {
-            flow.from_client.add(wire_len);
-        } else {
-            flow.from_server.add(wire_len);
-        }
-        flow.last_seen = flow.last_seen.max(at);
-        flow.closing |= exchange.closes_tcp_connection();
+        let from_client = flow.record(&exchange, wire_len, at);
         Some(PacketRole {
             protocol: flow.protocol,
             client: flow.client,
