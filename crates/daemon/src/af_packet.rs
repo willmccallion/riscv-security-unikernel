@@ -142,7 +142,7 @@ pub struct RxRing {
     link_type: LinkType,
     ring: NonNull<u8>,
     ring_len: usize,
-    next_block: u32,
+    next_block: BlockIndex,
 }
 
 impl RxRing {
@@ -193,59 +193,69 @@ impl RxRing {
             link_type,
             ring,
             ring_len,
-            next_block: 0,
+            next_block: BlockIndex::FIRST,
         })
     }
 
     /// Waits up to `timeout_ms` for the next block of frames and passes
     /// each one to `handle`. Returns the number of frames seen.
-    // Blocks are page-aligned and the kernel aligns each frame header.
-    #[allow(clippy::cast_ptr_alignment)]
     pub fn poll(
         &mut self,
         timeout_ms: i32,
-        mut handle: impl FnMut(CapturedFrame<'_>),
+        handle: impl FnMut(CapturedFrame<'_>),
     ) -> Result<usize> {
-        let block = self.block_status(self.next_block);
-        if block.load(Ordering::Acquire) & libc::TP_STATUS_USER == 0 {
-            let mut pfd = libc::pollfd {
-                fd: self.fd.as_raw_fd(),
-                events: libc::POLLIN | libc::POLLERR,
-                revents: 0,
-            };
-            // SAFETY: pfd is a single live pollfd for the duration of the call.
-            let rc = unsafe { libc::poll(&raw mut pfd, 1, timeout_ms) };
-            if rc < 0 {
-                let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::Interrupted {
-                    return Ok(0);
-                }
-                return Err(err).context("poll");
-            }
-            if block.load(Ordering::Acquire) & libc::TP_STATUS_USER == 0 {
-                return Ok(0);
-            }
+        if !self.wait_for_block(timeout_ms)? {
+            return Ok(0);
         }
+        let count = self.drain_block(handle);
+        self.block_status(self.next_block)
+            .store(libc::TP_STATUS_KERNEL, Ordering::Release);
+        self.next_block = self.next_block.next();
+        Ok(count)
+    }
 
+    /// Whether the next block belongs to userspace, waiting up to
+    /// `timeout_ms` for the kernel to hand it over.
+    fn wait_for_block(&self, timeout_ms: i32) -> Result<bool> {
+        let is_ready = || {
+            self.block_status(self.next_block).load(Ordering::Acquire) & libc::TP_STATUS_USER != 0
+        };
+        if is_ready() {
+            return Ok(true);
+        }
+        poll_fds(&mut [pollfd(self)], timeout_ms)?;
+        Ok(is_ready())
+    }
+
+    /// Passes each frame of the next block, which userspace owns, to
+    /// `handle`; returns how many the block held.
+    // Blocks are page-aligned and the kernel aligns each frame header.
+    #[allow(
+        clippy::cast_ptr_alignment,
+        clippy::needless_pass_by_ref_mut,
+        reason = "frames are lent as &mut into the ring, so the ring must be held exclusively"
+    )]
+    fn drain_block(&mut self, mut handle: impl FnMut(CapturedFrame<'_>)) -> usize {
         let base = self.block_base(self.next_block);
-        // SAFETY: the block belongs to userspace (TP_STATUS_USER) until we
-        // hand it back below, and lies wholly inside the mapped ring.
+        // SAFETY: the block belongs to userspace (TP_STATUS_USER) until it is
+        // handed back, and lies wholly inside the mapped ring.
         let desc = unsafe { &*base.cast::<libc::tpacket_block_desc>() };
         // SAFETY: TPACKET_V3 blocks always carry the bh1 header variant.
         let header = unsafe { &desc.hdr.bh1 };
         let mut offset = header.offset_to_first_pkt as usize;
         let count = header.num_pkts as usize;
         for _ in 0..count {
+            let pkt = base.wrapping_add(offset).cast::<libc::tpacket3_hdr>();
             // SAFETY: offset comes from the kernel-written block header and
             // points at a tpacket3_hdr inside this block.
-            let pkt = unsafe { &*base.add(offset).cast::<libc::tpacket3_hdr>() };
+            let pkt = unsafe { &*pkt };
             let frame_start = offset + usize::from(pkt.tp_mac);
             let frame_len = pkt.tp_snaplen as usize;
             if frame_start + frame_len <= BLOCK_SIZE as usize {
-                // SAFETY: the frame lies inside the block we own, and no
-                // other reference to these bytes exists while handle runs.
-                let data =
-                    unsafe { std::slice::from_raw_parts_mut(base.add(frame_start), frame_len) };
+                let frame = base.wrapping_add(frame_start);
+                // SAFETY: the frame lies inside the block userspace owns, and
+                // no other reference to these bytes exists while handle runs.
+                let data = unsafe { std::slice::from_raw_parts_mut(frame, frame_len) };
                 handle(CapturedFrame {
                     data,
                     wire_len: pkt.tp_len,
@@ -255,10 +265,7 @@ impl RxRing {
             }
             offset += pkt.tp_next_offset as usize;
         }
-
-        block.store(libc::TP_STATUS_KERNEL, Ordering::Release);
-        self.next_block = (self.next_block + 1) % BLOCK_COUNT;
-        Ok(count)
+        count
     }
 
     /// How frames on the bound interface begin.
@@ -291,34 +298,45 @@ impl RxRing {
         })
     }
 
-    const fn block_base(&self, block: u32) -> *mut u8 {
-        // SAFETY: block < BLOCK_COUNT, so the offset stays inside the ring.
-        unsafe { self.ring.as_ptr().add(block as usize * BLOCK_SIZE as usize) }
+    /// The start of `block`, inside the mapped ring since a `BlockIndex`
+    /// is below `BLOCK_COUNT`.
+    const fn block_base(&self, block: BlockIndex) -> *mut u8 {
+        self.ring
+            .as_ptr()
+            .wrapping_add(block.0 as usize * BLOCK_SIZE as usize)
     }
 
     /// The block's status word, shared with the kernel.
     // Blocks are page-aligned, so the status word is 4-byte aligned.
     #[allow(clippy::cast_ptr_alignment)]
-    const fn block_status(&self, block: u32) -> &AtomicU32 {
-        let base = self.block_base(block);
+    const fn block_status(&self, block: BlockIndex) -> &AtomicU32 {
         let offset = std::mem::offset_of!(libc::tpacket_block_desc, hdr)
             + std::mem::offset_of!(libc::tpacket_hdr_v1, block_status);
+        let status = self.block_base(block).wrapping_add(offset).cast::<u32>();
         // SAFETY: block_status is a 4-byte-aligned u32 inside the mapped
         // block; the kernel and this process access it only atomically.
-        unsafe { AtomicU32::from_ptr(base.add(offset).cast::<u32>()) }
+        unsafe { AtomicU32::from_ptr(status) }
     }
 }
 
 /// Waits up to `timeout_ms` for any of `rings` to have frames ready.
 pub fn wait_for_any(rings: &[RxRing], timeout_ms: i32) -> Result<()> {
-    let mut fds: Vec<libc::pollfd> = rings
-        .iter()
-        .map(|ring| libc::pollfd {
-            fd: ring.fd.as_raw_fd(),
-            events: libc::POLLIN | libc::POLLERR,
-            revents: 0,
-        })
-        .collect();
+    let mut fds: Vec<libc::pollfd> = rings.iter().map(pollfd).collect();
+    poll_fds(&mut fds, timeout_ms)
+}
+
+/// A poll request for `ring`'s socket becoming readable or failing.
+fn pollfd(ring: &RxRing) -> libc::pollfd {
+    libc::pollfd {
+        fd: ring.fd.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLERR,
+        revents: 0,
+    }
+}
+
+/// Waits up to `timeout_ms` for any of `fds`; a signal ending the wait
+/// early is not an error.
+fn poll_fds(fds: &mut [libc::pollfd], timeout_ms: i32) -> Result<()> {
     let count = libc::nfds_t::try_from(fds.len()).context("too many rings")?;
     // SAFETY: fds is a live array of `count` pollfds for the call.
     let rc = unsafe { libc::poll(fds.as_mut_ptr(), count, timeout_ms) };
@@ -329,6 +347,20 @@ pub fn wait_for_any(rings: &[RxRing], timeout_ms: i32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A block of the ring, always below `BLOCK_COUNT`: one is only made by
+/// starting at the first block and stepping round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockIndex(u32);
+
+impl BlockIndex {
+    const FIRST: Self = Self(0);
+
+    /// The block after this one, wrapping to the first.
+    const fn next(self) -> Self {
+        Self((self.0 + 1) % BLOCK_COUNT)
+    }
 }
 
 impl AsRawFd for RxRing {
