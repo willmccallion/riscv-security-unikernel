@@ -155,6 +155,17 @@ enum Width {
     Word,
 }
 
+impl Width {
+    /// Whichever of the byte, half-word and word opcodes has this width.
+    const fn pick(self, byte: Opcode, half: Opcode, word: Opcode) -> Opcode {
+        match self {
+            Self::Byte => byte,
+            Self::Half => half,
+            Self::Word => word,
+        }
+    }
+}
+
 /// A checked operation: every register is real, every jump target is inside
 /// the program, and every return names an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +283,43 @@ impl Op {
     const fn ends_flow(self) -> bool {
         matches!(self, Self::Ret(_) | Self::Jmp { .. })
     }
+
+    /// The instruction that decodes to `self`, with unused operands zero.
+    const fn encode(self) -> Instruction {
+        let (op, a, b, imm) = match self {
+            Self::Nop => (Opcode::Nop, 0, 0, 0),
+            Self::Load { width, dst, offset } => (
+                width.pick(Opcode::Ldb, Opcode::Ldh, Opcode::Ldw),
+                dst.0,
+                0,
+                offset,
+            ),
+            Self::LoadIndexed {
+                width,
+                dst,
+                offset,
+                index,
+            } => (
+                width.pick(Opcode::Ldbx, Opcode::Ldhx, Opcode::Ldwx),
+                dst.0,
+                index.0,
+                offset,
+            ),
+            Self::LoadHeaderLen { dst, offset } => (Opcode::Ldmsh, dst.0, 0, offset),
+            Self::LoadImm { dst, value } => (Opcode::Ldi, dst.0, 0, value),
+            Self::Mov { dst, src } => (Opcode::Mov, dst.0, src.0, 0),
+            Self::Eq { left, right } => (Opcode::Eq, left.0, right.0, 0),
+            Self::Gt { left, right } => (Opcode::Gt, left.0, right.0, 0),
+            Self::And { dst, src } => (Opcode::And, dst.0, src.0, 0),
+            Self::Or { dst, src } => (Opcode::Or, dst.0, src.0, 0),
+            Self::Jmp { target } => (Opcode::Jmp, 0, 0, target as u32),
+            Self::JumpIfTrue { target } => (Opcode::Jt, 0, 0, target as u32),
+            Self::JumpIfFalse { target } => (Opcode::Jf, 0, 0, target as u32),
+            Self::Ret(VmAction::Drop) => (Opcode::Ret, 0, 0, 0),
+            Self::Ret(VmAction::Pass) => (Opcode::Ret, 0, 0, 1),
+        };
+        Instruction::new(op, a, b, imm)
+    }
 }
 
 /// A checked, non-empty program whose last operation returns or jumps, so
@@ -303,6 +351,12 @@ impl Program {
             Some(last) if !last.ends_flow() => Err(VmError::MissingReturn),
             Some(_) => Ok(Self { ops, len }),
         }
+    }
+
+    /// The program's instructions, which [`Self::decode`] turns back into
+    /// this program.
+    pub fn instructions(&self) -> impl Iterator<Item = Instruction> + '_ {
+        self.ops[..self.len].iter().map(|op| op.encode())
     }
 }
 
@@ -502,6 +556,36 @@ mod tests {
         assert_eq!(Program::decode(&partial), Err(VmError::BadLength));
         assert_eq!(Program::decode(&too_many), Err(VmError::BadLength));
         assert!(Program::decode(&encode(&vec![ret; MAX_INSTR_COUNT])).is_ok());
+    }
+
+    #[test]
+    fn a_program_re_encodes_to_the_instructions_it_was_decoded_from() {
+        let instructions = [
+            ins(Nop, 0, 0, 0),
+            ins(Ldb, 1, 0, 2),
+            ins(Ldh, 2, 0, 3),
+            ins(Ldw, 3, 0, 4),
+            ins(Ldbx, 4, 5, 6),
+            ins(Ldhx, 5, 6, 7),
+            ins(Ldwx, 6, 7, 8),
+            ins(Ldmsh, 7, 0, 14),
+            ins(Ldi, 8, 0, 0xDEAD_BEEF),
+            ins(Mov, 9, 8, 0),
+            ins(Eq, 10, 9, 0),
+            ins(Gt, 11, 10, 0),
+            ins(And, 12, 11, 0),
+            ins(Or, 13, 12, 0),
+            ins(Jt, 0, 0, 17),
+            ins(Jf, 0, 0, 18),
+            ins(Jmp, 0, 0, 18),
+            ins(Ret, 0, 0, 0),
+            ins(Ret, 0, 0, 1),
+        ];
+        let program = decode(&instructions).expect("a valid program");
+
+        let encoded: Vec<Instruction> = program.instructions().collect();
+
+        assert_eq!(encoded, instructions);
     }
 
     #[test]

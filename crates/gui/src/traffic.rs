@@ -8,8 +8,8 @@ use crate::acks::PendingAcks;
 use crate::netns::NsPool;
 use crate::reply_addr::reply_address;
 use crate::types::{
-    CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, MgmtCommand, NetStats,
-    NotSentReason, TrafficMode, UiEvent,
+    CommandStatus, GuiCommand, LISTEN_ADDR, LogEntry, MGMT_ADDR, NetStats, NotSentReason,
+    TrafficMode, UiEvent,
 };
 use eframe::egui;
 use rand::Rng;
@@ -18,7 +18,8 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::hash::{MgmtKey, ReportKey};
-use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome, ack_packet};
+use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
+use sec_core::security::mgmt::{Command, ManagementMessageType, MgmtOutcome, ack_packet};
 use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, seal};
 use sec_core::security::report_auth::{Report, ReportVerifier, telemetry_packet};
 use std::net::SocketAddr;
@@ -48,9 +49,15 @@ const NETNS_DEFAULT_COUNT: usize = 200;
 ///
 /// Returns the sequence number the packet was sealed with, which the
 /// kernel echoes in its ack, or why nothing was sent.
-async fn send_sealed(sock: &UdpSocket, key: &MgmtKey, body: &[u8]) -> Result<u32, NotSentReason> {
+async fn send_sealed(
+    sock: &UdpSocket,
+    key: &MgmtKey,
+    command: &Command,
+) -> Result<u32, NotSentReason> {
     let reply_to = reply_address(MGMT_ADDR).map_err(|_| NotSentReason::NoReplyAddress)?;
     let counter = MGMT_COUNTER.next().ok_or(NotSentReason::KernelNotSeen)?;
+    let mut body = [0u8; MAX_PAYLOAD_LEN];
+    let body = command.encode(&mut body);
     let mut packet = [0u8; MAX_PACKET_LEN];
     let len =
         seal(key, counter, &reply_to, body, &mut packet).ok_or(NotSentReason::InvalidCommand)?;
@@ -209,13 +216,10 @@ pub async fn start_background_task(
                 match cmd {
                     GuiCommand::SetMode(m) => mode = m,
                     GuiCommand::Mgmt { id, command } => {
-                        if let MgmtCommand::BanIp(ip) = &command {
-                            let _ = events.send(UiEvent::Log(manual_ban_entry(*ip)));
+                        if let Command::BanIp(ip) = *command {
+                            let _ = events.send(UiEvent::Log(manual_ban_entry(ip)));
                         }
-                        let sent = match mgmt_body(&command) {
-                            Some(body) => send_sealed(&socket_pool[0], &mgmt_key, &body).await,
-                            None => Err(NotSentReason::InvalidCommand),
-                        };
+                        let sent = send_sealed(&socket_pool[0], &mgmt_key, &command).await;
                         let status = match sent {
                             Ok(seq) => {
                                 pending.sent(seq, id, Instant::now());
@@ -607,32 +611,6 @@ fn ack_entry(ack: Ack) -> LogEntry {
     }
 }
 
-/// Encodes `command` as an unsealed mgmt body, or `None` if the kernel
-/// would reject it outright.
-fn mgmt_body(command: &MgmtCommand) -> Option<Vec<u8>> {
-    match command {
-        MgmtCommand::BanIp(ip) => Some(build_ban_ip_body(*ip).to_vec()),
-        MgmtCommand::BlockPort(port) => Some(build_block_port_body(*port).to_vec()),
-        MgmtCommand::AddDpiPattern(pattern) => build_add_dpi_body(pattern),
-        MgmtCommand::UploadBpf(bytecode) => build_upload_bpf_body(bytecode),
-        MgmtCommand::UnbanIp(ip) => {
-            let mut body = build_ban_ip_body(*ip);
-            body[0] = ManagementMessageType::UnbanIp as u8;
-            Some(body.to_vec())
-        }
-        MgmtCommand::UnblockPort(port) => {
-            let mut body = build_block_port_body(*port);
-            body[0] = ManagementMessageType::UnblockPort as u8;
-            Some(body.to_vec())
-        }
-        MgmtCommand::RemoveDpiPattern(pattern) => build_add_dpi_body(pattern).map(|mut body| {
-            body[0] = ManagementMessageType::RemoveDpiPattern as u8;
-            body
-        }),
-        MgmtCommand::UnloadBpf => Some(vec![ManagementMessageType::UnloadBpfProgram as u8]),
-    }
-}
-
 fn manual_ban_entry(ip: std::net::Ipv4Addr) -> LogEntry {
     LogEntry {
         timestamp: 0.0,
@@ -648,66 +626,11 @@ fn manual_ban_entry(ip: std::net::Ipv4Addr) -> LogEntry {
     }
 }
 
-/// Build the unsealed body for a `BanIp` command. The kernel reads
-/// the type byte at offset 0 and the 4-byte IP at offsets 1..5.
-fn build_ban_ip_body(ip: std::net::Ipv4Addr) -> [u8; 5] {
-    let mut body = [0u8; 5];
-    body[0] = ManagementMessageType::BanIp as u8;
-    body[1..].copy_from_slice(&ip.octets());
-    body
-}
-
-/// Build the unsealed body for a `BlockPort` command (type byte +
-/// big-endian u16).
-fn build_block_port_body(port: u16) -> [u8; 3] {
-    let mut body = [0u8; 3];
-    body[0] = ManagementMessageType::BlockPort as u8;
-    body[1..3].copy_from_slice(&port.to_be_bytes());
-    body
-}
-
-/// Build the unsealed body for an `AddDpiPattern` command, or return
-/// `None` if the pattern is empty or longer than the kernel's cap.
-/// Caps enforced here match `mgmt_packet::add_dpi::MAX_PATTERN_LEN`;
-/// a pattern past that would be rejected by the dispatcher silently,
-/// so filter here to avoid shipping a packet doomed to fail.
-fn build_add_dpi_body(pattern: &[u8]) -> Option<Vec<u8>> {
-    use sec_core::security::mgmt::mgmt_packet::add_dpi;
-    if pattern.is_empty() || pattern.len() > add_dpi::MAX_PATTERN_LEN {
-        return None;
-    }
-    let mut body = Vec::with_capacity(2 + pattern.len());
-    body.push(ManagementMessageType::AddDpiPattern as u8);
-    body.push(pattern.len() as u8);
-    body.extend_from_slice(pattern);
-    Some(body)
-}
-
-/// Build the unsealed body for an `UploadBpfProgram` command. Returns
-/// `None` if the bytecode is empty, not a multiple of `INSTR_SIZE`,
-/// or exceeds `MAX_INSTR_COUNT` — all of which the kernel would
-/// reject.
-fn build_upload_bpf_body(bytecode: &[u8]) -> Option<Vec<u8>> {
-    use sec_core::security::mgmt::mgmt_packet::upload_bpf;
-    if bytecode.is_empty()
-        || !bytecode.len().is_multiple_of(upload_bpf::INSTR_SIZE)
-        || bytecode.len() / upload_bpf::INSTR_SIZE > upload_bpf::MAX_INSTR_COUNT
-    {
-        return None;
-    }
-    let count = bytecode.len() / upload_bpf::INSTR_SIZE;
-    let mut body = Vec::with_capacity(2 + bytecode.len());
-    body.push(ManagementMessageType::UploadBpfProgram as u8);
-    body.push(count as u8);
-    body.extend_from_slice(bytecode);
-    Some(body)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use sec_core::security::alert::{AlertReason, alert_packet};
-    use sec_core::security::mgmt::{ManagementMessageType, mgmt_packet};
+    use sec_core::security::dpi::Pattern;
     use sec_core::security::mgmt_auth::{MgmtAuth, OperatorAddr, seal, sealed_len};
     use std::net::Ipv4Addr;
 
@@ -736,77 +659,26 @@ mod tests {
     }
 
     #[test]
-    fn ban_ip_body_roundtrips_to_kernel_view() {
-        let body = build_ban_ip_body(std::net::Ipv4Addr::new(10, 0, 0, 42));
-        let verified = seal_and_verify(&body);
-        assert_eq!(verified[0], ManagementMessageType::BanIp as u8);
-        assert_eq!(
-            &verified[mgmt_packet::ban_ip::IP_OFFSET..mgmt_packet::ban_ip::IP_OFFSET + 4],
-            &[10, 0, 0, 42],
-        );
-    }
+    fn every_command_seals_into_a_body_the_kernel_parses_back() {
+        let pattern = Pattern::new(b"DROP TABLE users").unwrap();
+        let ip = Ipv4Addr::new(10, 0, 0, 42);
+        let commands = [
+            Command::BanIp(ip),
+            Command::UnbanIp(ip),
+            Command::BlockPort(8443),
+            Command::UnblockPort(8443),
+            Command::AddDpiPattern(pattern),
+            Command::RemoveDpiPattern(pattern),
+            Command::UploadBpf(crate::app::compile_bpf("BLOCK TCP DST 80").unwrap()),
+            Command::UnloadBpf,
+        ];
+        for command in commands {
+            let mut body = [0u8; MAX_PAYLOAD_LEN];
 
-    #[test]
-    fn block_port_body_roundtrips_to_kernel_view() {
-        let body = build_block_port_body(8443);
-        let verified = seal_and_verify(&body);
-        assert_eq!(verified[0], ManagementMessageType::BlockPort as u8);
-        let port = u16::from_be_bytes([
-            verified[mgmt_packet::block_port::PORT_OFFSET],
-            verified[mgmt_packet::block_port::PORT_OFFSET + 1],
-        ]);
-        assert_eq!(port, 8443);
-    }
+            let verified = seal_and_verify(command.encode(&mut body));
 
-    #[test]
-    fn add_dpi_body_roundtrips_to_kernel_view() {
-        let pattern = b"DROP TABLE users";
-        let body = build_add_dpi_body(pattern).expect("within cap");
-        let verified = seal_and_verify(&body);
-        assert_eq!(verified[0], ManagementMessageType::AddDpiPattern as u8);
-        let len = verified[mgmt_packet::add_dpi::LEN_OFFSET] as usize;
-        assert_eq!(len, pattern.len());
-        assert_eq!(
-            &verified
-                [mgmt_packet::add_dpi::PATTERN_OFFSET..mgmt_packet::add_dpi::PATTERN_OFFSET + len],
-            pattern,
-        );
-    }
-
-    #[test]
-    fn add_dpi_rejects_empty_and_oversize() {
-        assert!(build_add_dpi_body(&[]).is_none());
-        let too_big =
-            vec![0xAA; sec_core::security::mgmt::mgmt_packet::add_dpi::MAX_PATTERN_LEN + 1];
-        assert!(build_add_dpi_body(&too_big).is_none());
-    }
-
-    #[test]
-    fn upload_bpf_body_roundtrips_to_kernel_view() {
-        use mgmt_packet::upload_bpf;
-        // Two instructions (7 bytes each) so the count-byte and body
-        // lengths are non-trivially entwined.
-        let bytecode = vec![0u8; upload_bpf::INSTR_SIZE * 2];
-        let body = build_upload_bpf_body(&bytecode).expect("valid bytecode");
-        let verified = seal_and_verify(&body);
-        assert_eq!(verified[0], ManagementMessageType::UploadBpfProgram as u8);
-        let count = verified[upload_bpf::COUNT_OFFSET] as usize;
-        assert_eq!(count, 2);
-        assert_eq!(
-            &verified[upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + bytecode.len()],
-            &bytecode[..],
-        );
-    }
-
-    #[test]
-    fn upload_bpf_rejects_malformed_bytecode() {
-        use mgmt_packet::upload_bpf;
-        assert!(build_upload_bpf_body(&[]).is_none());
-        // Not a multiple of INSTR_SIZE.
-        assert!(build_upload_bpf_body(&[0u8; 3]).is_none());
-        // Exceeds MAX_INSTR_COUNT.
-        let too_many = vec![0u8; upload_bpf::INSTR_SIZE * (upload_bpf::MAX_INSTR_COUNT + 1)];
-        assert!(build_upload_bpf_body(&too_many).is_none());
+            assert_eq!(Command::parse(&verified), Ok(command));
+        }
     }
 
     /// Build a well-formed 17-byte alert body with all metadata fields
@@ -951,31 +823,6 @@ mod tests {
         let data = [ack_packet::ACK_MESSAGE_TYPE, 0, 0, 0, 1, 0x01, 99];
 
         assert_eq!(parse_ack(&data), None);
-    }
-
-    #[test]
-    fn undo_commands_share_their_counterparts_operands() {
-        let ip = std::net::Ipv4Addr::new(10, 0, 0, 42);
-
-        let unban = mgmt_body(&MgmtCommand::UnbanIp(ip)).unwrap();
-        let unblock = mgmt_body(&MgmtCommand::UnblockPort(8443)).unwrap();
-        let remove = mgmt_body(&MgmtCommand::RemoveDpiPattern(b"abc".to_vec())).unwrap();
-
-        assert_eq!(unban, [ManagementMessageType::UnbanIp as u8, 10, 0, 0, 42]);
-        assert_eq!(
-            unblock,
-            [ManagementMessageType::UnblockPort as u8, 0x20, 0xFB]
-        );
-        assert_eq!(
-            remove,
-            [
-                ManagementMessageType::RemoveDpiPattern as u8,
-                3,
-                b'a',
-                b'b',
-                b'c'
-            ]
-        );
     }
 
     #[test]

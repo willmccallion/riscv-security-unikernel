@@ -25,7 +25,7 @@ use crate::net::frame::{self, Frame, Ipv4Packet, Ports, Rejected, Rejection, Tra
 use crate::net::stack::{self, SynCookieSecret};
 use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::hash::{MgmtKey, ReportKey, SketchKey};
-use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
+use crate::security::mgmt::{Command, InvalidCommand, MgmtOutcome, mgmt_packet};
 use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::vm::{Program, VmAction};
 use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, scan, sketch, vm};
@@ -632,29 +632,49 @@ impl<
 
     /// Applies an authenticated mgmt body and reports what happened.
     fn dispatch_mgmt(&mut self, body: &[u8], now: Ticks) -> MgmtOutcome {
-        let Some(&msg_type) = body.get(mgmt_packet::MSG_TYPE_OFFSET) else {
-            return MgmtOutcome::Invalid;
-        };
-        match ManagementMessageType::from_u8(msg_type) {
-            Some(ManagementMessageType::BlockPort) => self.block_port(body),
-            Some(ManagementMessageType::AddDpiPattern) => self.add_dpi_pattern(body),
-            Some(ManagementMessageType::UploadBpfProgram) => self.upload_bpf(body),
-            Some(ManagementMessageType::BanIp) => self.ban_ip(body, now),
-            Some(ManagementMessageType::UnblockPort) => self.unblock_port(body),
-            Some(ManagementMessageType::RemoveDpiPattern) => self.remove_dpi_pattern(body),
-            Some(ManagementMessageType::UnloadBpfProgram) => {
-                self.bpf = None;
-                MgmtOutcome::Applied
-            }
-            Some(ManagementMessageType::UnbanIp) => self.unban_ip(body),
-            None => MgmtOutcome::Invalid,
+        match Command::parse(body) {
+            Ok(command) => self.apply(&command, now),
+            Err(InvalidCommand) => MgmtOutcome::Invalid,
         }
     }
 
-    fn block_port(&mut self, body: &[u8]) -> MgmtOutcome {
-        let Some(port) = port_operand(body) else {
-            return MgmtOutcome::Invalid;
-        };
+    fn apply(&mut self, command: &Command, now: Ticks) -> MgmtOutcome {
+        match *command {
+            Command::BlockPort(port) => self.block_port(port),
+            Command::UnblockPort(port) => {
+                self.firewall.unblock_port(port);
+                MgmtOutcome::Applied
+            }
+            Command::AddDpiPattern(pattern) => match self.runtime_signatures.add(pattern) {
+                Ok(()) => MgmtOutcome::Applied,
+                Err(dpi::RulesFull) => MgmtOutcome::TableFull,
+            },
+            Command::RemoveDpiPattern(ref pattern) => {
+                self.runtime_signatures.remove(pattern);
+                MgmtOutcome::Applied
+            }
+            Command::UploadBpf(program) => {
+                self.bpf = Some(program);
+                MgmtOutcome::Applied
+            }
+            Command::UnloadBpf => {
+                self.bpf = None;
+                MgmtOutcome::Applied
+            }
+            Command::BanIp(ip) => {
+                match self.penalty_box.ban_by_operator(ip, IP_BAN_DURATION, now) {
+                    Ok(()) => MgmtOutcome::Applied,
+                    Err(dos::PenaltyBoxFull) => MgmtOutcome::TableFull,
+                }
+            }
+            Command::UnbanIp(ip) => {
+                self.penalty_box.unban(ip);
+                MgmtOutcome::Applied
+            }
+        }
+    }
+
+    fn block_port(&mut self, port: u16) -> MgmtOutcome {
         // Blocking the mgmt port would cut the operator off for good.
         if port == MANAGEMENT_PORT {
             return MgmtOutcome::Refused;
@@ -664,99 +684,6 @@ impl<
             Err(firewall::FirewallError::Full) => MgmtOutcome::TableFull,
         }
     }
-
-    fn unblock_port(&mut self, body: &[u8]) -> MgmtOutcome {
-        let Some(port) = port_operand(body) else {
-            return MgmtOutcome::Invalid;
-        };
-        self.firewall.unblock_port(port);
-        MgmtOutcome::Applied
-    }
-
-    fn add_dpi_pattern(&mut self, body: &[u8]) -> MgmtOutcome {
-        let Some(pattern) = pattern_operand(body) else {
-            return MgmtOutcome::Invalid;
-        };
-        match self.runtime_signatures.add(pattern) {
-            Ok(()) => MgmtOutcome::Applied,
-            Err(dpi::RulesFull) => MgmtOutcome::TableFull,
-        }
-    }
-
-    fn remove_dpi_pattern(&mut self, body: &[u8]) -> MgmtOutcome {
-        let Some(pattern) = pattern_operand(body) else {
-            return MgmtOutcome::Invalid;
-        };
-        self.runtime_signatures.remove(&pattern);
-        MgmtOutcome::Applied
-    }
-
-    fn ban_ip(&mut self, body: &[u8], now: Ticks) -> MgmtOutcome {
-        let Some(ip) = ip_operand(body) else {
-            return MgmtOutcome::Invalid;
-        };
-        match self.penalty_box.ban_by_operator(ip, IP_BAN_DURATION, now) {
-            Ok(()) => MgmtOutcome::Applied,
-            Err(dos::PenaltyBoxFull) => MgmtOutcome::TableFull,
-        }
-    }
-
-    fn unban_ip(&mut self, body: &[u8]) -> MgmtOutcome {
-        let Some(ip) = ip_operand(body) else {
-            return MgmtOutcome::Invalid;
-        };
-        self.penalty_box.unban(ip);
-        MgmtOutcome::Applied
-    }
-
-    /// Installs the uploaded program, or with no instructions removes the
-    /// filter; a program that does not decode leaves the running one.
-    fn upload_bpf(&mut self, body: &[u8]) -> MgmtOutcome {
-        use mgmt_packet::upload_bpf::{COUNT_OFFSET, INSTR_OFFSET, INSTR_SIZE};
-        let Some(&count) = body.get(COUNT_OFFSET) else {
-            return MgmtOutcome::Invalid;
-        };
-        let Some(encoded) = body.get(INSTR_OFFSET..INSTR_OFFSET + usize::from(count) * INSTR_SIZE)
-        else {
-            return MgmtOutcome::Invalid;
-        };
-        if encoded.is_empty() {
-            self.bpf = None;
-            return MgmtOutcome::Applied;
-        }
-        match Program::decode(encoded) {
-            Ok(program) => {
-                self.bpf = Some(program);
-                MgmtOutcome::Applied
-            }
-            Err(_) => MgmtOutcome::Invalid,
-        }
-    }
-}
-
-/// The big-endian port operand of a (Un)BlockPort body.
-fn port_operand(body: &[u8]) -> Option<u16> {
-    use mgmt_packet::block_port::PORT_OFFSET;
-    let port = body.get(PORT_OFFSET..PORT_OFFSET + 2)?;
-    Some(u16::from_be_bytes([port[0], port[1]]))
-}
-
-/// The length-prefixed pattern operand of an Add/RemoveDpiPattern body;
-/// `None` when it runs past the body or is not a [`dpi::Pattern`].
-fn pattern_operand(body: &[u8]) -> Option<dpi::Pattern> {
-    use mgmt_packet::add_dpi::{LEN_OFFSET, PATTERN_OFFSET};
-    let len = usize::from(*body.get(LEN_OFFSET)?);
-    dpi::Pattern::new(body.get(PATTERN_OFFSET..PATTERN_OFFSET + len)?).ok()
-}
-
-/// The IPv4 operand of a (Un)BanIp body.
-fn ip_operand(body: &[u8]) -> Option<Ipv4Addr> {
-    use mgmt_packet::ban_ip::IP_OFFSET;
-    let octets: [u8; 4] = body
-        .get(IP_OFFSET..IP_OFFSET + ipv4::IP_ADDR_SIZE)?
-        .try_into()
-        .ok()?;
-    Some(Ipv4Addr::from(octets))
 }
 
 /// A subnet whose packet rate passed its threshold.

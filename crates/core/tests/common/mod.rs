@@ -8,6 +8,8 @@ use sec_core::net::PacketSink;
 use sec_core::net::stack::{SynCookieSecret, checksum};
 use sec_core::security::alert::{AlertReason, alert_packet};
 use sec_core::security::hash::{MgmtKey, ReportKey, SketchKey};
+use sec_core::security::mgmt::Command;
+use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::ReportVerifier;
 use std::net::Ipv4Addr;
@@ -117,6 +119,12 @@ pub fn icmp_echo(src_ip: [u8; 4], checksum_field: u16) -> Vec<u8> {
     l4.extend_from_slice(&[0, 1, 0, 1]);
     l4.extend_from_slice(&[0xAB; 32]);
     ipv4(src_ip, 1, &l4)
+}
+
+/// The wire body of `command`.
+pub fn body(command: &Command) -> Vec<u8> {
+    let mut out = [0u8; MAX_PAYLOAD_LEN];
+    command.encode(&mut out).to_vec()
 }
 
 /// A UDP frame to the mgmt port carrying `body` sealed under `seq`.
