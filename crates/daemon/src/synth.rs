@@ -113,3 +113,24 @@ fn tcp(src: [u8; 4], src_port: u16, dst_port: u16, flags: u8, payload: &[u8]) ->
     l4.extend_from_slice(payload);
     ipv4(src, 6, &l4)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use sec_core::config::IP_ADDR;
+    use sec_core::net::frame::{self, Frame};
+
+    #[test]
+    fn every_mix_is_well_formed_ipv4_to_the_kernel() {
+        let mut rng = StdRng::seed_from_u64(7);
+        for mix in [Mix::Clean, Mix::Attack, Mix::Mixed] {
+            for mut bytes in frames(mix, 500, &mut rng) {
+                let Ok(Frame::Ipv4(packet)) = frame::parse(&mut bytes) else {
+                    panic!("{mix:?} produced a frame that is not well-formed IPv4");
+                };
+                assert_eq!(packet.dst, IP_ADDR);
+            }
+        }
+    }
+}

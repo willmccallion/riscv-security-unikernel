@@ -293,8 +293,11 @@ pub mod mgmt_packet {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use crate::security::vm::{Instruction, Opcode};
+    use std::vec;
 
     fn encoded(command: &Command) -> ([u8; MAX_PAYLOAD_LEN], usize) {
         let mut out = [0u8; MAX_PAYLOAD_LEN];
@@ -374,6 +377,18 @@ mod tests {
         for body in bodies {
             assert_eq!(Command::parse(body), Err(InvalidCommand), "{body:?}");
         }
+    }
+
+    #[test]
+    fn an_upload_of_more_instructions_than_a_program_holds_is_invalid() {
+        let count = upload_bpf::MAX_INSTR_COUNT + 1;
+        let ret = Instruction::new(Opcode::Ret, 0, 0, 1).to_bytes();
+        let mut body = vec![0x03, count as u8];
+        for _ in 0..count {
+            body.extend_from_slice(&ret);
+        }
+
+        assert_eq!(Command::parse(&body), Err(InvalidCommand));
     }
 
     #[test]
