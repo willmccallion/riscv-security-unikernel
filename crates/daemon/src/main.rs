@@ -99,15 +99,12 @@ fn main() -> Result<()> {
             packets,
             threads,
             offered_pps,
-        } => {
-            run_bench(bench::BenchConfig {
-                mix,
-                packets_per_thread: packets,
-                threads,
-                offered_pps,
-            });
-            Ok(())
-        }
+        } => run_bench(bench::BenchConfig {
+            mix,
+            packets_per_thread: packets,
+            threads,
+            offered_pps,
+        }),
         Command::Run {
             iface,
             duration_secs,
@@ -131,12 +128,12 @@ fn new_engine(key: MgmtKey) -> Box<DaemonEngine> {
     engine
 }
 
-fn run_bench(config: bench::BenchConfig) {
+fn run_bench(config: bench::BenchConfig) -> Result<()> {
     println!(
         "bench: {} thread(s) × {} frames of {:?} traffic, offered at {} pps",
         config.threads, config.packets_per_thread, config.mix, config.offered_pps
     );
-    let results = bench::run(config);
+    let results = bench::run(config)?;
     let mut total_pps = 0.0;
     for (i, r) in results.iter().enumerate() {
         let secs = r.elapsed.as_secs_f64();
@@ -150,6 +147,7 @@ fn run_bench(config: bench::BenchConfig) {
         );
     }
     println!("total: {:.2} Mpps", total_pps / 1e6);
+    Ok(())
 }
 
 fn run_live(iface: &str, duration: Option<Duration>) -> Result<()> {
