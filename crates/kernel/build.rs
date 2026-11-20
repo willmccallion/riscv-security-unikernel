@@ -3,6 +3,7 @@
 // tool here since there is no meaningful recovery path in a build script.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use sec_core::security::hash::MgmtKey;
 use std::env;
 use std::fs;
 use std::io::Read;
@@ -35,7 +36,9 @@ fn main() {
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let key = if let Ok(hex) = env::var("KERNEL_MGMT_KEY") {
-        parse_hex_key(&hex)
+        MgmtKey::parse_hex(hex.trim())
+            .expect("KERNEL_MGMT_KEY must be 32 hex characters (16 bytes)")
+            .to_bytes()
     } else if let Some(key) = read_dev_key_file() {
         key
     } else {
@@ -62,30 +65,6 @@ fn main() {
     fs::write(out_dir.join("mgmt_key.rs"), body).expect("failed to write mgmt_key.rs");
 }
 
-fn parse_hex_key(hex: &str) -> [u8; 16] {
-    assert!(
-        hex.len() == 32,
-        "KERNEL_MGMT_KEY must be 32 hex characters (16 bytes); got {} chars",
-        hex.len()
-    );
-    let mut out = [0u8; 16];
-    for (i, byte) in out.iter_mut().enumerate() {
-        let hi = hex_nibble(hex.as_bytes()[i * 2]);
-        let lo = hex_nibble(hex.as_bytes()[i * 2 + 1]);
-        *byte = (hi << 4) | lo;
-    }
-    out
-}
-
-fn hex_nibble(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        b'A'..=b'F' => c - b'A' + 10,
-        _ => panic!("KERNEL_MGMT_KEY contains non-hex character: {}", c as char),
-    }
-}
-
 fn random_key() -> [u8; 16] {
     let mut key = [0u8; 16];
     fs::File::open("/dev/urandom")
@@ -102,13 +81,12 @@ fn read_dev_key_file() -> Option<[u8; 16]> {
     let path = PathBuf::from(manifest).join("../../.mgmt-key.local");
     println!("cargo:rerun-if-changed={}", path.display());
     let raw = fs::read_to_string(&path).ok()?;
-    let hex = raw.trim();
-    if hex.len() != 32 || !hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+    let Some(key) = MgmtKey::parse_hex(raw.trim()) else {
         println!(
             "cargo:warning={} is not 32 hex chars — ignoring",
             path.display()
         );
         return None;
-    }
-    Some(parse_hex_key(hex))
+    };
+    Some(key.to_bytes())
 }

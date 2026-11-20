@@ -11,6 +11,9 @@ description = "Bare-metal RISC-V security unikernel — 64 KB RAM, VirtIO-Net, n
 [dependencies]
 sec-core = { workspace = true }
 
+[build-dependencies]
+sec-core = { workspace = true }
+
 [features]
 # Enable the Zkr (RISC-V K extension) entropy source. Reads CSR `seed`
 # (0x015), which raises an illegal-instruction trap on CPUs without Zkr;
