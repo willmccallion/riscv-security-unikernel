@@ -11,6 +11,7 @@
 
 use crate::DaemonEngine;
 use crate::synth::{self, Mix};
+use anyhow::{Context, Result};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sec_core::config::FLOW_TIMEOUT;
@@ -116,21 +117,33 @@ pub struct BenchConfig {
 const BENCH_KEY: MgmtKey = MgmtKey::new([0; 16]);
 
 /// Runs the configured engines and returns what every thread measured.
-pub fn run(config: BenchConfig) -> Vec<ThreadResult> {
+///
+/// # Errors
+///
+/// If a thread cannot be started or panics, since the total would then
+/// undercount without saying so.
+pub fn run(config: BenchConfig) -> Result<Vec<ThreadResult>> {
     /// Room for building a [`DaemonEngine`] on the thread's stack.
     const THREAD_STACK: usize = 16 << 20;
 
     // Collect first so every thread starts before any is joined.
-    #[allow(clippy::needless_collect)]
-    let workers: Vec<_> = (0..config.threads)
-        .filter_map(|id| {
+    let workers = (0..config.threads)
+        .map(|id| {
             thread::Builder::new()
                 .stack_size(THREAD_STACK)
                 .spawn(move || run_thread(config, id))
-                .ok()
+                .with_context(|| format!("start bench thread {id}"))
         })
-        .collect();
-    workers.into_iter().filter_map(|w| w.join().ok()).collect()
+        .collect::<Result<Vec<_>>>()?;
+    workers
+        .into_iter()
+        .enumerate()
+        .map(|(id, worker)| {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("bench thread {id} panicked"))
+        })
+        .collect()
 }
 
 // The engine is built once per thread, which `run` gives a large stack.
