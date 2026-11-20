@@ -24,8 +24,7 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sec_core::config::{CMS_DECAY_INTERVAL, FLOW_TIMEOUT};
 use sec_core::engine::BootSecrets;
-use sec_core::net::stack::SynCookieSecret;
-use sec_core::security::hash::{MgmtKey, SketchKey};
+use sec_core::security::hash::MgmtKey;
 use sec_core::time::{TickSpan, TimeSource};
 use security_daemon::af_packet::{Outgoing, RxRing, TxSocket};
 use security_daemon::{monitor, sandbox};
@@ -131,11 +130,7 @@ fn main() -> Result<()> {
 #[allow(clippy::large_stack_frames)]
 fn new_engine(key: MgmtKey) -> Box<DaemonEngine> {
     let mut engine = Box::new(DaemonEngine::new(key));
-    engine.init(BootSecrets {
-        syn_cookie: SynCookieSecret::new(rand::random()),
-        cms_key: SketchKey::new(rand::random()),
-        mgmt_epoch: rand::random::<u32>().max(1),
-    });
+    engine.init(BootSecrets::from_entropy(&rand::random()));
     engine
 }
 

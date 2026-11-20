@@ -109,7 +109,7 @@ fuzz_target!(|steps: Vec<Step>| {
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([0x42; 16]),
         cms_key: SketchKey::new([1; 16]),
-        mgmt_epoch: EPOCH,
+        mgmt_epoch: std::num::NonZeroU32::new(EPOCH).unwrap(),
     });
     let mut now = Ticks::ZERO;
     let mut seq: u32 = 0;

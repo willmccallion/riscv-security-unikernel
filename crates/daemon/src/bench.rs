@@ -20,6 +20,7 @@ use sec_core::net::stack::SynCookieSecret;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::hash::{MgmtKey, SketchKey};
 use sec_core::time::{TickSpan, Ticks};
+use std::num::NonZeroU32;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -142,7 +143,7 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     engine.init(BootSecrets {
         syn_cookie: SynCookieSecret::new(rand::random()),
         cms_key: SketchKey::new(rand::random()),
-        mgmt_epoch: 1,
+        mgmt_epoch: NonZeroU32::MIN,
     });
 
     let mut result = ThreadResult::default();

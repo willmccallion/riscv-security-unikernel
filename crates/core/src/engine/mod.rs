@@ -8,6 +8,7 @@
 
 use crate::time::{TickSpan, Ticks};
 use core::net::Ipv4Addr;
+use core::num::NonZeroU32;
 
 mod report;
 
@@ -24,7 +25,7 @@ use crate::net::constants::{EthernetType, arp, ethernet, ipv4};
 use crate::net::frame::{self, Frame, Ipv4Packet, Ports, Rejected, Rejection, Transport};
 use crate::net::stack::{self, SynCookieSecret};
 use crate::security::alert::{Alert, AlertMeta, AlertReason, should_emit_ddos_alert};
-use crate::security::hash::{MgmtKey, ReportKey, SketchKey};
+use crate::security::hash::{MgmtKey, ReportKey, SketchKey, derive_key};
 use crate::security::mgmt::{Ack, Command, InvalidCommand, MgmtOutcome, mgmt_packet};
 use crate::security::mgmt_auth::OperatorAddr;
 use crate::security::report_auth::Telemetry;
@@ -40,8 +41,28 @@ pub struct BootSecrets {
     pub syn_cookie: SynCookieSecret,
     /// Keys the heavy-hitter sketch's hash.
     pub cms_key: SketchKey,
-    /// High 32 bits of every accepted mgmt counter for this boot.
-    pub mgmt_epoch: u32,
+    /// High 32 bits of every accepted mgmt counter for this boot; 0 is
+    /// the verifier's "no epoch yet".
+    pub mgmt_epoch: NonZeroU32,
+}
+
+impl BootSecrets {
+    /// Splits 32 bytes of boot entropy into independent secrets: the first
+    /// half keys SYN cookies, and the epoch and sketch key are derived from
+    /// the second half under separate labels. The epoch is broadcast in
+    /// telemetry, so it is derived rather than raw, which would reveal part
+    /// of a key.
+    pub fn from_entropy(entropy: &[u8; 32]) -> Self {
+        let syn_cookie: [u8; 16] = core::array::from_fn(|i| entropy[i]);
+        let other: [u8; 16] = core::array::from_fn(|i| entropy[16 + i]);
+        let epoch = derive_key(&other, b"mgmt epoch");
+        let epoch = u32::from_le_bytes([epoch[0], epoch[1], epoch[2], epoch[3]]);
+        Self {
+            syn_cookie: SynCookieSecret::new(syn_cookie),
+            cms_key: SketchKey::new(derive_key(&other, b"heavy-hitter sketch")),
+            mgmt_epoch: NonZeroU32::new(epoch).unwrap_or(NonZeroU32::MIN),
+        }
+    }
 }
 
 /// Counters for the current telemetry interval.
@@ -213,7 +234,7 @@ impl<
         self.prefixes
             .rekey(secrets.cms_key.derive(b"subnet sketch"));
         self.port_scans.rekey(secrets.cms_key.derive(b"port scans"));
-        self.mgmt_auth.set_epoch(secrets.mgmt_epoch);
+        self.mgmt_auth.set_epoch(secrets.mgmt_epoch.get());
     }
 
     /// The boot epoch advertised in telemetry.
@@ -756,4 +777,53 @@ fn is_for_us(packet: &[u8]) -> bool {
         _ => None,
     };
     target_ip == Some(&IP_ADDR.octets()[..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entropy(first: u8, second: u8) -> [u8; 32] {
+        let mut bytes = [first; 32];
+        bytes[16..].fill(second);
+        bytes
+    }
+
+    fn cookie(secrets: &BootSecrets) -> u32 {
+        let ip = Ipv4Addr::new(10, 0, 0, 1);
+        secrets.syn_cookie.cookie(ip, ip, 1, 2)
+    }
+
+    fn sketch_hash(secrets: &BootSecrets) -> u64 {
+        secrets.cms_key.hash(b"probe")
+    }
+
+    #[test]
+    fn the_first_half_keys_only_the_syn_cookie() {
+        let a = BootSecrets::from_entropy(&entropy(1, 9));
+        let b = BootSecrets::from_entropy(&entropy(2, 9));
+
+        assert_ne!(cookie(&a), cookie(&b));
+        assert_eq!(sketch_hash(&a), sketch_hash(&b));
+        assert_eq!(a.mgmt_epoch, b.mgmt_epoch);
+    }
+
+    #[test]
+    fn the_second_half_keys_the_epoch_and_the_sketch() {
+        let a = BootSecrets::from_entropy(&entropy(1, 9));
+        let b = BootSecrets::from_entropy(&entropy(1, 8));
+
+        assert_eq!(cookie(&a), cookie(&b));
+        assert_ne!(sketch_hash(&a), sketch_hash(&b));
+        assert_ne!(a.mgmt_epoch, b.mgmt_epoch);
+    }
+
+    #[test]
+    fn the_epoch_is_not_the_raw_entropy() {
+        let raw = [0x5A; 32];
+
+        let secrets = BootSecrets::from_entropy(&raw);
+
+        assert_ne!(secrets.mgmt_epoch.get(), u32::from_le_bytes([0x5A; 4]));
+    }
 }

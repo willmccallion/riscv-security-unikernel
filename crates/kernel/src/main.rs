@@ -41,8 +41,7 @@ use sec_core::config::{
     TELEMETRY_INTERVAL, TELEMETRY_PORT, TOTAL_MEMORY_SIZE,
 };
 use sec_core::engine::{BootSecrets, Engine};
-use sec_core::net::stack::SynCookieSecret;
-use sec_core::security::hash::{MgmtKey, SketchKey, derive_key};
+use sec_core::security::hash::MgmtKey;
 use sec_core::time::TimeSource;
 use sec_core::types::TakeOnce;
 
@@ -162,7 +161,7 @@ pub extern "C" fn kmain() -> ! {
              Add virtio-rng (QEMU) or build with --features zkr (RISC-V K silicon) before deploying."
         );
     }
-    engine.init(boot_secrets(&entropy));
+    engine.init(BootSecrets::from_entropy(&entropy));
 
     loop {
         let now = clock.now();
@@ -197,24 +196,6 @@ pub extern "C" fn kmain() -> ! {
         if work_done {
             NetDevice::flush();
         }
-    }
-}
-
-/// Splits 32 bytes of boot entropy into the engine's per-boot secrets.
-///
-/// The epoch is broadcast in telemetry, so it and the sketch key are both
-/// derived from the second half under separate labels rather than taken
-/// from raw bytes, which would reveal part of the key.
-fn boot_secrets(entropy: &[u8; 32]) -> BootSecrets {
-    let (syn_cookie, rest) = entropy.split_first_chunk::<16>().unwrap_or((&[0; 16], &[]));
-    let other = rest.first_chunk::<16>().unwrap_or(&[0; 16]);
-    let epoch = derive_key(other, b"mgmt epoch");
-    // 0 is the verifier's "no epoch yet" value, so never use it.
-    let mgmt_epoch = u32::from_le_bytes([epoch[0], epoch[1], epoch[2], epoch[3]]).max(1);
-    BootSecrets {
-        syn_cookie: SynCookieSecret::new(*syn_cookie),
-        cms_key: SketchKey::new(derive_key(other, b"heavy-hitter sketch")),
-        mgmt_epoch,
     }
 }
 

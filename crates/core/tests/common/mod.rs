@@ -14,6 +14,7 @@ use sec_core::security::mgmt::{Ack, Command};
 use sec_core::security::mgmt_auth::{OperatorAddr, seal, sealed_len};
 use sec_core::security::report_auth::{ReportBody, ReportVerifier};
 use std::net::Ipv4Addr;
+use std::num::NonZeroU32;
 
 pub const KEY: MgmtKey = MgmtKey::new(*b"engine-test-key!");
 pub const EPOCH: u32 = 0x1234_5678;
@@ -86,7 +87,7 @@ pub fn engine() -> Engine {
     e.init(BootSecrets {
         syn_cookie: SynCookieSecret::new([7; 16]),
         cms_key: SketchKey::new([0; 16]),
-        mgmt_epoch: EPOCH,
+        mgmt_epoch: NonZeroU32::new(EPOCH).unwrap(),
     });
     e
 }
