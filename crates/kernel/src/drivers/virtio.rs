@@ -5,42 +5,16 @@
 //! buffers, and provides a simple interface for sending and receiving
 //! Ethernet frames.
 
+use super::virtio_mmio::{DESC_F_WRITE, DeviceId, Mmio, Queue};
 use crate::{kprint, kprintln};
 use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 use core::sync::atomic::{Ordering, fence};
 
-/// Starting address for VirtIO device probe.
-const VIRTIO_START: usize = 0x1000_1000;
+/// The virtqueue the device delivers received frames on.
+const RX_QUEUE: u32 = 0;
 
-/// Ending address for VirtIO device probe.
-const VIRTIO_END: usize = 0x1000_8000;
-
-/// VirtIO magic number identifier.
-const VIRTIO_MAGIC: u32 = 0x7472_6976;
-
-/// Device ID for network devices.
-const DEVICE_ID_NET: u32 = 1;
-
-/// VirtIO specification version 1.0.
-const DEVICE_VERSION_1: u32 = 1;
-
-/// Status register offset.
-const STATUS: usize = 0x070;
-
-/// Queue selection register offset.
-const QUEUE_SEL: usize = 0x030;
-
-/// Queue size register offset.
-const QUEUE_NUM: usize = 0x038;
-
-/// Queue alignment register offset.
-const QUEUE_ALIGN: usize = 0x03c;
-
-/// Queue physical frame number register offset.
-const QUEUE_PFN: usize = 0x040;
-
-/// Queue notify register offset.
-const QUEUE_NOTIFY: usize = 0x050;
+/// The virtqueue the device sends frames from.
+const TX_QUEUE: u32 = 1;
 
 /// Number of descriptors in each queue.
 const QUEUE_SIZE: usize = 2;
@@ -55,80 +29,13 @@ const BUF_SIZE: usize = 1536;
 /// before the frame is dropped.
 const TX_RECLAIM_SPINS: u32 = 1_000_000;
 
-/// VirtIO queue descriptor structure.
-///
-/// Describes a single buffer in the virtqueue. The descriptor contains
-/// the physical address of the buffer, its length, and flags indicating
-/// whether it's writable and whether it chains to another descriptor.
-#[repr(C, align(16))]
-struct VirtqDesc {
-    addr: u64,
-    len: u32,
-    flags: u16,
-    next: u16,
-}
-
-/// VirtIO available ring structure.
-///
-/// The available ring is used by the driver to notify the device
-/// about buffers that are ready for processing.
-#[repr(C, align(2))]
-struct VirtqAvail {
-    flags: u16,
-    idx: u16,
-    ring: [u16; QUEUE_SIZE],
-    event: u16,
-}
-
-/// Element in the used ring.
-///
-/// Contains the descriptor ID and length of data written by the device.
-#[repr(C, align(4))]
-struct VirtqUsedElem {
-    id: u32,
-    len: u32,
-}
-
-/// VirtIO used ring structure.
-///
-/// The used ring is used by the device to notify the driver about
-/// buffers that have been processed and are ready to be recycled.
-#[repr(C, align(4))]
-struct VirtqUsed {
-    flags: u16,
-    idx: u16,
-    ring: [VirtqUsedElem; QUEUE_SIZE],
-    event: u16,
-}
-
-/// Guest page size and used-ring alignment programmed into the device.
-///
-/// Legacy VirtIO places the used ring at the next `QUEUE_ALIGN` boundary
-/// after the available ring and addresses the queue by `addr / page`.
-/// With two descriptors everything before the used ring fits in 64
-/// bytes, so a 64-byte page keeps each queue to 128 bytes instead of the
-/// two 4 KB pages a 4096-byte page would cost.
-const GUEST_PAGE: u32 = 64;
-
-/// Legacy virtqueue: descriptor table and available ring, then the used
-/// ring at the next `GUEST_PAGE` boundary.
-#[repr(C, align(64))]
-struct Queue {
-    desc: [VirtqDesc; QUEUE_SIZE],
-    avail: VirtqAvail,
-    _pad: [u8; GUEST_PAGE as usize - 32 - 10],
-    used: VirtqUsed,
-}
-
-const _: () = assert!(core::mem::offset_of!(Queue, used) == GUEST_PAGE as usize);
-
 /// Receive queue for incoming packets.
 // SAFETY: Queue consists entirely of integer types; zeroing all bytes produces a valid initial state.
-static mut RX_QUEUE: Queue = unsafe { core::mem::zeroed() };
+static mut RX_RING: Queue<QUEUE_SIZE> = unsafe { core::mem::zeroed() };
 
 /// Transmit queue for outgoing packets.
 // SAFETY: Queue consists entirely of integer types; zeroing all bytes produces a valid initial state.
-static mut TX_QUEUE: Queue = unsafe { core::mem::zeroed() };
+static mut TX_RING: Queue<QUEUE_SIZE> = unsafe { core::mem::zeroed() };
 
 /// Packet buffers the RX descriptors point at.
 static mut RX_BUFFERS: [[u8; BUF_SIZE]; QUEUE_SIZE] = [[0; BUF_SIZE]; QUEUE_SIZE];
@@ -139,8 +46,8 @@ static mut TX_BUFFERS: [[u8; BUF_SIZE]; QUEUE_SIZE] = [[0; BUF_SIZE]; QUEUE_SIZE
 /// Current index in the receive used ring.
 static mut RX_IDX: u16 = 0;
 
-/// Base address of the active VirtIO device.
-static mut ACTIVE_BASE: usize = 0;
+/// The device's registers, once probed.
+static mut DEVICE: Option<Mmio> = None;
 
 /// VirtIO network device driver.
 ///
@@ -156,70 +63,34 @@ impl VirtioNet {
     /// once before using the device.
     pub fn init() {
         kprint!("[VirtIO] Probing... ");
-        let mut addr = VIRTIO_START;
-        while addr <= VIRTIO_END {
-            // SAFETY: Addresses in the VIRTIO_START..=VIRTIO_END range are valid MMIO addresses
-            // on this hardware platform. ACTIVE_BASE is a mutable static only written here
-            // during single-threaded init.
-            unsafe {
-                if read_volatile((addr) as *const u32) == VIRTIO_MAGIC
-                    && read_volatile((addr + 8) as *const u32) == DEVICE_ID_NET
-                    && read_volatile((addr + 4) as *const u32) == DEVICE_VERSION_1
-                {
-                    ACTIVE_BASE = addr;
-                    break;
-                }
-            }
-            addr += 0x1000;
-        }
+        let Some(mmio) = Mmio::probe(DeviceId::Net) else {
+            panic!("No Legacy Net Device Found");
+        };
+        // SAFETY: DEVICE is only written here, during single-threaded init.
+        unsafe { DEVICE = Some(mmio) };
+        kprintln!("Found at {:#x}", mmio.base());
+        mmio.begin_setup();
 
-        // SAFETY: ACTIVE_BASE is a mutable static only written during single-threaded init before this check.
-        assert!(unsafe { ACTIVE_BASE } != 0, "No Legacy Net Device Found");
-        // SAFETY: ACTIVE_BASE was verified non-zero by the assert above; reading it here is safe in this single-threaded context.
-        kprintln!("Found at {:#x}", unsafe { ACTIVE_BASE });
-
-        Self::reg_write(STATUS, 0);
-        Self::reg_write(STATUS, 0x01 | 0x02);
-        Self::reg_write(0x020, 0);
-        Self::reg_write(STATUS, 0x01 | 0x02 | 0x08);
-
-        // SAFETY: RX_QUEUE and RX_BUFFERS are statics only accessed from this
+        // SAFETY: RX_RING and RX_BUFFERS are statics only accessed from this
         // single-threaded kernel, so the descriptors' buffer addresses stay
         // valid; the device reads these fields, so they are written volatile.
         unsafe {
-            let rx = addr_of_mut!(RX_QUEUE);
+            let rx = addr_of_mut!(RX_RING);
             let buffers = addr_of_mut!(RX_BUFFERS).cast::<[u8; BUF_SIZE]>();
             for id in 0..QUEUE_SIZE {
                 let desc = addr_of_mut!((*rx).desc[id]);
                 write_volatile(addr_of_mut!((*desc).addr), buffers.add(id) as u64);
                 write_volatile(addr_of_mut!((*desc).len), BUF_SIZE as u32);
-                write_volatile(addr_of_mut!((*desc).flags), 2);
+                write_volatile(addr_of_mut!((*desc).flags), DESC_F_WRITE);
                 write_volatile(addr_of_mut!((*rx).avail.ring[id]), id as u16);
             }
             write_volatile(addr_of_mut!((*rx).avail.idx), QUEUE_SIZE as u16);
         }
 
-        Self::reg_write(0x028, GUEST_PAGE);
-
-        Self::reg_write(QUEUE_SEL, 0);
-        Self::reg_write(QUEUE_NUM, QUEUE_SIZE as u32);
-        Self::reg_write(QUEUE_ALIGN, GUEST_PAGE);
-        Self::reg_write(QUEUE_PFN, (addr_of_mut!(RX_QUEUE) as u32) / GUEST_PAGE);
-
-        Self::reg_write(QUEUE_SEL, 1);
-        Self::reg_write(QUEUE_NUM, QUEUE_SIZE as u32);
-        Self::reg_write(QUEUE_ALIGN, GUEST_PAGE);
-        Self::reg_write(QUEUE_PFN, (addr_of_mut!(TX_QUEUE) as u32) / GUEST_PAGE);
-
-        Self::reg_write(STATUS, 0x01 | 0x02 | 0x08 | 0x04);
+        mmio.install_queue(RX_QUEUE, addr_of!(RX_RING));
+        mmio.install_queue(TX_QUEUE, addr_of!(TX_RING));
+        mmio.finish_setup();
         kprintln!("[VirtIO] Driver OK");
-    }
-
-    /// Writes a 32-bit value to a VirtIO register.
-    fn reg_write(offset: usize, val: u32) {
-        // SAFETY: ACTIVE_BASE is a valid VirtIO MMIO base address (verified in init).
-        // The offset is a known register offset from the VirtIO spec.
-        unsafe { write_volatile((ACTIVE_BASE + offset) as *mut u32, val) }
     }
 
     /// Lends the next received frame to `handle`, then gives its buffer
@@ -253,11 +124,11 @@ impl VirtioNet {
     /// The descriptor id and length of the next buffer the device returned,
     /// consuming that used-ring entry.
     fn next_used_rx() -> Option<(usize, usize)> {
-        // SAFETY: RX_QUEUE and RX_IDX are statics only accessed from this
+        // SAFETY: RX_RING and RX_IDX are statics only accessed from this
         // single-threaded polling loop; the device writes the used ring, so
         // it is read volatile, and the ring index is masked to QUEUE_SIZE.
         unsafe {
-            let rx = addr_of!(RX_QUEUE);
+            let rx = addr_of!(RX_RING);
             if read_volatile(addr_of!((*rx).used.idx)) == RX_IDX {
                 return None;
             }
@@ -272,11 +143,11 @@ impl VirtioNet {
 
     /// Posts receive buffer `id` back to the device.
     fn recycle_rx_buffer(id: usize) {
-        // SAFETY: RX_QUEUE is a mutable static only accessed from this
+        // SAFETY: RX_RING is a mutable static only accessed from this
         // single-threaded kernel; the device reads the available ring, so it
         // is written volatile, and the ring index is masked to QUEUE_SIZE.
         unsafe {
-            let rx = addr_of_mut!(RX_QUEUE);
+            let rx = addr_of_mut!(RX_RING);
             let idx = read_volatile(addr_of!((*rx).avail.idx));
             write_volatile(
                 addr_of_mut!((*rx).avail.ring[idx as usize % QUEUE_SIZE]),
@@ -303,11 +174,11 @@ impl VirtioNet {
         if !Self::wait_for_free_tx_slot() {
             return;
         }
-        // SAFETY: TX_QUEUE is a mutable static only accessed from this single-threaded kernel.
+        // SAFETY: TX_RING is a mutable static only accessed from this single-threaded kernel.
         // Volatile writes and a fence ensure the device sees the descriptor before the available
         // index is updated.
         unsafe {
-            let tx = addr_of_mut!(TX_QUEUE);
+            let tx = addr_of_mut!(TX_RING);
             let avail_idx = read_volatile(addr_of!((*tx).avail.idx));
             let idx = avail_idx as usize % QUEUE_SIZE;
 
@@ -355,11 +226,11 @@ impl VirtioNet {
 
     /// Number of TX descriptors handed to the device and not yet returned.
     fn tx_in_flight() -> usize {
-        // SAFETY: TX_QUEUE is a mutable static only accessed from this
+        // SAFETY: TX_RING is a mutable static only accessed from this
         // single-threaded kernel; the device updates `used.idx`, so it is
         // read volatile.
         unsafe {
-            let tx = addr_of_mut!(TX_QUEUE);
+            let tx = addr_of_mut!(TX_RING);
             let used = read_volatile(addr_of!((*tx).used.idx));
             read_volatile(addr_of!((*tx).avail.idx)).wrapping_sub(used) as usize
         }
@@ -371,11 +242,10 @@ impl VirtioNet {
     /// descriptors. Should be called after sending packets or
     /// periodically to ensure timely transmission.
     pub fn flush() {
-        // SAFETY: ACTIVE_BASE is a valid VirtIO MMIO base address.
-        // QUEUE_NOTIFY is a standard VirtIO register offset.
-        unsafe {
-            write_volatile((ACTIVE_BASE + QUEUE_NOTIFY) as *mut u32, 0);
-            write_volatile((ACTIVE_BASE + QUEUE_NOTIFY) as *mut u32, 1);
+        // SAFETY: DEVICE is only written during single-threaded init.
+        if let Some(mmio) = unsafe { DEVICE } {
+            mmio.notify(RX_QUEUE);
+            mmio.notify(TX_QUEUE);
         }
     }
 }

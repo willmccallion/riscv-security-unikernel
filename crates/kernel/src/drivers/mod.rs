@@ -12,6 +12,8 @@ pub mod virtio;
 /// VirtIO entropy device driver.
 pub mod virtio_rng;
 
+mod virtio_mmio;
+
 /// Unified network device interface.
 ///
 /// Exports the primary network device driver as a generic `NetDevice` type
