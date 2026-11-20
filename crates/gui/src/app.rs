@@ -10,6 +10,7 @@
     reason = "every egui widget call returns a Response, and most go unused"
 )]
 
+use crate::bpf::compile_bpf;
 use crate::live::view::LiveView;
 use crate::log::{Description, LogEntry, LogEvent, Source};
 use crate::types::{
@@ -18,12 +19,10 @@ use crate::types::{
 };
 use eframe::egui;
 use egui_plot::{Line, Plot, PlotPoints};
-use sec_core::net::constants::{IpProtocol, ipv4, tcp};
 use sec_core::security::dpi::BUILTIN_SIGNATURES;
 use sec_core::security::dpi::Pattern;
 use sec_core::security::mgmt::Command;
 use sec_core::security::mgmt::MgmtOutcome;
-use sec_core::security::vm::{Instruction, Opcode, Program};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -484,9 +483,12 @@ impl Dashboard {
     /// Compiles the editor's program and uploads it, or logs that it did
     /// not compile.
     fn upload_bpf(&mut self) {
-        let Some(program) = compile_bpf(&self.bpf_code) else {
-            self.record(LogEvent::CompileFailed);
-            return;
+        let program = match compile_bpf(&self.bpf_code) {
+            Ok(program) => program,
+            Err(error) => {
+                self.record(LogEvent::CompileFailed(error));
+                return;
+            }
         };
         let command = self.issue(&Command::UploadBpf(program));
         let source = self.bpf_code.trim().to_string();
@@ -1045,127 +1047,9 @@ fn format_metric(val: u64) -> String {
     }
 }
 
-/// Compiles a simple BPF-style program to bytecode.
-///
-/// Supports a limited instruction set for packet filtering:
-/// - `DROP ALL` - Drops all packets
-/// - `BLOCK <TCP|UDP> DST <port>` - Drops packets of that protocol to a
-///   destination port, wherever IPv4 options place the transport header.
-pub(crate) fn compile_bpf(code: &str) -> Option<Program> {
-    const PROTOCOL_OFFSET: u32 = ipv4::PROTOCOL_OFFSET as u32;
-    const VERSION_IHL_OFFSET: u32 = ipv4::VERSION_IHL_OFFSET as u32;
-    /// The destination port's offset past the IPv4 header; TCP and UDP
-    /// share it.
-    const DST_PORT_AFTER_IP_HEADER: u32 = (ipv4::HEADER_OFFSET + tcp::DST_PORT_OFFSET) as u32;
-    const PASS_INDEX: u32 = 9;
-    const DROP_INDEX: u32 = 10;
-
-    if code.trim() == "DROP ALL" {
-        return Program::decode(&Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes()).ok();
-    }
-
-    let parts: Vec<&str> = code.split_whitespace().collect();
-    let [block, protocol, dst, port] = parts.as_slice() else {
-        return None;
-    };
-    if *block != "BLOCK" || *dst != "DST" {
-        return None;
-    }
-    let protocol = match *protocol {
-        "TCP" => IpProtocol::Tcp,
-        "UDP" => IpProtocol::Udp,
-        _ => return None,
-    };
-    let port = port.parse::<u16>().ok()?;
-
-    let program = [
-        Instruction::new(Opcode::Ldb, 0, 0, PROTOCOL_OFFSET).to_bytes(),
-        Instruction::new(Opcode::Ldi, 1, 0, protocol as u32).to_bytes(),
-        Instruction::new(Opcode::Eq, 0, 1, 0).to_bytes(),
-        Instruction::new(Opcode::Jf, 0, 0, PASS_INDEX).to_bytes(),
-        Instruction::new(Opcode::Ldmsh, 4, 0, VERSION_IHL_OFFSET).to_bytes(),
-        Instruction::new(Opcode::Ldhx, 2, 4, DST_PORT_AFTER_IP_HEADER).to_bytes(),
-        Instruction::new(Opcode::Ldi, 3, 0, u32::from(port)).to_bytes(),
-        Instruction::new(Opcode::Eq, 2, 3, 0).to_bytes(),
-        Instruction::new(Opcode::Jt, 0, 0, DROP_INDEX).to_bytes(),
-        Instruction::new(Opcode::Ret, 0, 0, 1).to_bytes(),
-        Instruction::new(Opcode::Ret, 0, 0, 0).to_bytes(),
-    ];
-    Program::decode(&program.concat()).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sec_core::security::vm::{VmAction, execute};
-
-    fn frame(protocol: IpProtocol, dst_port: u16) -> Vec<u8> {
-        frame_with_ip_header_words(protocol, dst_port, 5)
-    }
-
-    /// A frame whose IPv4 header is `words` four-byte words long, so any
-    /// beyond five are options.
-    fn frame_with_ip_header_words(protocol: IpProtocol, dst_port: u16, words: u8) -> Vec<u8> {
-        let port_at = 14 + usize::from(words) * 4 + 2;
-        let mut f = vec![0u8; port_at + 20];
-        f[12] = 0x08;
-        f[14] = 0x40 | words;
-        f[23] = protocol as u8;
-        f[port_at..port_at + 2].copy_from_slice(&dst_port.to_be_bytes());
-        f
-    }
-
-    fn run(code: &str, packet: &[u8]) -> VmAction {
-        let program = compile_bpf(code).expect("compiles to a program the kernel accepts");
-        execute(&program, packet).expect("program returns")
-    }
-
-    #[test]
-    fn block_drops_matching_protocol_and_port() {
-        let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Tcp, 80));
-
-        assert_eq!(action, VmAction::Drop);
-    }
-
-    #[test]
-    fn block_drops_a_matching_port_behind_ip_options() {
-        for words in [6, 15] {
-            let packet = frame_with_ip_header_words(IpProtocol::Tcp, 80, words);
-
-            let action = run("BLOCK TCP DST 80", &packet);
-
-            assert_eq!(action, VmAction::Drop, "IPv4 header of {words} words");
-        }
-    }
-
-    #[test]
-    fn block_passes_another_port_behind_ip_options() {
-        let packet = frame_with_ip_header_words(IpProtocol::Tcp, 443, 6);
-
-        let action = run("BLOCK TCP DST 80", &packet);
-
-        assert_eq!(action, VmAction::Pass);
-    }
-
-    #[test]
-    fn block_passes_other_ports() {
-        let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Tcp, 443));
-
-        assert_eq!(action, VmAction::Pass);
-    }
-
-    #[test]
-    fn block_passes_other_protocols_on_the_same_port() {
-        let action = run("BLOCK TCP DST 80", &frame(IpProtocol::Udp, 80));
-
-        assert_eq!(action, VmAction::Pass);
-    }
-
-    #[test]
-    fn block_rejects_unknown_protocol_and_out_of_range_port() {
-        assert!(compile_bpf("BLOCK ICMP DST 80").is_none());
-        assert!(compile_bpf("BLOCK TCP DST 70000").is_none());
-    }
 
     const ADD: CommandId = CommandId(1);
     const REMOVE: CommandId = CommandId(2);
@@ -1240,12 +1124,5 @@ mod tests {
         assert!(is_connected(100, 102));
         assert!(!is_connected(100, 103));
         assert!(is_connected(100, 99));
-    }
-
-    #[test]
-    fn drop_all_drops_everything() {
-        let action = run("DROP ALL", &frame(IpProtocol::Udp, 1337));
-
-        assert_eq!(action, VmAction::Drop);
     }
 }

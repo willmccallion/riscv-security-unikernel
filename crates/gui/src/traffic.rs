@@ -445,7 +445,7 @@ mod tests {
             Command::UnblockPort(8443),
             Command::AddDpiPattern(pattern),
             Command::RemoveDpiPattern(pattern),
-            Command::UploadBpf(crate::app::compile_bpf("BLOCK TCP DST 80").unwrap()),
+            Command::UploadBpf(crate::bpf::compile_bpf("BLOCK TCP DST 80").unwrap()),
             Command::UnloadBpf,
         ];
         for command in commands {
