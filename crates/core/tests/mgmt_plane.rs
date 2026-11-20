@@ -11,7 +11,7 @@ use sec_core::engine::{Engine, Verdict};
 use sec_core::net::stack::checksum;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::mgmt::{ManagementMessageType, MgmtOutcome};
-use sec_core::security::vm::Opcode;
+use sec_core::security::vm::{Instruction, Opcode};
 use sec_core::time::Ticks;
 
 const PROBE_PORT: u16 = 7777;
@@ -23,14 +23,8 @@ fn block_port(port: u16) -> Vec<u8> {
 }
 
 fn single_instruction_upload(op: Opcode, imm: u32) -> Vec<u8> {
-    let mut body = vec![
-        ManagementMessageType::UploadBpfProgram as u8,
-        1,
-        op as u8,
-        0,
-        0,
-    ];
-    body.extend_from_slice(&imm.to_be_bytes());
+    let mut body = vec![ManagementMessageType::UploadBpfProgram as u8, 1];
+    body.extend_from_slice(&Instruction::new(op, 0, 0, imm).to_bytes());
     body
 }
 
@@ -510,4 +504,54 @@ fn an_empty_too_long_or_truncated_pattern_is_invalid_to_add_or_remove() {
 
     let outcomes: Vec<u8> = common::acks(&sink).iter().map(|&(_, _, o)| o).collect();
     assert_eq!(outcomes, [MgmtOutcome::Invalid as u8; 6]);
+}
+
+#[test]
+fn a_bpf_program_that_never_returns_drops_the_packet_with_a_timeout_alert() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let loop_forever = single_instruction_upload(Opcode::Jmp, 0);
+    let _ = e.process(&mut mgmt(1, &loop_forever), Ticks::new(1), &mut sink);
+
+    let verdict = e.process(
+        &mut udp([10, 9, 9, 9], 5000, 80, b"probe"),
+        Ticks::new(1_000_000_000),
+        &mut sink,
+    );
+
+    assert_eq!(verdict, Verdict::Dropped(AlertReason::BpfTimeout));
+    assert!(sink.alert_reasons().contains(&AlertReason::BpfTimeout));
+}
+
+#[test]
+fn a_bpf_return_other_than_drop_or_pass_is_refused_at_upload() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+
+    let _ = e.process(
+        &mut mgmt(1, &single_instruction_upload(Opcode::Ret, 7)),
+        Ticks::new(1),
+        &mut sink,
+    );
+
+    let outcome = acks(&sink).last().map(|&(_, _, outcome)| outcome);
+    assert_eq!(outcome, Some(MgmtOutcome::Invalid as u8));
+}
+
+#[test]
+fn an_empty_bpf_upload_removes_the_filter() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let drop_all = single_instruction_upload(Opcode::Ret, 0);
+    let empty = [ManagementMessageType::UploadBpfProgram as u8, 0];
+    let _ = e.process(&mut mgmt(1, &drop_all), Ticks::new(1), &mut sink);
+    let _ = e.process(&mut mgmt(2, &empty), Ticks::new(2), &mut sink);
+
+    let verdict = e.process(
+        &mut udp([10, 9, 9, 9], 5000, 80, b"probe"),
+        Ticks::new(1_000_000_000),
+        &mut sink,
+    );
+
+    assert_eq!(verdict, Verdict::Passed);
 }

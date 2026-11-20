@@ -14,10 +14,10 @@ mod report;
 use crate::config::{
     ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST, CMS_DEPTH, CMS_WIDTH, DDOS_ALERT_SAMPLE_RATE,
     DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION,
-    MANAGEMENT_PORT, MAX_BPF_PROGRAM_SIZE, MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST,
-    PREFIX_SKETCH_DEPTH, PREFIX_SKETCH_WIDTH, RATE_LIMIT_TOKEN_COST, SOURCE_COUNTER_REGISTERS,
-    SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD,
-    TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
+    MANAGEMENT_PORT, MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST, PREFIX_SKETCH_DEPTH,
+    PREFIX_SKETCH_WIDTH, RATE_LIMIT_TOKEN_COST, SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR,
+    SOURCE_SURGE_MINIMUM, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD, TELEMETRY_PORT,
+    TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
 use crate::net::constants::{IpProtocol, arp, ethernet, ipv4, tcp, udp};
@@ -27,7 +27,7 @@ use crate::security::alert::{AlertMeta, AlertReason, should_emit_ddos_alert};
 use crate::security::hash::{MgmtKey, ReportKey, SketchKey};
 use crate::security::mgmt::{ManagementMessageType, MgmtOutcome, mgmt_packet};
 use crate::security::mgmt_auth::OperatorAddr;
-use crate::security::vm::{Instruction, VM, VmAction, VmRuntimeError};
+use crate::security::vm::{Program, VmAction};
 use crate::security::{anomaly, dos, dpi, firewall, flow, heuristic, mgmt_auth, scan, sketch, vm};
 
 use report::{MAX_REPORT_FRAME_LEN, ReportHeader};
@@ -84,13 +84,6 @@ pub enum Verdict {
     Consumed,
 }
 
-/// The installed BPF filter.
-#[derive(Debug)]
-struct BpfSlot {
-    program: [Instruction; MAX_BPF_PROGRAM_SIZE],
-    len: usize,
-}
-
 /// Every security subsystem, plus the state the pipeline carries between
 /// packets.
 ///
@@ -120,8 +113,8 @@ pub struct Engine<
     limiter: dos::TokenBucket,
     mgmt_failure_limiter: dos::TokenBucket,
     alert_limiter: dos::TokenBucket,
-    vm: VM,
-    bpf: BpfSlot,
+    /// The installed BPF filter, if any.
+    bpf: Option<Program>,
     flows: flow::FlowTable,
     mgmt_auth: mgmt_auth::MgmtAuth,
     report_key: ReportKey,
@@ -156,11 +149,7 @@ impl<
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY, RATE_LIMIT_TOKEN_COST),
             mgmt_failure_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST),
             alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST),
-            vm: VM::new(),
-            bpf: BpfSlot {
-                program: [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE],
-                len: 0,
-            },
+            bpf: None,
             flows: flow::FlowTable::new(),
             mgmt_auth: mgmt_auth::MgmtAuth::new(mgmt_key),
             report_key: ReportKey::derive(&mgmt_key),
@@ -345,15 +334,11 @@ impl<
             return self.drop_with_alert(&meta, AlertReason::Heuristic, now, sink);
         }
 
-        if self.bpf.len > 0 {
-            let program = &self.bpf.program[..self.bpf.len];
-            let drop_reason = match self.vm.execute(program, packet) {
+        if let Some(program) = &self.bpf {
+            let drop_reason = match vm::execute(program, packet) {
                 Ok(VmAction::Pass) => None,
                 Ok(VmAction::Drop) => Some(AlertReason::Bpf),
-                Err(VmRuntimeError::Timeout) => Some(AlertReason::BpfTimeout),
-                Err(VmRuntimeError::InvalidAction(_) | VmRuntimeError::MissingReturn) => {
-                    Some(AlertReason::BpfInvalidAction)
-                }
+                Err(vm::Timeout) => Some(AlertReason::BpfTimeout),
             };
             if let Some(reason) = drop_reason {
                 self.stats.bpf += 1;
@@ -577,7 +562,7 @@ impl<
             Some(ManagementMessageType::UnblockPort) => self.unblock_port(body),
             Some(ManagementMessageType::RemoveDpiPattern) => self.remove_dpi_pattern(body),
             Some(ManagementMessageType::UnloadBpfProgram) => {
-                self.bpf.len = 0;
+                self.bpf = None;
                 MgmtOutcome::Applied
             }
             Some(ManagementMessageType::UnbanIp) => self.unban_ip(body),
@@ -643,34 +628,28 @@ impl<
         MgmtOutcome::Applied
     }
 
+    /// Installs the uploaded program, or with no instructions removes the
+    /// filter; a program that does not decode leaves the running one.
     fn upload_bpf(&mut self, body: &[u8]) -> MgmtOutcome {
-        use mgmt_packet::upload_bpf;
-        let Some(&count) = body.get(upload_bpf::COUNT_OFFSET) else {
+        use mgmt_packet::upload_bpf::{COUNT_OFFSET, INSTR_OFFSET, INSTR_SIZE};
+        let Some(&count) = body.get(COUNT_OFFSET) else {
             return MgmtOutcome::Invalid;
         };
-        let count = usize::from(count);
-        if count > upload_bpf::MAX_INSTR_COUNT {
-            return MgmtOutcome::Invalid;
-        }
-        let Some(encoded) = body.get(
-            upload_bpf::INSTR_OFFSET..upload_bpf::INSTR_OFFSET + count * upload_bpf::INSTR_SIZE,
-        ) else {
+        let Some(encoded) = body.get(INSTR_OFFSET..INSTR_OFFSET + usize::from(count) * INSTR_SIZE)
+        else {
             return MgmtOutcome::Invalid;
         };
-        let mut staged = [Instruction::new(0, 0, 0, 0); MAX_BPF_PROGRAM_SIZE];
-        let (encoded, _) = encoded.as_chunks::<{ upload_bpf::INSTR_SIZE }>();
-        for (slot, raw) in staged.iter_mut().zip(encoded) {
-            let imm = u32::from_be_bytes([raw[3], raw[4], raw[5], raw[6]]);
-            *slot = Instruction::new(raw[0], raw[1], raw[2], imm);
+        if encoded.is_empty() {
+            self.bpf = None;
+            return MgmtOutcome::Applied;
         }
-        // Decode into a staging buffer so a rejected upload leaves the
-        // running program untouched.
-        if vm::validate(&staged[..count]).is_err() {
-            return MgmtOutcome::Invalid;
+        match Program::decode(encoded) {
+            Ok(program) => {
+                self.bpf = Some(program);
+                MgmtOutcome::Applied
+            }
+            Err(_) => MgmtOutcome::Invalid,
         }
-        self.bpf.program[..count].copy_from_slice(&staged[..count]);
-        self.bpf.len = count;
-        MgmtOutcome::Applied
     }
 }
 

@@ -6,6 +6,8 @@
 #![allow(unused_results)]
 // `criterion_group!` expands to an undocumented generated function.
 #![allow(missing_docs)]
+// Setup decodes a constant program; a failure is a broken benchmark.
+#![allow(clippy::expect_used)]
 
 use benches::flow::FlowKey;
 use benches::{dpi, flow, heuristic, sketch, vm};
@@ -82,24 +84,25 @@ fn bench_ac_scan_match(c: &mut Criterion) {
 
 /// Builds a small BPF program that loads the byte at offset 23 (IP protocol
 /// field in a raw Ethernet frame) and returns 0 (drop) if it equals 17 (UDP).
-fn udp_drop_program() -> Vec<vm::Instruction> {
-    use benches::vm::Instruction;
-    vec![
-        Instruction::new(0x01, 0, 0, 23), // ldb r0, [23]   -- load proto byte
-        Instruction::new(0x04, 1, 0, 17), // ldi r1, 17     -- UDP protocol
-        Instruction::new(0x06, 0, 1, 0),  // eq  r0, r1
-        Instruction::new(0x0B, 0, 0, 5),  // jt  5          -- if equal, jump to drop
-        Instruction::new(0x0D, 0, 0, 1),  // ret 1          -- pass
-        Instruction::new(0x0D, 0, 0, 0),  // ret 0          -- drop
-    ]
+fn udp_drop_program() -> vm::Program {
+    use benches::vm::{Instruction, Opcode};
+    let instructions = [
+        Instruction::new(Opcode::Ldb, 0, 0, 23), // ldb r0, [23]   -- load proto byte
+        Instruction::new(Opcode::Ldi, 1, 0, 17), // ldi r1, 17     -- UDP protocol
+        Instruction::new(Opcode::Eq, 0, 1, 0),   // eq  r0, r1
+        Instruction::new(Opcode::Jt, 0, 0, 5),   // jt  5          -- if equal, jump to drop
+        Instruction::new(Opcode::Ret, 0, 0, 1),  // ret 1          -- pass
+        Instruction::new(Opcode::Ret, 0, 0, 0),  // ret 0          -- drop
+    ];
+    let encoded: Vec<u8> = instructions.iter().flat_map(|i| i.to_bytes()).collect();
+    vm::Program::decode(&encoded).expect("a valid program")
 }
 
 fn bench_vm_execute(c: &mut Criterion) {
-    let mut vm_instance = vm::VM::new();
     let prog = udp_drop_program();
     c.bench_function("vm_execute_6_instructions", |b| {
         b.iter(|| {
-            let _ = black_box(vm_instance.execute(black_box(&prog), black_box(CLEAN_PAYLOAD)));
+            let _ = black_box(vm::execute(black_box(&prog), black_box(CLEAN_PAYLOAD)));
         });
     });
 }
@@ -198,7 +201,6 @@ fn bench_heuristic_payload_nop_sled(c: &mut Criterion) {
 fn bench_full_hot_path(c: &mut Criterion) {
     let mut cms = sketch::CountMinSketch::<CMS_WIDTH, CMS_DEPTH>::new(SketchKey::new([0; 16]));
     let ac = build_ac();
-    let mut vm_instance = vm::VM::new();
     let prog = udp_drop_program();
     let ips: Vec<[u8; 4]> = (0u8..64).map(|i| [10, 0, 0, i]).collect();
 
@@ -209,8 +211,7 @@ fn bench_full_hot_path(c: &mut Criterion) {
             idx = idx.wrapping_add(1);
             let _count = black_box(cms.insert(black_box(ip)));
             let _hit = black_box(ac.scan(black_box(CLEAN_PAYLOAD)));
-            let _action =
-                black_box(vm_instance.execute(black_box(&prog), black_box(CLEAN_PAYLOAD)));
+            let _action = black_box(vm::execute(black_box(&prog), black_box(CLEAN_PAYLOAD)));
         });
     });
 }
