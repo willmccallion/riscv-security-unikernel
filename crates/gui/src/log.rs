@@ -1,5 +1,6 @@
 //! The event log: what each row records, and how each kind is shown.
 
+use crate::bpf::CompileError;
 use eframe::egui::Color32;
 use sec_core::security::alert::{Alert, AlertReason};
 use sec_core::security::mgmt::{Ack, ManagementMessageType, MgmtOutcome};
@@ -21,8 +22,8 @@ pub enum LogEvent {
     UnreadableAlert(usize),
     /// The operator banned this address from the packet inspector.
     ManualBan(Ipv4Addr),
-    /// A BPF program did not compile.
-    CompileFailed,
+    /// A BPF program did not compile, for this reason.
+    CompileFailed(CompileError),
 }
 
 /// Where a logged event came from.
@@ -78,7 +79,7 @@ impl LogEvent {
             },
             Self::Alert(alert) => Source::Host(alert.meta.src_ip),
             Self::Ack(_) | Self::UnreadableAlert(_) => Source::Kernel,
-            Self::ManualBan(_) | Self::CompileFailed => Source::Local,
+            Self::ManualBan(_) | Self::CompileFailed(_) => Source::Local,
         }
     }
 
@@ -103,9 +104,9 @@ impl LogEvent {
                 detail: format!("manual ban of {ip}"),
                 color: MAGENTA,
             },
-            Self::CompileFailed => Description {
+            Self::CompileFailed(error) => Description {
                 tag: "BPF",
-                detail: "compilation failed".to_string(),
+                detail: format!("compilation failed: {error}"),
                 color: Color32::RED,
             },
         }
@@ -284,7 +285,7 @@ mod tests {
     fn only_passed_packets_are_hidden_from_the_alerts_view() {
         assert!(LogEvent::Alert(alert(AlertReason::Pass)).is_pass());
         assert!(!LogEvent::Alert(alert(AlertReason::Ddos)).is_pass());
-        assert!(!LogEvent::CompileFailed.is_pass());
+        assert!(!LogEvent::CompileFailed(CompileError::UnknownStatement).is_pass());
     }
 
     #[test]

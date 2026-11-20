@@ -8,6 +8,7 @@
 
 mod acks;
 mod app;
+mod bpf;
 mod live;
 mod log;
 /// Per-namespace UDP sender pool for realistic multi-source traffic.
