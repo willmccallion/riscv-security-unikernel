@@ -114,80 +114,56 @@ impl LogEvent {
 }
 
 fn describe_alert(alert: &Alert, source: Source) -> Description {
-    let measured = alert.meta.value;
-    let (tag, color, detail) = match alert.reason {
-        AlertReason::Ddos => (
-            "DDoS",
-            Color32::YELLOW,
-            format!("High Volume from {source}"),
-        ),
-        AlertReason::Firewall => (
-            "FIREWALL",
-            Color32::RED,
-            format!("Blocked Port access from {source}"),
-        ),
-        AlertReason::Malware => (
-            "MALWARE",
-            Color32::RED,
-            format!("Signature Match from {source}"),
-        ),
-        AlertReason::Bpf => (
-            "BPF",
-            Color32::LIGHT_BLUE,
-            format!("Custom Filter Drop from {source}"),
-        ),
-        AlertReason::Heuristic => (
-            "HEURISTIC",
-            MAGENTA,
-            format!("Anomaly Detected from {source}"),
-        ),
-        AlertReason::Flow => (
-            "FLOW",
-            Color32::LIGHT_BLUE,
-            format!("New Connection from {source}"),
-        ),
-        AlertReason::Pass => (
-            "PASS",
-            Color32::from_gray(140),
-            format!("Allowed from {source}"),
-        ),
-        AlertReason::MgmtAuthFail => (
-            "MGMT AUTH",
-            ORANGE,
-            format!("Rejected unsigned/replayed mgmt packet from {source}"),
-        ),
-        AlertReason::BpfTimeout => (
-            "BPF TIMEOUT",
-            ORANGE,
-            format!("Installed program hit cycle budget from {source}"),
-        ),
-        AlertReason::SourceSurge => (
-            "SURGE",
-            Color32::YELLOW,
-            format!("~{measured} distinct sources in one interval (spoofed flood?)"),
-        ),
-        AlertReason::SubnetFlood => (
-            "SUBNET",
-            Color32::YELLOW,
-            format!("{source} banned at ~{measured} pps"),
-        ),
-        AlertReason::PortScan => (
-            "SCAN",
-            Color32::YELLOW,
-            format!("{source} banned after trying {measured} ports"),
-        ),
-        AlertReason::MalformedIp => (
-            "MALFORMED",
-            MAGENTA,
-            format!("Invalid IPv4 header from {source}"),
-        ),
-        AlertReason::IpFragment => (
-            "FRAGMENT",
-            MAGENTA,
-            format!("IPv4 fragment dropped from {source}"),
-        ),
-    };
-    Description { tag, detail, color }
+    let (tag, color) = alert_style(alert.reason);
+    Description {
+        tag,
+        detail: alert_detail(alert.reason, source, alert.meta.value),
+        color,
+    }
+}
+
+/// The badge and colour an alert reason is shown with.
+const fn alert_style(reason: AlertReason) -> (&'static str, Color32) {
+    match reason {
+        AlertReason::Ddos => ("DDoS", Color32::YELLOW),
+        AlertReason::Firewall => ("FIREWALL", Color32::RED),
+        AlertReason::Malware => ("MALWARE", Color32::RED),
+        AlertReason::Bpf => ("BPF", Color32::LIGHT_BLUE),
+        AlertReason::Heuristic => ("HEURISTIC", MAGENTA),
+        AlertReason::Flow => ("FLOW", Color32::LIGHT_BLUE),
+        AlertReason::Pass => ("PASS", Color32::from_gray(140)),
+        AlertReason::MgmtAuthFail => ("MGMT AUTH", ORANGE),
+        AlertReason::BpfTimeout => ("BPF TIMEOUT", ORANGE),
+        AlertReason::SourceSurge => ("SURGE", Color32::YELLOW),
+        AlertReason::SubnetFlood => ("SUBNET", Color32::YELLOW),
+        AlertReason::PortScan => ("SCAN", Color32::YELLOW),
+        AlertReason::MalformedIp => ("MALFORMED", MAGENTA),
+        AlertReason::IpFragment => ("FRAGMENT", MAGENTA),
+    }
+}
+
+/// What an alert says, given where it came from and any measurement.
+fn alert_detail(reason: AlertReason, source: Source, measured: u32) -> String {
+    match reason {
+        AlertReason::Ddos => format!("High Volume from {source}"),
+        AlertReason::Firewall => format!("Blocked Port access from {source}"),
+        AlertReason::Malware => format!("Signature Match from {source}"),
+        AlertReason::Bpf => format!("Custom Filter Drop from {source}"),
+        AlertReason::Heuristic => format!("Anomaly Detected from {source}"),
+        AlertReason::Flow => format!("New Connection from {source}"),
+        AlertReason::Pass => format!("Allowed from {source}"),
+        AlertReason::MgmtAuthFail => {
+            format!("Rejected unsigned/replayed mgmt packet from {source}")
+        }
+        AlertReason::BpfTimeout => format!("Installed program hit cycle budget from {source}"),
+        AlertReason::SourceSurge => {
+            format!("~{measured} distinct sources in one interval (spoofed flood?)")
+        }
+        AlertReason::SubnetFlood => format!("{source} banned at ~{measured} pps"),
+        AlertReason::PortScan => format!("{source} banned after trying {measured} ports"),
+        AlertReason::MalformedIp => format!("Invalid IPv4 header from {source}"),
+        AlertReason::IpFragment => format!("IPv4 fragment dropped from {source}"),
+    }
 }
 
 fn describe_ack(ack: Ack) -> Description {
