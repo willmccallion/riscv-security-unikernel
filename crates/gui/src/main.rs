@@ -6,10 +6,6 @@
 //! and BPF packet filters. Its live network view shows what the security
 //! daemon's monitor sees on a real network; `--live` opens that view alone.
 
-// Every egui widget call returns a Response; ignoring most of them is how
-// immediate-mode UI code is written.
-#![allow(unused_results)]
-
 mod acks;
 mod app;
 mod live;
@@ -67,23 +63,16 @@ async fn main() -> Result<(), eframe::Error> {
         return run_live_only(socket);
     }
 
-    let (event_tx, mut event_rx) = unbounded_channel::<UiEvent>();
+    let (event_tx, event_rx) = std::sync::mpsc::channel::<UiEvent>();
     let (cmd_tx, cmd_rx) = unbounded_channel();
 
     let stats = Arc::new(NetStats::default());
 
     let stats_clone = stats.clone();
-    tokio::spawn(async move {
+    let _detached = tokio::spawn(async move {
         if let Err(e) = traffic::start_background_task(stats_clone, event_tx, cmd_rx).await {
             eprintln!("[gui] background task failed: {e}");
             std::process::exit(1);
-        }
-    });
-
-    let (event_tx_sync, event_rx_sync) = std::sync::mpsc::channel();
-    tokio::spawn(async move {
-        while let Some(event) = event_rx.recv().await {
-            let _ = event_tx_sync.send(event);
         }
     });
 
@@ -97,7 +86,7 @@ async fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             let live = LiveView::new(socket, &cc.egui_ctx);
-            Box::new(Dashboard::new(stats, event_rx_sync, cmd_tx, live))
+            Box::new(Dashboard::new(stats, event_rx, cmd_tx, live))
         }),
     )
 }
@@ -109,8 +98,8 @@ struct LiveOnly {
 
 impl eframe::App for LiveOnly {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.view.show(ui));
+        let _ = egui::CentralPanel::default().show(ctx, |ui| {
+            let _ = egui::ScrollArea::vertical().show(ui, |ui| self.view.show(ui));
         });
     }
 }

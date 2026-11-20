@@ -1,5 +1,10 @@
 //! Drawing the live network view.
 
+#![allow(
+    unused_results,
+    reason = "every egui widget call returns a Response, and most go unused"
+)]
+
 use super::format;
 use super::link::{self, LinkEvent};
 use super::model::{HostRow, LiveNetwork, Window};

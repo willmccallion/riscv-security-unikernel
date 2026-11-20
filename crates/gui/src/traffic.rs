@@ -17,18 +17,21 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use sec_core::config::IP_ADDR;
 use sec_core::security::alert::alert_packet;
 use sec_core::security::hash::{MgmtKey, ReportKey};
 use sec_core::security::mgmt::Command;
 use sec_core::security::mgmt::mgmt_packet::MAX_PAYLOAD_LEN;
 use sec_core::security::mgmt_auth::{MAX_PACKET_LEN, seal};
 use sec_core::security::report_auth::{Report, ReportBody, ReportVerifier, Telemetry};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Namespace prefix used by `make setup_net_many`. Must match the
 /// value in the Makefile.
@@ -62,7 +65,10 @@ async fn send_sealed(
     let mut packet = [0u8; MAX_PACKET_LEN];
     let len =
         seal(key, counter, &reply_to, body, &mut packet).ok_or(NotSentReason::InvalidCommand)?;
-    let _ = sock.send_to(&packet[..len], MGMT_ADDR).await;
+    let _sent_bytes = sock
+        .send_to(&packet[..len], MGMT_ADDR)
+        .await
+        .map_err(|e| NotSentReason::SendFailed(e.kind()))?;
     Ok(counter as u32)
 }
 
@@ -128,145 +134,208 @@ impl MgmtCounter {
     }
 }
 
-/// Main background task that runs continuously.
+/// Ephemeral sockets the generator sends from when no namespace pool is up.
+const SOCKET_POOL_SIZE: usize = 50;
+
+/// Enough for any report the kernel sends.
+const REPORT_BUFFER_LEN: usize = 1024;
+
+/// How often the task expires unacked commands and generates traffic.
+const TICK: Duration = Duration::from_millis(1);
+
+/// Talks to the kernel and generates test traffic for as long as the
+/// dashboard runs: verifies reports into `stats` and `events`, seals and
+/// sends the commands arriving on `commands`, and sends traffic in the
+/// chosen mode.
 ///
-/// This function:
-/// - Listens for UDP telemetry and alerts from the kernel
-/// - Processes GUI commands and forwards them to the kernel
-/// - Generates test traffic based on the current mode
+/// # Errors
+///
+/// When a socket cannot be bound, such as the report port while another
+/// dashboard holds it.
 pub async fn start_background_task(
     stats: Arc<NetStats>,
-    events: UnboundedSender<UiEvent>,
-    mut cmd_rx: UnboundedReceiver<GuiCommand>,
+    events: Sender<UiEvent>,
+    mut commands: UnboundedReceiver<GuiCommand>,
 ) -> anyhow::Result<()> {
-    // Report bind failures (e.g. a previous GUI still holding the port)
-    // instead of panicking.
-    let socket = UdpSocket::bind(LISTEN_ADDR)
+    let reports_socket = UdpSocket::bind(LISTEN_ADDR)
         .await
-        .map_err(|e| anyhow::anyhow!("bind {LISTEN_ADDR}: {e}"))?;
-
-    let mut socket_pool = Vec::new();
-    for _ in 0..50 {
-        let sock = UdpSocket::bind("0.0.0.0:0")
-            .await
-            .map_err(|e| anyhow::anyhow!("bind ephemeral: {e}"))?;
-        socket_pool.push(sock);
-    }
-
-    // Namespaces from `make setup_net_many` give each packet a distinct
-    // source IP; without them, fall back to the host socket pool.
-    let ns_count: usize = std::env::var("SEC_NS_COUNT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(NETNS_DEFAULT_COUNT);
-    let ns_pool = NsPool::try_init(NETNS_PREFIX, ns_count);
-
-    let mut buf = vec![0u8; 1024];
-    let mut mode = TrafficMode::Idle;
-    let start_time = Instant::now();
+        .with_context(|| format!("bind {LISTEN_ADDR}"))?;
+    let mgmt_socket = bind_ephemeral().await?;
+    let mut generator = Generator::new(namespace_pool(), open_socket_pool().await?);
     let mgmt_key = load_mgmt_key();
     let mut reports = ReportVerifier::new(ReportKey::derive(&mgmt_key));
     let mut pending = PendingAcks::default();
-
-    let target_ip = std::net::IpAddr::from(sec_core::config::IP_ADDR);
-    let target_80 = SocketAddr::new(target_ip, 80);
-
-    let mut rng = StdRng::from_entropy();
-
+    let mut mode = TrafficMode::Idle;
+    let mut buf = [0u8; REPORT_BUFFER_LEN];
     loop {
         tokio::select! {
-            Ok((len, _)) = socket.recv_from(&mut buf) => {
+            Ok((len, _)) = reports_socket.recv_from(&mut buf) => {
                 if let Some(report) = reports.verify(&buf[..len]) {
                     handle_report(report, &stats, &events, &mut pending);
                 }
             }
-            Some(cmd) = cmd_rx.recv() => {
-                match cmd {
-                    GuiCommand::SetMode(m) => mode = m,
-                    GuiCommand::Mgmt { id, command } => {
-                        if let Command::BanIp(ip) = *command {
-                            let _ = events.send(UiEvent::Log(LogEvent::ManualBan(ip)));
+            Some(command) = commands.recv() => match command {
+                GuiCommand::SetMode(chosen) => mode = chosen,
+                GuiCommand::Mgmt { id, command } => {
+                    let status = match send_command(&mgmt_socket, &mgmt_key, &command, &events).await {
+                        Ok(seq) => {
+                            pending.sent(seq, id, Instant::now());
+                            CommandStatus::Pending
                         }
-                        let sent = send_sealed(&socket_pool[0], &mgmt_key, &command).await;
-                        let status = match sent {
-                            Ok(seq) => {
-                                pending.sent(seq, id, Instant::now());
-                                CommandStatus::Pending
-                            }
-                            Err(reason) => CommandStatus::NotSent(reason),
-                        };
-                        let _ = events.send(UiEvent::CommandStatus { id, status });
-                    }
+                        Err(reason) => CommandStatus::NotSent(reason),
+                    };
+                    let _ = events.send(UiEvent::CommandStatus { id, status });
                 }
-            }
-            () = tokio::time::sleep(Duration::from_millis(1)) => {
+            },
+            () = tokio::time::sleep(TICK) => {
                 for id in pending.expire(Instant::now()) {
                     let _ = events.send(UiEvent::CommandStatus { id, status: CommandStatus::NoAck });
                 }
-                // Across 200 namespaces, Normal is ~10 pps per source and DDoS
-                // ~1500, either side of the kernel's 100 pps ban threshold.
-                match mode {
-                    TrafficMode::Normal => {
-                        for _ in 0..rng.gen_range(1..=3) {
-                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
-                                target_80, b"GET / HTTP/1.1".to_vec()).await;
-                        }
-                    }
-                    TrafficMode::DDoS => {
-                        for _ in 0..300 {
-                            let port = match rng.gen_range(0..10) {
-                                0..=5 => 80,
-                                6..=7 => 443,
-                                8 => 53,
-                                _ => rng.gen_range(1024..65535)
-                            };
-                            let target = SocketAddr::new(target_ip, port);
-                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
-                                target, b"X".to_vec()).await;
-                        }
-                    }
-                    TrafficMode::Live => {
-                        let elapsed = start_time.elapsed().as_secs() % 30;
-
-                        for _ in 0..rng.gen_range(1..=3) {
-                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
-                                target_80, b"GET / HTTP/1.1".to_vec()).await;
-                        }
-
-                        if rng.gen_bool(0.10) {
-                            let payload: &[u8] = if rng.gen_bool(0.5) {
-                                b"UNION SELECT 1,2,3 --"
-                            } else {
-                                b"<script>alert(1)</script>"
-                            };
-                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
-                                target_80, payload.to_vec()).await;
-                        }
-
-                        if rng.gen_bool(0.05) {
-                            let mut payload = vec![0x90; 16];
-                            payload.extend_from_slice(b"\xcc\xcc\xcc\xcc");
-                            send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
-                                target_80, payload).await;
-                        }
-
-                        if (15..25).contains(&elapsed) {
-                            for _ in 0..300 {
-                                let port = match rng.gen_range(0..10) {
-                                    0..=5 => 80,
-                                    6..=7 => 443,
-                                    8 => 53,
-                                    _ => rng.gen_range(1024..65535)
-                                };
-                                let target = SocketAddr::new(target_ip, port);
-                                send_traffic(ns_pool.as_ref(), &socket_pool, &mut rng,
-                                    target, b"X".to_vec()).await;
-                            }
-                        }
-                    }
-                    TrafficMode::Idle => {}
-                }
+                generator.send(mode).await;
             }
+        }
+    }
+}
+
+/// Seals and sends `command`, logging a manual ban; the sequence the
+/// kernel will ack it under, or why it was not sent.
+async fn send_command(
+    socket: &UdpSocket,
+    key: &MgmtKey,
+    command: &Command,
+    events: &Sender<UiEvent>,
+) -> Result<u32, NotSentReason> {
+    if let Command::BanIp(ip) = *command {
+        let _ = events.send(UiEvent::Log(LogEvent::ManualBan(ip)));
+    }
+    send_sealed(socket, key, command).await
+}
+
+async fn bind_ephemeral() -> anyhow::Result<UdpSocket> {
+    UdpSocket::bind("0.0.0.0:0")
+        .await
+        .context("bind an ephemeral UDP socket")
+}
+
+async fn open_socket_pool() -> anyhow::Result<Vec<UdpSocket>> {
+    let mut pool = Vec::with_capacity(SOCKET_POOL_SIZE);
+    for _ in 0..SOCKET_POOL_SIZE {
+        pool.push(bind_ephemeral().await?);
+    }
+    Ok(pool)
+}
+
+/// The namespaces `make setup_net_many` made, which give each packet a
+/// distinct source address; `None`, with the reason printed, when they
+/// cannot be used and the generator falls back to host sockets.
+fn namespace_pool() -> Option<NsPool> {
+    let count = std::env::var("SEC_NS_COUNT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(NETNS_DEFAULT_COUNT);
+    match NsPool::try_init(NETNS_PREFIX, count) {
+        Ok(pool) => {
+            eprintln!("[netns] ready: {count} namespaces bound");
+            Some(pool)
+        }
+        Err(error) => {
+            eprintln!("[netns] {error}; falling back to host sockets");
+            None
+        }
+    }
+}
+
+/// Requests to the kernel's port 80 per tick of normal traffic.
+const NORMAL_REQUESTS: RangeInclusive<usize> = 1..=3;
+/// Packets per tick of a DDoS burst: across 200 namespaces about 1500 pps
+/// per source, well over the kernel's 100 pps ban threshold, where normal
+/// traffic is about 10.
+const DDOS_BURST: usize = 300;
+/// The live simulation repeats every this many seconds...
+const LIVE_CYCLE_SECS: u64 = 30;
+/// ...and floods during these seconds of each cycle.
+const LIVE_FLOOD_SECS: Range<u64> = 15..25;
+
+/// Sends test traffic to the kernel, from namespaces when they are up.
+struct Generator {
+    namespaces: Option<NsPool>,
+    sockets: Vec<UdpSocket>,
+    rng: StdRng,
+    started: Instant,
+}
+
+impl Generator {
+    fn new(namespaces: Option<NsPool>, sockets: Vec<UdpSocket>) -> Self {
+        Self {
+            namespaces,
+            sockets,
+            rng: StdRng::from_entropy(),
+            started: Instant::now(),
+        }
+    }
+
+    /// One tick's traffic in `mode`.
+    async fn send(&mut self, mode: TrafficMode) {
+        match mode {
+            TrafficMode::Idle => {}
+            TrafficMode::Normal => self.normal_requests().await,
+            TrafficMode::DDoS => self.ddos_burst().await,
+            TrafficMode::Live => self.live_simulation().await,
+        }
+    }
+
+    async fn normal_requests(&mut self) {
+        for _ in 0..self.rng.gen_range(NORMAL_REQUESTS) {
+            self.send_packet(80, b"GET / HTTP/1.1").await;
+        }
+    }
+
+    /// A flood weighted toward common service ports.
+    async fn ddos_burst(&mut self) {
+        for _ in 0..DDOS_BURST {
+            let port = match self.rng.gen_range(0..10) {
+                0..=5 => 80,
+                6..=7 => 443,
+                8 => 53,
+                _ => self.rng.gen_range(1024..65535),
+            };
+            self.send_packet(port, b"X").await;
+        }
+    }
+
+    /// Normal traffic laced with injection attempts and NOP sleds, and a
+    /// flood for part of every cycle.
+    async fn live_simulation(&mut self) {
+        self.normal_requests().await;
+        if self.rng.gen_bool(0.10) {
+            let attack: &[u8] = if self.rng.gen_bool(0.5) {
+                b"UNION SELECT 1,2,3 --"
+            } else {
+                b"<script>alert(1)</script>"
+            };
+            self.send_packet(80, attack).await;
+        }
+        if self.rng.gen_bool(0.05) {
+            let mut sled = vec![0x90; 16];
+            sled.extend_from_slice(b"\xcc\xcc\xcc\xcc");
+            self.send_packet(80, &sled).await;
+        }
+        let second = self.started.elapsed().as_secs() % LIVE_CYCLE_SECS;
+        if LIVE_FLOOD_SECS.contains(&second) {
+            self.ddos_burst().await;
+        }
+    }
+
+    /// Sends `payload` to the kernel's `port` from a random namespace, or
+    /// a random host socket without them. Test traffic, so a send that
+    /// fails is just a lost packet.
+    async fn send_packet(&mut self, port: u16, payload: &[u8]) {
+        let target = SocketAddr::new(IpAddr::from(IP_ADDR), port);
+        if let Some(pool) = &self.namespaces {
+            let index = self.rng.gen_range(0..pool.len());
+            pool.send(index, target, payload.to_vec());
+        } else if let Some(socket) = self.sockets.choose(&mut self.rng) {
+            let _ = socket.send_to(payload, target).await;
         }
     }
 }
@@ -275,7 +344,7 @@ pub async fn start_background_task(
 fn handle_report(
     report: Report<'_>,
     stats: &NetStats,
-    events: &UnboundedSender<UiEvent>,
+    events: &Sender<UiEvent>,
     pending: &mut PendingAcks,
 ) {
     let now_secs = SystemTime::now()
@@ -317,7 +386,7 @@ fn unreadable_alert(body: &[u8]) -> Option<LogEvent> {
 /// counter.
 fn record_telemetry(stats: &NetStats, telemetry: &Telemetry) {
     stats.passed.store(telemetry.passed, Ordering::Relaxed);
-    stats
+    let _ = stats
         .total_passed
         .fetch_add(telemetry.passed, Ordering::Relaxed);
     for (gauge, value) in [
@@ -328,28 +397,10 @@ fn record_telemetry(stats: &NetStats, telemetry: &Telemetry) {
         (&stats.heuristic, telemetry.heuristic),
     ] {
         gauge.store(value, Ordering::Relaxed);
-        stats.total_dropped.fetch_add(value, Ordering::Relaxed);
+        let _ = stats.total_dropped.fetch_add(value, Ordering::Relaxed);
     }
     stats.flows.store(telemetry.active_flows, Ordering::Relaxed);
     stats.mgmt.store(telemetry.mgmt, Ordering::Relaxed);
-}
-
-/// Send a test-traffic UDP packet. Prefers the per-namespace pool so
-/// the packet carries a real, distinct source IP; falls back to the
-/// host socket pool when netns init failed.
-async fn send_traffic(
-    ns_pool: Option<&NsPool>,
-    socket_pool: &[UdpSocket],
-    rng: &mut StdRng,
-    dst: SocketAddr,
-    payload: Vec<u8>,
-) {
-    if let Some(pool) = ns_pool {
-        let idx = rng.gen_range(0..pool.len());
-        pool.send(idx, dst, payload);
-    } else if let Some(sock) = socket_pool.choose(rng) {
-        let _ = sock.send_to(&payload, dst).await;
-    }
 }
 
 #[cfg(test)]
