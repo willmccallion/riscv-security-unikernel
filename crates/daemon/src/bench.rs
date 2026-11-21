@@ -52,8 +52,10 @@ pub struct VerdictCounts {
     pub malware: u64,
     /// Dropped by heuristics.
     pub heuristic: u64,
-    /// Dropped by the BPF filter.
+    /// Dropped by the BPF filter, or when it ran out of time.
     pub bpf: u64,
+    /// Dropped for any other reason: malformed headers or IP fragments.
+    pub other: u64,
     /// Answered by the stack or carried no payload.
     pub consumed: u64,
     /// Mgmt-port traffic.
@@ -69,7 +71,8 @@ impl VerdictCounts {
             Verdict::Dropped(AlertReason::Firewall) => self.firewall += 1,
             Verdict::Dropped(AlertReason::Malware) => self.malware += 1,
             Verdict::Dropped(AlertReason::Heuristic) => self.heuristic += 1,
-            Verdict::Dropped(_) => self.bpf += 1,
+            Verdict::Dropped(AlertReason::Bpf | AlertReason::BpfTimeout) => self.bpf += 1,
+            Verdict::Dropped(_) => self.other += 1,
             Verdict::Consumed => self.consumed += 1,
             Verdict::Management => self.management += 1,
         }
@@ -80,13 +83,14 @@ impl std::fmt::Display for VerdictCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "passed {} | dropped: ddos {} firewall {} malware {} heuristic {} bpf {} | consumed {} mgmt {}",
+            "passed {} | dropped: ddos {} firewall {} malware {} heuristic {} bpf {} other {} | consumed {} mgmt {}",
             self.passed,
             self.ddos,
             self.firewall,
             self.malware,
             self.heuristic,
             self.bpf,
+            self.other,
             self.consumed,
             self.management
         )
@@ -185,4 +189,38 @@ fn run_thread(config: BenchConfig, id: u64) -> ThreadResult {
     }
     result.elapsed = started.elapsed();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tally(verdicts: &[Verdict]) -> VerdictCounts {
+        let mut counts = VerdictCounts::default();
+        for &verdict in verdicts {
+            counts.record(verdict);
+        }
+        counts
+    }
+
+    #[test]
+    fn bpf_drops_and_timeouts_count_as_bpf() {
+        let counts = tally(&[
+            Verdict::Dropped(AlertReason::Bpf),
+            Verdict::Dropped(AlertReason::BpfTimeout),
+        ]);
+
+        assert_eq!(counts.bpf, 2);
+    }
+
+    #[test]
+    fn malformed_and_fragment_drops_are_not_counted_as_bpf() {
+        let counts = tally(&[
+            Verdict::Dropped(AlertReason::MalformedIp),
+            Verdict::Dropped(AlertReason::IpFragment),
+        ]);
+
+        assert_eq!(counts.bpf, 0);
+        assert_eq!(counts.other, 2);
+    }
 }
