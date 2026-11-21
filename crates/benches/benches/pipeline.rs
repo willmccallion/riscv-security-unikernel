@@ -18,7 +18,7 @@ use sec_core::security::hash::SketchKey;
 use sec_core::time::Ticks;
 use std::net::Ipv4Addr;
 
-/// A synthetic 128-byte UDP payload used across benchmarks.
+/// A synthetic 102-byte UDP payload used across benchmarks.
 const CLEAN_PAYLOAD: &[u8] = b"GET /index.html HTTP/1.1\r\nHost: 192.168.100.1\r\nAccept: */*\r\n\
                                 Connection: keep-alive\r\n\r\n\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
