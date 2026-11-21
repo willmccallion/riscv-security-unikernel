@@ -5,7 +5,7 @@
 mod common;
 
 use common::{CaptureSink, PEER_IP, engine, ipv4, mgmt, tcp, udp};
-use sec_core::config::DEFAULT_BLOCKED_PORT;
+use sec_core::config::{DEFAULT_BLOCKED_PORT, FLOW_TIMEOUT};
 use sec_core::engine::Verdict;
 use sec_core::security::alert::AlertReason;
 use sec_core::security::mgmt::ManagementMessageType;
@@ -178,6 +178,31 @@ fn banned_source_does_not_create_flows() {
     }
 
     assert_eq!(e.active_flows(), flows_when_banned);
+}
+
+/// One second in the engine's time unit (nanoseconds, or cycles at 1 GHz).
+const SECOND: u64 = 1_000_000_000;
+
+/// The number of flows left after one flow's last packet and a prune
+/// `idle_seconds` later.
+fn flows_after_idling(idle_seconds: u64) -> usize {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    let _ = e.process(&mut udp(PEER_IP, 5000, 80, b"hi"), Ticks::new(1), &mut sink);
+
+    e.prune_flows(Ticks::new(1 + idle_seconds * SECOND), FLOW_TIMEOUT);
+
+    e.active_flows()
+}
+
+#[test]
+fn a_flow_idle_for_nine_seconds_survives_a_prune() {
+    assert_eq!(flows_after_idling(9), 1);
+}
+
+#[test]
+fn a_flow_idle_for_eleven_seconds_is_pruned() {
+    assert_eq!(flows_after_idling(11), 0);
 }
 
 #[test]

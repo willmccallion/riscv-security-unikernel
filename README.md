@@ -32,7 +32,7 @@ graph LR
 | Count-Min Sketch (subnets) | 1.5 KB | 3 × 256 × u16, one counter per /24 and per /16, same decay |
 | Port-scan detector | 1.9 KB | 1 KB virtual HyperLogLog shared by every source, plus 8 suspects × 40 exact ports |
 | HyperLogLog (distinct sources) | 256 B | 256 one-byte registers, cleared every 0.5 s |
-| Flow table (74 entries) | ~3 KB | 5-tuple entries, LRU eviction with a minimum age |
+| Flow table (74 entries) | ~3 KB | 5-tuple entries, forgotten after 10 s idle; when full, the least recently seen is evicted once idle 1 s |
 | Aho-Corasick automaton | ~1.3 KB | 128-node trie for built-in signatures |
 | VirtIO queues and buffers | ~6.3 KB | 2 RX + 2 TX MTU-sized buffers, rings on 64-byte legacy pages |
 | BPF program slot | 520 B | 64 decoded instructions of 8 bytes (uploaded as 7 bytes each) |
@@ -167,7 +167,7 @@ Telemetry (every second), alerts and acks go to UDP port 8888, broadcast until a
 
 `epoch (u32) ‖ sequence (u64) ‖ body ‖ SipHash-2-4 MAC (u64)`
 
-The telemetry body is a type byte followed by eleven big-endian u64 counters: passed, DDoS drops, firewall blocks, malware matches, BPF drops, heuristic drops, RAM used, active flows, management packets, the boot epoch and the last command sequence accepted this boot. The dashboard numbers its commands from that last one, so restarting it during a boot never reuses a sequence the kernel would reject.
+The telemetry body is a type byte followed by eleven big-endian u64 counters: passed, DDoS drops, firewall blocks, malware matches, BPF drops, heuristic drops, RAM used, active flows (5-tuples seen in about the last 10 s), management packets, the boot epoch and the last command sequence accepted this boot. The dashboard numbers its commands from that last one, so restarting it during a boot never reuses a sequence the kernel would reject.
 
 ---
 
