@@ -232,7 +232,7 @@ Medians on an Intel Core i7-14700K:
 
 ## Linux Daemon
 
-`security-daemon` runs the same `sec_core` engine as a Linux program, so the pipeline can be measured on real hardware and real traffic.
+`security-daemon` runs the same `sec_core` engine as a Linux program, so the pipeline can be measured on real hardware and real traffic. It also carries a separate [network monitor](#network-monitor).
 
 ```bash
 make daemon-bench DAEMON_ARGS="--threads 8 --mix clean"   # in-memory throughput
@@ -240,11 +240,25 @@ make daemon-speedtest                                      # live AF_PACKET test
 sudo ./target/release/security-daemon run --iface eth0     # inspect a real interface (needs CAP_NET_RAW)
 ```
 
-`run` captures through a memory-mapped `TPACKET_V3` ring and sends replies and signed reports back out of the interface, so the GUI can drive it like the kernel. It takes on the kernel's identity from `sec_core::config` (192.168.100.2, `52:54:00:12:34:56`). `bench` tells the engine traffic arrives at `--offered-pps` (default 10k) while measuring the real CPU cost per frame.
+`run` captures through a memory-mapped `TPACKET_V3` ring and sends replies and signed reports back out of the interface, so the GUI can drive it like the kernel. It takes on the kernel's identity from `sec_core::config` (192.168.100.2, `52:54:00:12:34:56`). `flood` sends synthetic clean, attack or mixed traffic out of an interface; `daemon-speedtest` points it at `run`. `bench` tells the engine traffic arrives at `--offered-pps` (default 10k) while measuring the real CPU cost per frame.
 
 On an Intel Core i7-14700K, one engine handles about **1.3 Mpps** of clean traffic with every frame running the full pipeline (about 790 ns per frame, mostly the Aho-Corasick scan), and attack traffic from banned sources, dropped at the penalty box, at about 25 Mpps. Engines are independent, so throughput scales with threads (about 11.5 Mpps on 16).
 
 The daemon's engine uses a 65536 × 4 heavy-hitter sketch (512 KB) and a 16384 × 4 subnet sketch (128 KB) instead of the kernel's 6 KB and 1.5 KB ones, so its detectors stay accurate far past the kernel's 200k pps (see [Measuring the sketches](#measuring-the-sketches)); its port-scan detector is the kernel's. Above 100k pps the separate global rate limit, not the sketch, drops traffic.
+
+### Network monitor
+
+`security-daemon monitor` watches a real network, receive-only, and does not use the engine. It captures from one or more live interfaces (`--iface`, repeatable) or replays a classic pcap file (`--pcap`), decodes Ethernet with VLAN tags, IPv4 and IPv6, and tracks conversations and per-host traffic, telling local hosts from remote ones. It names hosts from what their traffic reveals: DNS and mDNS answers, and the server name in TLS ClientHellos, including those inside QUIC Initial packets, whose keys derive from the packet header. A name from an Encrypted Client Hello is marked as a cover name. Every second it prints traffic rates and the busiest remote hosts.
+
+```bash
+./target/release/security-daemon monitor --pcap capture.pcap         # replay a capture
+./target/release/security-daemon monitor --iface eth0 --serve        # live (needs CAP_NET_RAW), streaming to viewers
+make gui-live                                                         # the dashboard's live view on its own
+```
+
+Options can also come from a TOML file (`--config`; see `crates/daemon/monitor.example.toml`), and `--help` lists the rest. With `--serve`, each second's summary goes out as a line of JSON (`crates/monitor-proto`) on a Unix socket only the monitor's user can open; the dashboard's LIVE NETWORK tab and `security-dashboard --live` read it.
+
+Capture needs `CAP_NET_RAW` only to open its sockets. The monitor then gives up root for the invoking user if started with `sudo`, clears every capability, and confines itself with Landlock (no filesystem access) and a seccomp filter, so a parser bug fed by hostile traffic cannot open files, start programs, make sockets, write to the capture socket or create executable memory. `security-daemon sandbox-check` applies the sandbox and reports each of these being refused.
 
 ---
 
