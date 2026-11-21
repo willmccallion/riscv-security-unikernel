@@ -193,7 +193,13 @@ The companion desktop app (`egui`/`eframe`) shows live counters and the alert lo
 | Memory protection | PMP: W^X over the kernel image, MMIO confined to the device window, every other address denied |
 | Build profile | `opt-level = "z"`, LTO, `codegen-units = 1`, stripped |
 
-Thresholds and intervals are in `mcycle` cycles, so their wall-clock meaning depends on the CPU's clock rate.
+Thresholds and intervals are in `mcycle` cycles, so their wall-clock meaning depends on the CPU's clock rate. The durations in this README assume 1 GHz. Under QEMU without `-icount`, `mcycle` follows the host's time-stamp counter: on the i7-14700K the kernel's one-second telemetry tick came every 0.29 s, a rate of 3.4 GHz, so every interval and ban runs about 3.4 times faster than stated.
+
+Beyond PMP, the kernel:
+
+- seeds its per-boot secrets (sketch key, SYN-cookie secret, management epoch) from virtio-rng and, when built with `--features zkr`, the Zkr `seed` CSR, mixing in `mcycle` last; with neither strong source it prints a warning at boot;
+- fills a 256-byte guard between `.bss` and the stack with a sentinel and halts if any byte has changed, checked every telemetry tick;
+- installs a trap handler before any Rust code runs that prints `mcause`, `mepc` and `mtval` and halts, as the panic handler does.
 
 ---
 
