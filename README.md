@@ -148,7 +148,7 @@ TCP Xmas (FIN|URG|PSH) and null scans; x86 NOP sleds (a decaying score that reac
 
 ## Management Protocol
 
-Commands are UDP datagrams to port 1337 carrying `counter (u64) ‖ reply MAC (6 bytes) ‖ reply IPv4 (4 bytes) ‖ body ‖ SipHash-2-4 MAC (u64)`. The counter's high 32 bits are the kernel's per-boot epoch and the low 32 bits a strictly increasing sequence, so commands cannot be forged or replayed within or across boots. The reply address is where the kernel sends its reports from then on; it is signed rather than taken from the frame's headers, so a captured command re-sent from another host cannot redirect them. The dashboard signs its own address on the interface that routes to the kernel. The key is set at build time (`KERNEL_MGMT_KEY`, or `.mgmt-key.local` created by `make dev-key`).
+Commands are UDP datagrams to port 1337 carrying `counter (u64) ‖ reply MAC (6 bytes) ‖ reply IPv4 (4 bytes) ‖ body ‖ SipHash-2-4 MAC (u64)`. The counter's high 32 bits are the kernel's per-boot epoch and the low 32 bits a strictly increasing sequence, so commands cannot be forged or replayed within or across boots. The reply address is where the kernel sends its reports from then on; it is signed rather than taken from the frame's headers, so a captured command re-sent from another host cannot redirect them. The dashboard signs its own address on the interface that routes to the kernel. The kernel's key is set at build time (`KERNEL_MGMT_KEY`, or `.mgmt-key.local` created by `make dev-key`). The dashboard, the daemon and the QEMU harness read it at run time: `KERNEL_MGMT_KEY` if set, otherwise the nearest `.mgmt-key.local` in or above the working directory (the harness looks from its own crate directory). `sudo` drops the environment variable, so `sudo security-daemon run` finds the key only through that file.
 
 | Command | Undo |
 |---|---|
@@ -158,6 +158,8 @@ Commands are UDP datagrams to port 1337 carrying `counter (u64) ‖ reply MAC (6
 | `BanIp` | `UnbanIp` (also lifts any subnet ban covering the address) |
 
 Every authenticated command is answered with an ack carrying its sequence number and outcome (applied, table full, invalid or refused).
+
+The firewall blocks port 23 at boot and holds at most 16 ports; `BlockPort` for the management port 1337 is refused, since it would lock the operator out. Bans, the operator's `BanIp` included, expire after `IP_BAN_DURATION` (10 s at 1 GHz).
 
 ### Reports
 
