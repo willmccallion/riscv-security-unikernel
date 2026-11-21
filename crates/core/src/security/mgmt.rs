@@ -4,7 +4,8 @@
 //! Offsets in this module are relative to the **body** of an
 //! authenticated mgmt packet — i.e. the bytes that
 //! [`crate::security::mgmt_auth::MgmtAuth::verify`] returns after
-//! stripping the 8-byte counter prefix and the 8-byte MAC suffix.
+//! stripping the 8-byte counter and 10-byte reply address in front and
+//! the 8-byte MAC behind.
 //! Callers (kernel, daemon, GUI) wrap and unwrap that envelope; the
 //! code in here only describes the inner command layout.
 
