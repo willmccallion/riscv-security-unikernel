@@ -125,11 +125,13 @@ pub const TELEMETRY_INTERVAL: TickSpan = TickSpan::new(1_000_000_000);
 /// burst is not forgotten just because it straddles a boundary.
 pub const CMS_DECAY_INTERVAL: TickSpan = TickSpan::new(500_000_000);
 
-/// Flow expiration timeout.
+/// Flow expiration timeout: ten seconds at 1 GHz (nanoseconds in the
+/// daemon), the same as [`IP_BAN_DURATION`].
 ///
-/// Flows that have not been seen within this period are pruned
-/// from the flow table.
-pub const FLOW_TIMEOUT: TickSpan = TickSpan::new(10_000_000);
+/// Flows not seen within this period are pruned from the flow table at
+/// each telemetry report, so the active-flow count is of flows seen in
+/// about the last ten seconds.
+pub const FLOW_TIMEOUT: TickSpan = TickSpan::new(10_000_000_000);
 
 /// IP ban duration.
 ///

@@ -12,14 +12,14 @@ use core::num::NonZeroU64;
 /// Maximum number of flows that can be tracked simultaneously.
 const MAX_FLOWS: usize = 74;
 
-/// Minimum age (in time-source units) an active flow must reach before
-/// it becomes eligible for eviction by a new 5-tuple. Without this, an
-/// attacker who floods unique 5-tuples evicts long-lived legitimate
-/// flows just by being newer; with it, the table refuses to evict any
-/// flow that has been touched in the last `MIN_EVICTION_AGE` ticks and
-/// instead drops the new flow on the floor. Tuned well below
-/// `FLOW_TIMEOUT` so genuinely stale entries are still recyclable.
-const MIN_EVICTION_AGE: TickSpan = TickSpan::new(1_000_000);
+/// How long a flow must be idle before a new 5-tuple may evict it: one
+/// second at 1 GHz (nanoseconds in the daemon). Without this, an attacker
+/// who floods unique 5-tuples evicts long-lived legitimate flows just by
+/// being newer; with it, the table refuses to evict any flow touched in
+/// the last second and leaves the new flow untracked. A tenth of
+/// [`FLOW_TIMEOUT`](crate::config::FLOW_TIMEOUT), so a full table still
+/// recycles flows long before pruning would.
+const MIN_EVICTION_AGE: TickSpan = TickSpan::new(1_000_000_000);
 
 /// The 5-tuple identifying a flow. Addresses are in network byte order,
 /// ports in host byte order.
@@ -190,6 +190,22 @@ mod tests {
         assert!(
             !table.update(&key(2), 60, Ticks::new(1_001)),
             "the recent flow is still tracked"
+        );
+    }
+
+    #[test]
+    fn a_full_table_keeps_flows_seen_within_the_last_half_second() {
+        let mut table = FlowTable::new();
+        for port in 0..MAX_FLOWS as u16 {
+            let _ = table.update(&key(port), 60, Ticks::ZERO);
+        }
+
+        let created = table.update(&key(9_999), 60, Ticks::new(500_000_000));
+
+        assert!(!created);
+        assert!(
+            !table.update(&key(0), 60, Ticks::new(500_000_001)),
+            "every original flow is still tracked"
         );
     }
 

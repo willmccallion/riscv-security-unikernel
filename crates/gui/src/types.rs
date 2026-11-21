@@ -35,7 +35,8 @@ pub struct NetStats {
     pub bpf: AtomicU64,
     /// Current packets per second dropped by heuristic analysis.
     pub heuristic: AtomicU64,
-    /// Current number of active network flows being tracked.
+    /// Flows the appliance tracks: 5-tuples seen in about the last ten
+    /// seconds.
     pub flows: AtomicU64,
     /// Management-plane packets observed in the last interval
     /// (authenticated dispatches plus auth failures). Tracked
