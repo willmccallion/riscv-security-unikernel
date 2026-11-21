@@ -5,10 +5,13 @@
 
 mod common;
 
-use common::{CaptureSink, engine, udp};
-use sec_core::config::CMS_DECAY_INTERVAL;
+use common::{CaptureSink, body, engine, mgmt, udp};
+use sec_core::config::{
+    CMS_DECAY_INTERVAL, DETECTOR_ALERT_BUCKET_CAPACITY, DETECTOR_ALERT_TOKEN_COST,
+};
 use sec_core::engine::{Engine, Verdict};
 use sec_core::security::alert::AlertReason;
+use sec_core::security::mgmt::Command;
 use sec_core::time::Ticks;
 
 /// Sends `seconds` of traffic: every host in `hosts` at `pps`, interleaved,
@@ -166,4 +169,30 @@ fn other_slash_24s_inside_the_appliances_slash_16_can_still_be_banned() {
     );
 
     assert!(sink.alert_reasons().contains(&AlertReason::SubnetFlood));
+}
+
+#[test]
+fn a_flooding_subnet_that_cannot_be_banned_raises_a_bounded_number_of_alerts() {
+    let mut e = engine();
+    let mut sink = CaptureSink::default();
+    for i in 0..16u8 {
+        let ban = body(&Command::BanIp([10, 0, 0, i].into()));
+        let _ = e.process(&mut mgmt(u32::from(i) + 1, &ban), Ticks::new(1), &mut sink);
+    }
+    let mut now = 1;
+
+    run(&mut e, &mut sink, &hosts([10, 5, 5], 20), 80, 2, &mut now);
+
+    let floods = sink
+        .alert_reasons()
+        .into_iter()
+        .filter(|&reason| reason == AlertReason::SubnetFlood)
+        .count();
+    let refills = (now - 1) / DETECTOR_ALERT_TOKEN_COST.get();
+    let budget = DETECTOR_ALERT_BUCKET_CAPACITY + refills;
+    assert!(floods > 0, "the flood is still reported");
+    assert!(
+        floods as u64 <= budget,
+        "{floods} subnet-flood alerts for one flood, over the budget of {budget}"
+    );
 }
