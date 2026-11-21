@@ -91,7 +91,7 @@ flowchart TD
 
 Management traffic is handled before any data-plane check, and every packet's MAC is verified (packets longer than the largest command are discarded unhashed), so no ban, filter program or flood can lock the operator out; only failed packets are rate-limited, to bound their alerts.
 
-Every half second the main loop ends a detection interval: the sketches are halved, the distinct-source count is checked and cleared, and every tenth interval starts a new port-scan window. Detector alerts (subnet floods, source surges, port scans) bypass the alert rate limit.
+Every half second the main loop ends a detection interval: the sketches are halved, the distinct-source count is checked and cleared, and every tenth interval starts a new port-scan window. Detector alerts have their own budget, so a flood of routine alerts cannot crowd them out: a source surge is reported at most once per interval, and subnet-flood and port-scan alerts, one per ban, are limited to bursts of 16 and 10 a second.
 
 ---
 

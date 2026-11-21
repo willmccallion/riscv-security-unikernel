@@ -103,6 +103,20 @@ pub const ALERT_BUCKET_CAPACITY: u64 = 32;
 /// on the mgmt network; drop counters in telemetry still count every packet.
 pub const ALERT_TOKEN_COST: TickSpan = TickSpan::new(1_000_000);
 
+/// Subnet-flood and port-scan alerts that may go out in one burst: enough
+/// for a detector ban in every penalty-box slot.
+pub const DETECTOR_ALERT_BUCKET_CAPACITY: u64 = 16;
+
+/// Time-source units per detector alert token: ten alerts per second at
+/// 1 GHz.
+///
+/// A detector bans what it reports, so it normally alerts once per ban. When
+/// the ban cannot be recorded (every slot holds an operator ban) or bans keep
+/// evicting each other, each later packet trips the detector again; this
+/// bounds those alerts without sharing the general alert budget, which a
+/// flood of routine alerts could drain.
+pub const DETECTOR_ALERT_TOKEN_COST: TickSpan = TickSpan::new(100_000_000);
+
 /// UDP port number for telemetry broadcasts.
 pub const TELEMETRY_PORT: u16 = 8888;
 

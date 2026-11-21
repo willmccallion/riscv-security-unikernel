@@ -17,11 +17,11 @@ pub use schedule::{Due, Schedule};
 
 use crate::config::{
     ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST, CMS_DEPTH, CMS_WIDTH, DDOS_ALERT_SAMPLE_RATE,
-    DEFAULT_BLOCKED_PORT, FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION,
-    MANAGEMENT_PORT, MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST, PREFIX_SKETCH_DEPTH,
-    PREFIX_SKETCH_WIDTH, RATE_LIMIT_TOKEN_COST, SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR,
-    SOURCE_SURGE_MINIMUM, SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD, TELEMETRY_PORT,
-    TOKEN_BUCKET_CAPACITY,
+    DEFAULT_BLOCKED_PORT, DETECTOR_ALERT_BUCKET_CAPACITY, DETECTOR_ALERT_TOKEN_COST,
+    FLOW_LOG_SAMPLE_MASK, HEAVY_HITTER_THRESHOLD, IP_ADDR, IP_BAN_DURATION, MANAGEMENT_PORT,
+    MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST, PREFIX_SKETCH_DEPTH, PREFIX_SKETCH_WIDTH,
+    RATE_LIMIT_TOKEN_COST, SOURCE_COUNTER_REGISTERS, SOURCE_SURGE_FACTOR, SOURCE_SURGE_MINIMUM,
+    SUBNET_16_THRESHOLD, SUBNET_24_THRESHOLD, TELEMETRY_PORT, TOKEN_BUCKET_CAPACITY,
 };
 use crate::net::PacketSink;
 use crate::net::constants::{EthernetType, arp, ethernet, ipv4};
@@ -165,6 +165,7 @@ pub struct Engine<
     limiter: dos::TokenBucket,
     mgmt_failure_limiter: dos::TokenBucket,
     alert_limiter: dos::TokenBucket,
+    detector_alert_limiter: dos::TokenBucket,
     /// The installed BPF filter, if any.
     bpf: Option<Program>,
     flows: flow::FlowTable,
@@ -201,6 +202,10 @@ impl<
             limiter: dos::TokenBucket::new(TOKEN_BUCKET_CAPACITY, RATE_LIMIT_TOKEN_COST),
             mgmt_failure_limiter: dos::TokenBucket::new(MGMT_BUCKET_CAPACITY, MGMT_TOKEN_COST),
             alert_limiter: dos::TokenBucket::new(ALERT_BUCKET_CAPACITY, ALERT_TOKEN_COST),
+            detector_alert_limiter: dos::TokenBucket::new(
+                DETECTOR_ALERT_BUCKET_CAPACITY,
+                DETECTOR_ALERT_TOKEN_COST,
+            ),
             bpf: None,
             flows: flow::FlowTable::new(),
             mgmt_auth: mgmt_auth::MgmtAuth::new(mgmt_key),
@@ -280,7 +285,8 @@ impl<
                 value: sources as u32,
                 ..AlertMeta::empty()
             };
-            self.detector_alert(&meta, AlertReason::SourceSurge, sink);
+            // At most one per interval, so it skips the per-packet alert limits.
+            self.send_alert(&meta, AlertReason::SourceSurge, sink);
         }
     }
 
@@ -387,7 +393,7 @@ impl<
             value: u32::from(subnet.rate),
             ..*meta
         };
-        self.detector_alert(&alert, AlertReason::SubnetFlood, sink);
+        self.detector_alert(&alert, AlertReason::SubnetFlood, now, sink);
     }
 
     fn ban_scanner<S: PacketSink>(
@@ -402,7 +408,7 @@ impl<
             value: scan.distinct_ports,
             ..*meta
         };
-        self.detector_alert(&alert, AlertReason::PortScan, sink);
+        self.detector_alert(&alert, AlertReason::PortScan, now, sink);
     }
 
     /// Why the header checks drop the frame, if they do: a TCP scan probe,
@@ -597,24 +603,18 @@ impl<
         Verdict::Dropped(reason)
     }
 
-    /// Sends an alert raised at the end of a detection interval. Detectors
-    /// report at most once per interval each, so these skip the per-packet
-    /// alert limit, which a flood of routine alerts could otherwise drain.
+    /// Sends a ban detector's alert within the detector alert budget, which
+    /// routine alerts cannot drain.
     fn detector_alert<S: PacketSink>(
         &mut self,
         meta: &AlertMeta,
         reason: AlertReason,
+        now: Ticks,
         sink: &mut S,
     ) {
-        self.send_report(
-            MANAGEMENT_PORT,
-            &Alert {
-                reason,
-                meta: *meta,
-            }
-            .encode(),
-            sink,
-        );
+        if self.detector_alert_limiter.allow(now) {
+            self.send_alert(meta, reason, sink);
+        }
     }
 
     fn alert<S: PacketSink>(
@@ -625,16 +625,16 @@ impl<
         sink: &mut S,
     ) {
         if self.alert_limiter.allow(now) {
-            self.send_report(
-                MANAGEMENT_PORT,
-                &Alert {
-                    reason,
-                    meta: *meta,
-                }
-                .encode(),
-                sink,
-            );
+            self.send_alert(meta, reason, sink);
         }
+    }
+
+    fn send_alert<S: PacketSink>(&mut self, meta: &AlertMeta, reason: AlertReason, sink: &mut S) {
+        let alert = Alert {
+            reason,
+            meta: *meta,
+        };
+        self.send_report(MANAGEMENT_PORT, &alert.encode(), sink);
     }
 
     fn send_ack<S: PacketSink>(
