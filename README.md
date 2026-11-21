@@ -35,7 +35,7 @@ graph LR
 | Flow table (74 entries) | ~3 KB | 5-tuple entries, LRU eviction with a minimum age |
 | Aho-Corasick automaton | ~1.3 KB | 128-node trie for built-in signatures |
 | VirtIO queues and buffers | ~6.3 KB | 2 RX + 2 TX MTU-sized buffers, rings on 64-byte legacy pages |
-| BPF program slot | 448 B | 64 instructions × 7 bytes |
+| BPF program slot | 520 B | 64 decoded instructions of 8 bytes (uploaded as 7 bytes each) |
 | Penalty box | 384 B | 16 address or subnet bans; once every slot is active, detector bans are evicted round-robin and operator bans never are |
 | **Hot-path allocations** | **0 B** | No heap; all state is static |
 
@@ -50,7 +50,7 @@ Every received frame goes through `sec_core::engine::Engine::process`, which is 
 ```mermaid
 flowchart TD
     RX["VirtIO RX"]
-    IP{"IPv4 fragment or<br/>malformed header?"}
+    IP{"IPv4 fragment or malformed<br/>IPv4 or transport header?"}
     MG{"UDP to :1337?"}
     ML["Length cap → MAC + replay check<br/>→ apply command → signed ack"]
     PB["① Penalty box → source, subnet and port-scan detectors<br/>ban hosts above ~100 pps, /24s above 1,000, /16s above 5,000,<br/>and hosts trying ~64 ports in five seconds"]
@@ -63,6 +63,7 @@ flowchart TD
     HP["⑧ Payload heuristics<br/>x86 and RISC-V NOP sleds"]
     DPI["⑨ DPI<br/>Aho-Corasick + runtime patterns"]
     PASS["Counted as passed"]
+    DONE["Counted as consumed"]
     DROP["Dropped + rate-limited signed alert"]
 
     RX --> IP
@@ -76,10 +77,12 @@ flowchart TD
     TB --> FT --> TF
     TF -->|anomaly| DROP
     TF --> BPF
-    BPF -->|drop / timeout / bad action| DROP
+    BPF -->|drop / timeout| DROP
     BPF --> FW
     FW -->|blocked port| DROP
-    FW --> ST --> HP
+    FW --> ST
+    ST -->|answered, or not addressed to it| DONE
+    ST -->|payload| HP
     HP -->|sled| DROP
     HP --> DPI
     DPI -->|match| DROP
@@ -88,7 +91,7 @@ flowchart TD
 
 Management traffic is handled before any data-plane check, and every packet's MAC is verified (packets longer than the largest command are discarded unhashed), so no ban, filter program or flood can lock the operator out; only failed packets are rate-limited, to bound their alerts.
 
-Every half second the main loop ends a detection interval: the sketches are halved, the distinct-source count is checked and cleared, and every tenth interval starts a new port-scan window. Detector alerts (subnet floods, source surges, port scans) are at most a few per interval and bypass the per-packet alert limit.
+Every half second the main loop ends a detection interval: the sketches are halved, the distinct-source count is checked and cleared, and every tenth interval starts a new port-scan window. Detector alerts (subnet floods, source surges, port scans) bypass the alert rate limit.
 
 ---
 
@@ -104,7 +107,7 @@ Sources that pass their own check are also counted per /24 and per /16 in a seco
 A HyperLogLog counts distinct source addresses each half second. A moving average of past intervals, which leaves surges out, is the baseline; an interval with more than four times the baseline and over 1,000 sources raises one alert with the estimate. Spoofed addresses are not worth banning, so nothing is banned.
 
 ### Port scans
-TCP connection attempts (SYN without ACK) feed a virtual HyperLogLog: each source's distinct destination ports are estimated from 32 registers scattered through one 1 KB pool that every source shares (Xiao et al., SIGMETRICS 2015). Sharing makes the estimates noisy once thousands of sources are active, so passing about 24 ports only makes a source a suspect. Up to eight suspects then record the ports they try exactly, and 40 more (about 64 in all) within a five-second window get the source banned and reported. Replies never count, so a server answering many client ports is not mistaken for a scanner.
+TCP connection attempts (SYN without ACK) feed a virtual HyperLogLog: each source's distinct destination ports are estimated from 32 registers scattered through one 1 KB pool that every source shares (Xiao et al., SIGMETRICS 2015). Sharing makes the estimates noisy once thousands of sources are active, so passing about 24 ports only makes a source a suspect. Up to eight suspects then record the ports they try exactly; 40 distinct ports, counting the one that made it a suspect (about 64 in all), within a five-second window get the source banned and reported. Replies never count, so a server answering many client ports is not mistaken for a scanner.
 
 ### Measuring the sketches
 
@@ -136,7 +139,7 @@ Measured error follows the predicted 1.04/√m; the kernel's 256 registers count
 Single-pass scan for the built-in signatures `DROP TABLE`, `<script>`, `eval(` and `UNION SELECT`. Up to eight more patterns of up to 32 bytes can be added and removed at runtime. Matching is case-sensitive and per packet.
 
 ### BPF filter VM
-A small 16-register bytecode VM (not Linux eBPF) with load, move, compare, bitwise, jump and return instructions. Loads can be indexed by a register, and `Ldmsh` reads an IPv4 header's length as classic BPF's `ldxb 4*([k]&0xf)` does, so a program can reach the transport header behind IP options. Programs are validated on upload (opcodes, registers, jump targets, and a final `Ret` or `Jmp` so a program cannot run off its end), run with a 1,000-instruction budget per packet, and must return 0 (drop) or 1 (pass); an empty upload removes the filter. The GUI's BPF Studio compiles `BLOCK <TCP|UDP> DST <port>` and `DROP ALL`.
+A small 16-register bytecode VM (not Linux eBPF) with load, move, compare, bitwise, jump and return instructions. Loads can be indexed by a register, and `Ldmsh` reads an IPv4 header's length as classic BPF's `ldxb 4*([k]&0xf)` does, so a program can reach the transport header behind IP options. Programs are validated on upload (opcodes, registers, jump targets, and a final `Ret` or `Jmp` so a program cannot run off its end), and run with a 1,000-instruction budget per packet. A `Ret` may only return 0 (drop) or 1 (pass); any other value is refused at upload. An empty upload removes the filter. The GUI's BPF Studio compiles `BLOCK <TCP|UDP> DST <port>` and `DROP ALL`.
 
 ### Heuristics
 TCP Xmas (FIN|URG|PSH) and null scans; x86 NOP sleds (a decaying score that reaches 8, so interleaved junk bytes do not hide them) and runs of 8 RISC-V NOPs.
@@ -158,7 +161,7 @@ Every authenticated command is answered with an ack carrying its sequence number
 
 ### Reports
 
-Telemetry (every interval), alerts and acks go to UDP port 8888, broadcast until an operator has authenticated and unicast afterwards to the reply address signed into the last accepted command. Each is signed with a key derived from the management key, so it cannot be forged or replayed back to the kernel as a command:
+Telemetry (every second), alerts and acks go to UDP port 8888, broadcast until an operator has authenticated and unicast afterwards to the reply address signed into the last accepted command. Each is signed with a key derived from the management key, so it cannot be forged or replayed back to the kernel as a command:
 
 `epoch (u32) ‖ sequence (u64) ‖ body ‖ SipHash-2-4 MAC (u64)`
 
@@ -278,11 +281,11 @@ Press `Ctrl+B X` to exit QEMU.
 
 This is a demonstration of the techniques, not a production security appliance:
 
-- **Nothing is protected inline.** The kernel and the daemon inspect traffic addressed to their own address (192.168.100.2, compiled in) and report verdicts; they do not forward or filter traffic for other hosts.
+- **Nothing is protected inline.** The kernel and `security-daemon run` answer and inspect payloads only for their own address (192.168.100.2, compiled in) and report verdicts; they do not forward or filter traffic for other hosts.
 - **DPI is shallow.** Signatures are matched case-sensitively within single packets, with no TCP stream reassembly, so splitting a payload across segments or re-encoding it evades them, and encrypted traffic is opaque. IPv4 fragments, which the kernel cannot reassemble, are dropped rather than inspected.
 - **Tables are sized for 64 KB.** 74 flows, 16 bans, and in the kernel a heavy-hitter sketch that starts banning legitimate sources somewhere between 200k and 500k packets per second of total traffic.
 - **Scan detection is partial.** UDP scans and scans slower than about 64 ports per five seconds go unnoticed, and with 100k sources per window half of 100-port scans are missed.
-- **IPv4 only**, no VLANs, no runtime configuration; thresholds are in CPU cycles.
+- **The engine is IPv4 only**, with no VLANs and no runtime configuration of its thresholds, which are in CPU cycles in the kernel and nanoseconds in the daemon.
 - **One pre-shared key** authenticates the management plane, with no rotation.
 
 The natural next step is an L3/L4 DDoS scrubber: an XDP program doing the per-packet ban, rate-limit and port checks in the kernel driver at line rate, driven by the existing authenticated control plane and dashboard, with deeper inspection of surviving traffic over AF_XDP.
