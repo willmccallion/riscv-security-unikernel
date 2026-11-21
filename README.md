@@ -39,7 +39,7 @@ graph LR
 | Penalty box | 384 B | 16 address or subnet bans; once every slot is active, detector bans are evicted round-robin and operator bans never are |
 | **Hot-path allocations** | **0 B** | No heap; all state is static |
 
-`make check-size` adds a 4 KB stack reserve to `.text + .rodata + .data + .bss` and fails if the total exceeds 64 KB. The current kernel uses about **60.4 KB**.
+`make check-size` adds a 4 KB stack reserve to `.text + .rodata + .data + .bss` and fails if the total exceeds 64 KB. At commit b9dffce the kernel uses 62,204 of 65,536 bytes, about **60.7 KB**.
 
 ---
 
@@ -211,13 +211,13 @@ The pure-logic modules are benchmarked on the host with [Criterion](https://gith
 make bench
 ```
 
-Medians on an Intel Core i7-14700K:
+Medians on an Intel Core i7-14700K, measured at commit 6a9f5d1. The VM, flow table, DPI and heuristics have changed since, so these figures predate the current code:
 
 | Benchmark | Median |
 |---|---|
 | `cms_insert` (single IP) | 7.5 ns |
 | `cms_insert_64_ips` (varied) | 9.2 ns |
-| `ac_scan_clean_payload` (128 B, no match) | 154 ns |
+| `ac_scan_clean_payload` (102 B, no match) | 154 ns |
 | `ac_scan_matching_payload` (early match) | 94 ns |
 | `vm_execute_6_instructions` | 4.4 ns |
 | `flow_update_new_flow` | 130 ns |
@@ -242,7 +242,7 @@ sudo ./target/release/security-daemon run --iface eth0     # inspect a real inte
 
 `run` captures through a memory-mapped `TPACKET_V3` ring and sends replies and signed reports back out of the interface, so the GUI can drive it like the kernel. It takes on the kernel's identity from `sec_core::config` (192.168.100.2, `52:54:00:12:34:56`). `flood` sends synthetic clean, attack or mixed traffic out of an interface; `daemon-speedtest` points it at `run`. `bench` tells the engine traffic arrives at `--offered-pps` (default 10k) while measuring the real CPU cost per frame.
 
-On an Intel Core i7-14700K, one engine handles about **1.3 Mpps** of clean traffic with every frame running the full pipeline (about 790 ns per frame, mostly the Aho-Corasick scan), and attack traffic from banned sources, dropped at the penalty box, at about 25 Mpps. Engines are independent, so throughput scales with threads (about 11.5 Mpps on 16).
+Measured at commit 6a9f5d1, before later changes to the engine's parsing, flow table and VM, on an Intel Core i7-14700K one engine handled about **1.3 Mpps** of clean traffic with every frame running the full pipeline (about 790 ns per frame, mostly the Aho-Corasick scan), and attack traffic from banned sources, dropped at the penalty box, at about 25 Mpps. Engines are independent, so throughput scaled with threads (about 11.5 Mpps on 16).
 
 The daemon's engine uses a 65536 × 4 heavy-hitter sketch (512 KB) and a 16384 × 4 subnet sketch (128 KB) instead of the kernel's 6 KB and 1.5 KB ones, so its detectors stay accurate far past the kernel's 200k pps (see [Measuring the sketches](#measuring-the-sketches)); its port-scan detector is the kernel's. Above 100k pps the separate global rate limit, not the sketch, drops traffic.
 
