@@ -175,7 +175,7 @@ The telemetry body is a type byte followed by eleven big-endian u64 counters: pa
 
 ![Security Appliance Dashboard](assets/gui.png)
 
-The companion desktop app (`egui`/`eframe`) shows live counters and the alert log, manages firewall rules, DPI patterns and BPF programs (with the kernel's ack for each), and generates test traffic. It accepts only reports that verify.
+The companion desktop app (`egui`/`eframe`) shows live counters and the alert log, manages firewall rules, DPI patterns, address bans and BPF programs (with the kernel's ack for each), and generates test traffic. It accepts only reports that verify. Its LIVE NETWORK tab shows what the [network monitor](#network-monitor) sees.
 
 **Traffic modes:** Normal (about 2 packets per millisecond), DDoS (300 per millisecond to common ports), Live (normal traffic with periodic attack payloads and DDoS bursts). Run `make setup_net_many` first so the generator sends from 200 real source addresses; otherwise it falls back to 50 sockets on the host and normal traffic trips the heavy-hitter detector.
 
@@ -292,7 +292,7 @@ make gui
 
 1. On the **Dashboard** tab, click **NORMAL (HTTP)**, **DDoS ATTACK** or **LIVE SIMULATION**
 2. Watch the counters, graph and event log for throughput and drop reasons
-3. Use the **SDN / FIREWALL** tab to add or remove firewall rules and DPI signatures
+3. Use the **SDN / FIREWALL** tab to add or remove firewall rules and DPI signatures, and to ban or unban an address
 4. Use the **BPF STUDIO** tab to upload or unload a packet filter
 
 Press `Ctrl+B X` to exit QEMU.
