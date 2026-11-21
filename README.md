@@ -269,16 +269,19 @@ cargo test --workspace --exclude security-unikernel   # host unit, property and 
 make qemu-test                                         # boots the real kernel in QEMU
 make miri                                              # sec-core tests under Miri
 make fuzz-engine-sequence ARGS="-- -max_total_time=600"
+make qemu-fuzz QEMU_FUZZ_ARGS="--duration-secs 600"    # fuzz the booted kernel
 make sketch-study                                      # sketch accuracy against ground truth
 ```
 
-`make qemu-test` exchanges raw Ethernet frames with the kernel over a Unix socket (QEMU's `dgram` netdev), so it needs no tap device or root. Fuzz targets cover the packet stack, the whole engine (single frames and long sequences of frames, sealed commands and clock steps), the management verifier, the VM and the DPI automaton.
+`make qemu-test` exchanges raw Ethernet frames with the kernel over a Unix socket (QEMU's `dgram` netdev), so it needs no tap device or root. Fuzz targets cover the packet stack, the whole engine (single frames and long sequences of frames, sealed commands and clock steps), the management verifier, the VM and the DPI automaton, and the network monitor's decoders and pipeline (`make fuzz-monitor-<decode|dns|tls|quic|pcap|hellos|pipeline>`). `make qemu-fuzz` boots the real kernel and sends it mutated frames and sealed commands, watching for panics, traps, stack-guard trips and hangs; it has no coverage feedback, but reaches the VirtIO driver and boot path, and saves and minimises each failing input under `target/qemu-fuzz`.
+
+The workspace has about 400 unit tests plus property tests. CI runs Clippy (pedantic and nursery lints denied), the host tests, rustdoc, `make check-size`, `make qemu-test`, Miri, and 120 s of each `sec-core` fuzz target.
 
 ---
 
 ## Running
 
-**Requirements:** Rust (pinned in `rust-toolchain.toml`; nightly for fuzzing and Miri) · `qemu-system-riscv64` · `iproute2` · `make`
+**Requirements:** Rust (pinned in `rust-toolchain.toml`; nightly and `cargo-fuzz` for fuzzing, nightly for Miri) · `qemu-system-riscv64` · `iproute2` · `make` · `openssl` (`make dev-key`) · `setcap` from libcap and `sudo` (`make gui` grants the dashboard capabilities) · Python 3 with matplotlib (`make sketch-study`)
 
 On Nix, `nix develop` provides all of these.
 
